@@ -1,21 +1,82 @@
 use egui::Color32;
 use vt100::Color;
 
-pub fn vt_to_egui_color(color: Color, is_fg: bool) -> Color32 {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalTheme {
+    MobaDark,
+    Dracula,
+    SolarizedDark,
+    SolarizedLight,
+    Monokai,
+    Nord,
+    Matrix,
+}
+
+impl TerminalTheme {
+    pub fn all() -> &'static [TerminalTheme] {
+        &[
+            TerminalTheme::MobaDark,
+            TerminalTheme::Dracula,
+            TerminalTheme::SolarizedDark,
+            TerminalTheme::SolarizedLight,
+            TerminalTheme::Monokai,
+            TerminalTheme::Nord,
+            TerminalTheme::Matrix,
+        ]
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            TerminalTheme::MobaDark => "Moba Dark (Default)",
+            TerminalTheme::Dracula => "Dracula",
+            TerminalTheme::SolarizedDark => "Solarized Dark",
+            TerminalTheme::SolarizedLight => "Solarized Light",
+            TerminalTheme::Monokai => "Monokai",
+            TerminalTheme::Nord => "Nord",
+            TerminalTheme::Matrix => "Matrix Green",
+        }
+    }
+
+    pub fn default_bg(&self) -> Color32 {
+        match self {
+            TerminalTheme::MobaDark => Color32::from_rgb(16, 18, 22),
+            TerminalTheme::Dracula => Color32::from_rgb(40, 42, 54),
+            TerminalTheme::SolarizedDark => Color32::from_rgb(0, 43, 54),
+            TerminalTheme::SolarizedLight => Color32::from_rgb(253, 246, 227),
+            TerminalTheme::Monokai => Color32::from_rgb(39, 40, 34),
+            TerminalTheme::Nord => Color32::from_rgb(46, 52, 64),
+            TerminalTheme::Matrix => Color32::from_rgb(5, 12, 5),
+        }
+    }
+
+    pub fn default_fg(&self) -> Color32 {
+        match self {
+            TerminalTheme::MobaDark => Color32::from_rgb(220, 220, 225),
+            TerminalTheme::Dracula => Color32::from_rgb(248, 248, 242),
+            TerminalTheme::SolarizedDark => Color32::from_rgb(131, 148, 150),
+            TerminalTheme::SolarizedLight => Color32::from_rgb(101, 123, 131),
+            TerminalTheme::Monokai => Color32::from_rgb(248, 248, 240),
+            TerminalTheme::Nord => Color32::from_rgb(216, 222, 233),
+            TerminalTheme::Matrix => Color32::from_rgb(80, 255, 80),
+        }
+    }
+}
+
+pub fn vt_to_egui_color(color: Color, is_fg: bool, theme: TerminalTheme) -> Color32 {
     match color {
         Color::Default => {
             if is_fg {
-                Color32::from_rgb(220, 220, 225) // Bright light gray
+                theme.default_fg()
             } else {
-                Color32::from_rgb(18, 20, 24) // Deep dark terminal background
+                theme.default_bg()
             }
         }
-        Color::Idx(idx) => ansi_256_to_color32(idx),
+        Color::Idx(idx) => ansi_256_to_color32(idx, theme),
         Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
     }
 }
 
-pub fn ansi_256_to_color32(idx: u8) -> Color32 {
+pub fn ansi_256_to_color32(idx: u8, _theme: TerminalTheme) -> Color32 {
     // Standard 16 ANSI colors
     match idx {
         0 => Color32::from_rgb(0, 0, 0),        // Black

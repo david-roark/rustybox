@@ -1,5 +1,5 @@
 use super::pty_session::PtySession;
-use super::vt_screen::vt_to_egui_color;
+use super::vt_screen::{vt_to_egui_color, TerminalTheme};
 use egui::{
     pos2, vec2, Color32, Event, FontFamily, FontId, Key, Rect, Response, Sense, Ui,
 };
@@ -8,14 +8,24 @@ pub struct TerminalWidget<'a> {
     session: &'a mut PtySession,
     pub font_size: f32,
     pub search_query: Option<&'a str>,
+    pub theme: TerminalTheme,
+    pub tab_id: String,
+}
+
+pub enum TerminalAction {
+    None,
+    MultiLinePaste(String),
+    SaveBufferToFile,
 }
 
 impl<'a> TerminalWidget<'a> {
-    pub fn new(_id_source: impl std::hash::Hash, session: &'a mut PtySession) -> Self {
+    pub fn new(tab_id: &str, session: &'a mut PtySession) -> Self {
         Self {
             session,
             font_size: 14.0,
             search_query: None,
+            theme: TerminalTheme::MobaDark,
+            tab_id: tab_id.to_string(),
         }
     }
 
@@ -29,9 +39,20 @@ impl<'a> TerminalWidget<'a> {
         self
     }
 
-    pub fn ui(self, ui: &mut Ui, broadcast_sender: Option<&crossbeam_channel::Sender<Vec<u8>>>) -> Response {
+    pub fn with_theme(mut self, theme: TerminalTheme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    pub fn ui(
+        self,
+        ui: &mut Ui,
+        broadcast_sender: Option<&crossbeam_channel::Sender<Vec<u8>>>,
+    ) -> (Response, TerminalAction) {
         let available_size = ui.available_size();
         let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
+
+        let mut action = TerminalAction::None;
 
         // Dynamic Monospace font setup
         let font_id = FontId::new(self.font_size, FontFamily::Monospace);
@@ -54,14 +75,43 @@ impl<'a> TerminalWidget<'a> {
 
         let painter = ui.painter_at(rect);
 
-        // Terminal background (MobaXterm deep dark theme)
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(16, 18, 22));
+        // Terminal background with selected theme
+        painter.rect_filled(rect, 0.0, self.theme.default_bg());
 
         // Focus handling
         if response.clicked() {
             ui.memory_mut(|m| m.request_focus(response.id));
         }
         let has_focus = ui.memory(|m| m.has_focus(response.id));
+
+        // Right-Click Context Menu (MobaXterm TFORMRIGHTCLICKMENU)
+        response.context_menu(|ui| {
+            if ui.button("📋 Paste Clipboard").clicked() {
+                let text = ui.output(|o| o.copied_text.clone());
+                if !text.is_empty() {
+                    if text.contains('\n') {
+                        action = TerminalAction::MultiLinePaste(text);
+                    } else {
+                        let bytes = text.as_bytes().to_vec();
+                        let _ = self.session.write_bytes(&bytes);
+                        if let Some(sender) = broadcast_sender {
+                            let _ = sender.send(bytes);
+                        }
+                    }
+                }
+                ui.close_menu();
+            }
+            if ui.button("🧹 Clear Terminal Screen").clicked() {
+                let _ = self.session.write_bytes(b"clear\n");
+                ui.close_menu();
+            }
+            if ui.button("💾 Save Terminal Buffer to File...").clicked() {
+                action = TerminalAction::SaveBufferToFile;
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.label(format!("Size: {} cols x {} rows", cols, rows));
+        });
 
         // Render terminal contents with Syntax Highlighting & Search Matching
         {
@@ -73,7 +123,10 @@ impl<'a> TerminalWidget<'a> {
             let (cursor_row, cursor_col) = screen.cursor_position();
             let cursor_hidden = screen.hide_cursor();
 
-            let search_term = self.search_query.map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+            let search_term = self
+                .search_query
+                .map(|q| q.trim().to_lowercase())
+                .filter(|q| !q.is_empty());
 
             for r in 0..screen_rows.min(rows) {
                 // Collect row string to check syntax highlighting keywords
@@ -104,34 +157,44 @@ impl<'a> TerminalWidget<'a> {
                     if let Some(cell) = screen.cell(r, c) {
                         let cell_x = rect.min.x + (c as f32) * char_width;
                         let cell_y = rect.min.y + (r as f32) * row_height;
-                        let cell_rect = Rect::from_min_size(pos2(cell_x, cell_y), vec2(char_width, row_height));
+                        let cell_rect =
+                            Rect::from_min_size(pos2(cell_x, cell_y), vec2(char_width, row_height));
 
                         // Check if current cell is inside a search match
-                        let is_searched = search_matches.iter().any(|range| range.contains(&(c as usize)));
+                        let is_searched =
+                            search_matches.iter().any(|range| range.contains(&(c as usize)));
 
                         // Custom background
                         let bg_color = if is_searched {
                             Color32::from_rgb(180, 140, 20) // Yellow highlight for search
                         } else {
-                            vt_to_egui_color(cell.bgcolor(), false)
+                            vt_to_egui_color(cell.bgcolor(), false, self.theme)
                         };
 
-                        if bg_color != Color32::from_rgb(16, 18, 22) {
+                        if bg_color != self.theme.default_bg() {
                             painter.rect_filled(cell_rect, 0.0, bg_color);
                         }
 
                         // Text & Syntax Highlighting
                         let contents = cell.contents();
                         if !contents.is_empty() && contents != " " {
-                            let mut fg_color = vt_to_egui_color(cell.fgcolor(), true);
+                            let mut fg_color =
+                                vt_to_egui_color(cell.fgcolor(), true, self.theme);
 
                             // Apply MobaXterm-style smart syntax coloring if default color
-                            if fg_color == Color32::from_rgb(220, 220, 225) {
-                                // Check if cell is in an IP address or Error/Success keyword
+                            if fg_color == self.theme.default_fg() {
                                 let col_idx = c as usize;
-                                if is_in_keyword(&row_str, col_idx, &["error", "failed", "fatal", "exception", "err"]) {
+                                if is_in_keyword(
+                                    &row_str,
+                                    col_idx,
+                                    &["error", "failed", "fatal", "exception", "err"],
+                                ) {
                                     fg_color = Color32::from_rgb(255, 90, 90); // Red
-                                } else if is_in_keyword(&row_str, col_idx, &["success", "ok", "passed", "running", "active"]) {
+                                } else if is_in_keyword(
+                                    &row_str,
+                                    col_idx,
+                                    &["success", "ok", "passed", "running", "active"],
+                                ) {
                                     fg_color = Color32::from_rgb(80, 230, 120); // Green
                                 } else if is_in_keyword(&row_str, col_idx, &["warn", "warning"]) {
                                     fg_color = Color32::from_rgb(255, 210, 60); // Yellow
@@ -156,10 +219,15 @@ impl<'a> TerminalWidget<'a> {
             if !cursor_hidden && has_focus {
                 let cur_x = rect.min.x + (cursor_col as f32) * char_width;
                 let cur_y = rect.min.y + (cursor_row as f32) * row_height;
-                let cur_rect = Rect::from_min_size(pos2(cur_x, cur_y), vec2(char_width, row_height));
+                let cur_rect =
+                    Rect::from_min_size(pos2(cur_x, cur_y), vec2(char_width, row_height));
                 let blink = (ui.input(|i| i.time) * 2.0).fract() < 0.5;
                 if blink {
-                    painter.rect_filled(cur_rect, 1.0, Color32::from_rgba_premultiplied(230, 230, 240, 160));
+                    painter.rect_filled(
+                        cur_rect,
+                        1.0,
+                        Color32::from_rgba_premultiplied(230, 230, 240, 160),
+                    );
                 }
             }
         }
@@ -167,6 +235,7 @@ impl<'a> TerminalWidget<'a> {
         // Process keyboard inputs when terminal has focus
         if has_focus {
             let mut input_bytes: Vec<u8> = Vec::new();
+            let mut paste_text_to_check: Option<String> = None;
 
             ui.input(|i| {
                 for event in &i.events {
@@ -212,12 +281,20 @@ impl<'a> TerminalWidget<'a> {
                             }
                         }
                         Event::Paste(text) => {
-                            input_bytes.extend_from_slice(text.as_bytes());
+                            if text.contains('\n') {
+                                paste_text_to_check = Some(text.clone());
+                            } else {
+                                input_bytes.extend_from_slice(text.as_bytes());
+                            }
                         }
                         _ => {}
                     }
                 }
             });
+
+            if let Some(text) = paste_text_to_check {
+                action = TerminalAction::MultiLinePaste(text);
+            }
 
             if !input_bytes.is_empty() {
                 let _ = self.session.write_bytes(&input_bytes);
@@ -227,7 +304,7 @@ impl<'a> TerminalWidget<'a> {
             }
         }
 
-        response
+        (response, action)
     }
 }
 
@@ -240,8 +317,10 @@ fn is_in_keyword(row: &str, col: usize, keywords: &[&str]) -> bool {
             let actual = start + pos;
             if col >= actual && col < actual + kw.len() {
                 // Word boundary check
-                let before_ok = actual == 0 || !lower.as_bytes()[actual - 1].is_ascii_alphanumeric();
-                let after_ok = actual + kw.len() >= lower.len() || !lower.as_bytes()[actual + kw.len()].is_ascii_alphanumeric();
+                let before_ok =
+                    actual == 0 || !lower.as_bytes()[actual - 1].is_ascii_alphanumeric();
+                let after_ok = actual + kw.len() >= lower.len()
+                    || !lower.as_bytes()[actual + kw.len()].is_ascii_alphanumeric();
                 if before_ok && after_ok {
                     return true;
                 }
@@ -264,7 +343,8 @@ fn is_ipv4_char(row: &str, col: usize) -> bool {
         left -= 1;
     }
     let mut right = col;
-    while right + 1 < chars.len() && (chars[right + 1].is_ascii_digit() || chars[right + 1] == '.') {
+    while right + 1 < chars.len() && (chars[right + 1].is_ascii_digit() || chars[right + 1] == '.')
+    {
         right += 1;
     }
     let token: String = chars[left..=right].iter().collect();

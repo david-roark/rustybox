@@ -33,6 +33,20 @@ pub enum SessionType {
         host: String,
         port: u16,
     },
+    Rdp {
+        host: String,
+        port: u16,
+        user: String,
+    },
+    Vnc {
+        host: String,
+        port: u16,
+    },
+    Ftp {
+        host: String,
+        port: u16,
+        user: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

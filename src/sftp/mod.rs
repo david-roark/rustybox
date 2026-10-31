@@ -24,6 +24,23 @@ pub struct FileExplorer {
     pub editor_file_path: Option<PathBuf>,
     pub editor_content: String,
     pub editor_status: Option<String>,
+    // Modal Chmod (MobaXterm TFORMCHMOD)
+    pub chmod_open: bool,
+    pub chmod_target: Option<PathBuf>,
+    pub chmod_u_r: bool,
+    pub chmod_u_w: bool,
+    pub chmod_u_x: bool,
+    pub chmod_g_r: bool,
+    pub chmod_g_w: bool,
+    pub chmod_g_x: bool,
+    pub chmod_o_r: bool,
+    pub chmod_o_w: bool,
+    pub chmod_o_x: bool,
+    // New item dialogs
+    pub show_new_folder: bool,
+    pub new_folder_name: String,
+    pub show_new_file: bool,
+    pub new_file_name: String,
 }
 
 impl FileExplorer {
@@ -38,6 +55,21 @@ impl FileExplorer {
             editor_file_path: None,
             editor_content: String::new(),
             editor_status: None,
+            chmod_open: false,
+            chmod_target: None,
+            chmod_u_r: true,
+            chmod_u_w: true,
+            chmod_u_x: true,
+            chmod_g_r: true,
+            chmod_g_w: false,
+            chmod_g_x: true,
+            chmod_o_r: true,
+            chmod_o_w: false,
+            chmod_o_x: true,
+            show_new_folder: false,
+            new_folder_name: "new_folder".into(),
+            show_new_file: false,
+            new_file_name: "new_file.txt".into(),
         };
         explorer.refresh();
         explorer
@@ -91,7 +123,6 @@ impl FileExplorer {
                     }
                 }
 
-                // Sort directories first alphabetically, then files
                 dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                 files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
@@ -152,5 +183,41 @@ impl FileExplorer {
         } else {
             self.refresh();
         }
+    }
+
+    pub fn create_file(&mut self, name: &str) {
+        let new_path = self.current_path.join(name);
+        if let Err(e) = fs::write(&new_path, "") {
+            self.error_message = Some(format!("Create file failed: {}", e));
+        } else {
+            self.refresh();
+        }
+    }
+
+    pub fn open_chmod(&mut self, path: PathBuf) {
+        self.chmod_target = Some(path);
+        self.chmod_open = true;
+    }
+
+    pub fn apply_chmod(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(ref path) = self.chmod_target {
+                let mut mode = 0o000;
+                if self.chmod_u_r { mode |= 0o400; }
+                if self.chmod_u_w { mode |= 0o200; }
+                if self.chmod_u_x { mode |= 0o100; }
+                if self.chmod_g_r { mode |= 0o040; }
+                if self.chmod_g_w { mode |= 0o020; }
+                if self.chmod_g_x { mode |= 0o010; }
+                if self.chmod_o_r { mode |= 0o004; }
+                if self.chmod_o_w { mode |= 0o002; }
+                if self.chmod_o_x { mode |= 0o001; }
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+            }
+        }
+        self.chmod_open = false;
+        self.refresh();
     }
 }

@@ -4,7 +4,8 @@ use crate::session::ui::{render_new_session_dialog, NewSessionDialog};
 use crate::session::{Session, SessionType};
 use crate::sftp::ui::render_sftp_sidebar;
 use crate::sftp::FileExplorer;
-use crate::terminal::widget::TerminalWidget;
+use crate::terminal::vt_screen::TerminalTheme;
+use crate::terminal::widget::{TerminalAction, TerminalWidget};
 use crate::terminal::PtySession;
 use crate::tunneling::TunnelManager;
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -50,19 +51,27 @@ pub struct RustyBoxApp {
     show_sftp_sidebar: bool,
     sidebar_tab: usize, // 0: Sessions, 1: SFTP Explorer
     show_network_tools: bool,
+    net_tools_tab: usize, // 0: Port Scan, 1: Subnet Scan, 2: Ping, 3: Netstat
     show_tunnels: bool,
     show_vault: bool,
     show_about: bool,
-    show_http_modal: bool,
+    show_services_modal: bool,
+    services_tab: usize, // 0: HTTP, 1: Syslog
     // Master Password Vault
     master_password: String,
     vault_status: Option<String>,
-    // Terminal Customization & Search
+    // Terminal Customization, Theme & Search
+    theme: TerminalTheme,
     font_size: f32,
     search_open: bool,
     search_query: String,
-    // Quick Macros
+    // Multi-line paste confirmation (MobaXterm TFORMCHECKCLIPBOARD)
+    pending_paste_text: Option<String>,
+    // Quick Macros (MobaXterm TFORMMANAGEMACROS)
     quick_macros: Vec<(String, String)>,
+    show_macro_manager: bool,
+    new_macro_name: String,
+    new_macro_cmd: String,
     // Tokio Runtime
     tokio_runtime: tokio::runtime::Runtime,
 }
@@ -107,16 +116,23 @@ impl RustyBoxApp {
             show_sftp_sidebar: true,
             sidebar_tab: 0,
             show_network_tools: false,
+            net_tools_tab: 0,
             show_tunnels: false,
             show_vault: false,
             show_about: false,
-            show_http_modal: false,
+            show_services_modal: false,
+            services_tab: 0,
             master_password: String::new(),
             vault_status: None,
+            theme: TerminalTheme::MobaDark,
             font_size: 14.0,
             search_open: false,
             search_query: String::new(),
+            pending_paste_text: None,
             quick_macros: default_macros,
+            show_macro_manager: false,
+            new_macro_name: String::new(),
+            new_macro_cmd: String::new(),
             tokio_runtime,
         };
 
@@ -187,12 +203,90 @@ impl RustyBoxApp {
         }
     }
 
+    pub fn launch_generic_session(&mut self, s: Session) {
+        match s.session_type {
+            SessionType::LocalShell { ref custom_shell, ref working_dir } => {
+                self.spawn_local_terminal(&s.name, custom_shell.as_deref(), working_dir.as_deref());
+            }
+            SessionType::Ssh { .. } => {
+                self.spawn_ssh_terminal(s);
+            }
+            SessionType::Telnet { ref host, port } => {
+                let cmd = format!("telnet {} {}", host, port);
+                let _ = self.spawn_local_terminal(&format!("Telnet: {}", host), Some(&cmd), None);
+            }
+            SessionType::Serial { ref port_name, baud_rate } => {
+                let cmd = format!("screen {} {}", port_name, baud_rate);
+                let _ = self.spawn_local_terminal(&format!("Serial: {}", port_name), Some(&cmd), None);
+            }
+            SessionType::Rdp { ref host, port, .. } => {
+                // Open system RDP client
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("mstsc")
+                        .arg(format!("/v:{}:{}", host, port))
+                        .spawn();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = std::process::Command::new("xfreerdp")
+                        .arg(format!("/v:{}:{}", host, port))
+                        .spawn();
+                }
+            }
+            SessionType::Vnc { ref host, port } => {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("vncviewer")
+                        .arg(format!("{}:{}", host, port))
+                        .spawn();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = std::process::Command::new("vncviewer")
+                        .arg(format!("{}:{}", host, port))
+                        .spawn();
+                }
+            }
+            SessionType::Ftp { .. } => {
+                self.show_sftp_sidebar = true;
+                self.sidebar_tab = 1;
+            }
+        }
+    }
+
     pub fn execute_macro(&mut self, cmd: &str) {
         if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
             let bytes = cmd.as_bytes().to_vec();
             let _ = tab.session.write_bytes(&bytes);
             if self.multi_exec_enabled {
                 let _ = self.broadcast_tx.send(bytes);
+            }
+        }
+    }
+
+    pub fn save_active_terminal_buffer(&self) {
+        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+            let parser = tab.session.parser.lock();
+            let screen = parser.screen();
+            let (rows, cols) = screen.size();
+            let mut text = String::new();
+            for r in 0..rows.get() {
+                for c in 0..cols.get() {
+                    if let Some(cell) = screen.cell(r, c) {
+                        text.push_str(cell.contents());
+                    } else {
+                        text.push(' ');
+                    }
+                }
+                text.push('\n');
+            }
+
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Log file", &["log", "txt"])
+                .save_file()
+            {
+                let _ = std::fs::write(path, text);
             }
         }
     }
@@ -229,6 +323,11 @@ impl eframe::App for RustyBoxApp {
                     }
                     if ui.button("💻 New Local Terminal").clicked() {
                         self.spawn_local_terminal("Local Terminal", None, None);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("💾 Save Active Terminal Output...").clicked() {
+                        self.save_active_terminal_buffer();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -276,19 +375,32 @@ impl eframe::App for RustyBoxApp {
                         self.split_mode = SplitMode::Grid2x2;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    ui.menu_button("🎨 Terminal Theme", |ui| {
+                        for t in TerminalTheme::all() {
+                            if ui.selectable_label(self.theme == *t, t.name()).clicked() {
+                                self.theme = *t;
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 });
 
                 ui.menu_button("Tools", |ui| {
-                    if ui.button("🌐 Network Port Scanner").clicked() {
+                    if ui.button("🌐 Network Tools & Scanner").clicked() {
                         self.show_network_tools = true;
                         ui.close_menu();
                     }
-                    if ui.button("🚀 Micro HTTP File Server").clicked() {
-                        self.show_http_modal = true;
+                    if ui.button("🚀 Embedded Daemons / Services").clicked() {
+                        self.show_services_modal = true;
                         ui.close_menu();
                     }
                     if ui.button("🔀 SSH Tunnels Manager").clicked() {
                         self.show_tunnels = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("⚡ Manage Quick Macros...").clicked() {
+                        self.show_macro_manager = true;
                         ui.close_menu();
                     }
                     if ui.button("🔒 Master Password Vault").clicked() {
@@ -360,11 +472,22 @@ impl eframe::App for RustyBoxApp {
 
                 ui.separator();
 
-                if ui.button("🌐 NetScan").clicked() {
+                // Theme quick selector
+                egui::ComboBox::from_id_salt("theme_selector_combo")
+                    .selected_text(self.theme.name())
+                    .show_ui(ui, |ui| {
+                        for t in TerminalTheme::all() {
+                            ui.selectable_value(&mut self.theme, *t, t.name());
+                        }
+                    });
+
+                ui.separator();
+
+                if ui.button("🌐 NetTools").clicked() {
                     self.show_network_tools = true;
                 }
-                if ui.button("🚀 HTTP Daemon").clicked() {
-                    self.show_http_modal = true;
+                if ui.button("🚀 Daemons").clicked() {
+                    self.show_services_modal = true;
                 }
                 if ui.button("🔀 Tunnels").clicked() {
                     self.show_tunnels = true;
@@ -392,6 +515,9 @@ impl eframe::App for RustyBoxApp {
                         macro_to_run = Some(cmd.clone());
                     }
                 }
+                if ui.small_button("⚙ Manage").clicked() {
+                    self.show_macro_manager = true;
+                }
                 if let Some(cmd) = macro_to_run {
                     self.execute_macro(&cmd);
                 }
@@ -413,7 +539,7 @@ impl eframe::App for RustyBoxApp {
                     if self.multi_exec_enabled {
                         ui.label(RichText::new("⚠ MULTI-EXEC ACTIVE").color(Color32::from_rgb(255, 180, 50)).size(11.0).strong());
                     }
-                    ui.label(RichText::new(format!("Tabs: {}", self.open_tabs.len())).size(11.0));
+                    ui.label(RichText::new(format!("Theme: {} | Tabs: {}", self.theme.name(), self.open_tabs.len())).size(11.0));
                 });
             });
         });
@@ -464,6 +590,9 @@ impl eframe::App for RustyBoxApp {
                                                 SessionType::Ssh { .. } => "🌐 ",
                                                 SessionType::Serial { .. } => "🔌 ",
                                                 SessionType::Telnet { .. } => "📡 ",
+                                                SessionType::Rdp { .. } => "🖥 ",
+                                                SessionType::Vnc { .. } => "👁 ",
+                                                SessionType::Ftp { .. } => "📁 ",
                                             };
                                             ui.horizontal(|ui| {
                                                 let btn = ui.selectable_label(false, format!("{}{}", icon, s.name));
@@ -487,15 +616,7 @@ impl eframe::App for RustyBoxApp {
                         });
 
                         if let Some(s) = to_launch {
-                            match s.session_type {
-                                SessionType::LocalShell { ref custom_shell, ref working_dir } => {
-                                    self.spawn_local_terminal(&s.name, custom_shell.as_deref(), working_dir.as_deref());
-                                }
-                                SessionType::Ssh { .. } => {
-                                    self.spawn_ssh_terminal(s);
-                                }
-                                _ => {}
-                            }
+                            self.launch_generic_session(s);
                         }
 
                         if let Some(del_id) = to_delete_id {
@@ -510,6 +631,8 @@ impl eframe::App for RustyBoxApp {
         }
 
         // 6. CENTER WORKSPACE (Tabs Header, Search Bar & Terminals Grid)
+        let mut triggered_action = TerminalAction::None;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             // TAB BAR HEADER
             ui.horizontal(|ui| {
@@ -583,6 +706,7 @@ impl eframe::App for RustyBoxApp {
                 None
             };
             let font_sz = self.font_size;
+            let current_theme = self.theme;
 
             match self.split_mode {
                 SplitMode::Single => {
@@ -590,8 +714,10 @@ impl eframe::App for RustyBoxApp {
                     let tab = &mut self.open_tabs[active_idx];
                     let widget = TerminalWidget::new(&tab.id, &mut tab.session)
                         .with_font_size(font_sz)
+                        .with_theme(current_theme)
                         .with_search(search_ref);
-                    widget.ui(ui, broadcast_tx);
+                    let (_, act) = widget.ui(ui, broadcast_tx);
+                    triggered_action = act;
                 }
                 SplitMode::Horizontal => {
                     let tab_a_idx = self.active_tab_idx.min(num_tabs - 1);
@@ -605,15 +731,23 @@ impl eframe::App for RustyBoxApp {
                         let tab_a = &mut self.open_tabs[tab_a_idx];
                         let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
                             .with_font_size(font_sz)
+                            .with_theme(current_theme)
                             .with_search(search_ref);
-                        widget_a.ui(&mut columns[0], broadcast_tx);
+                        let (_, act) = widget_a.ui(&mut columns[0], broadcast_tx);
+                        if let TerminalAction::None = triggered_action {
+                            triggered_action = act;
+                        }
 
                         if tab_a_idx != tab_b_idx {
                             let tab_b = &mut self.open_tabs[tab_b_idx];
                             let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
                                 .with_font_size(font_sz)
+                                .with_theme(current_theme)
                                 .with_search(search_ref);
-                            widget_b.ui(&mut columns[1], broadcast_tx);
+                            let (_, act_b) = widget_b.ui(&mut columns[1], broadcast_tx);
+                            if let TerminalAction::None = triggered_action {
+                                triggered_action = act_b;
+                            }
                         } else {
                             columns[1].centered_and_justified(|ui| {
                                 ui.label("Open another session to view side-by-side");
@@ -639,8 +773,10 @@ impl eframe::App for RustyBoxApp {
                                 let tab_a = &mut self.open_tabs[tab_a_idx];
                                 let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
                                     .with_font_size(font_sz)
+                                    .with_theme(current_theme)
                                     .with_search(search_ref);
-                                widget_a.ui(ui, broadcast_tx);
+                                let (_, act) = widget_a.ui(ui, broadcast_tx);
+                                triggered_action = act;
                             },
                         );
 
@@ -654,8 +790,12 @@ impl eframe::App for RustyBoxApp {
                                     let tab_b = &mut self.open_tabs[tab_b_idx];
                                     let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
                                         .with_font_size(font_sz)
+                                        .with_theme(current_theme)
                                         .with_search(search_ref);
-                                    widget_b.ui(ui, broadcast_tx);
+                                    let (_, act_b) = widget_b.ui(ui, broadcast_tx);
+                                    if let TerminalAction::None = triggered_action {
+                                        triggered_action = act_b;
+                                    }
                                 } else {
                                     ui.centered_and_justified(|ui| {
                                         ui.label("Open another session to view stacked");
@@ -676,15 +816,18 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 0 {
                                     let tab0 = &mut self.open_tabs[0];
-                                    TerminalWidget::new(&tab0.id, &mut tab0.session)
+                                    let (_, act) = TerminalWidget::new(&tab0.id, &mut tab0.session)
                                         .with_font_size(font_sz)
+                                        .with_theme(current_theme)
                                         .with_search(search_ref)
                                         .ui(&mut cols[0], broadcast_tx);
+                                    triggered_action = act;
                                 }
                                 if num_tabs > 1 {
                                     let tab1 = &mut self.open_tabs[1];
-                                    TerminalWidget::new(&tab1.id, &mut tab1.session)
+                                    let _ = TerminalWidget::new(&tab1.id, &mut tab1.session)
                                         .with_font_size(font_sz)
+                                        .with_theme(current_theme)
                                         .with_search(search_ref)
                                         .ui(&mut cols[1], broadcast_tx);
                                 }
@@ -701,15 +844,17 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 2 {
                                     let tab2 = &mut self.open_tabs[2];
-                                    TerminalWidget::new(&tab2.id, &mut tab2.session)
+                                    let _ = TerminalWidget::new(&tab2.id, &mut tab2.session)
                                         .with_font_size(font_sz)
+                                        .with_theme(current_theme)
                                         .with_search(search_ref)
                                         .ui(&mut cols[0], broadcast_tx);
                                 }
                                 if num_tabs > 3 {
                                     let tab3 = &mut self.open_tabs[3];
-                                    TerminalWidget::new(&tab3.id, &mut tab3.session)
+                                    let _ = TerminalWidget::new(&tab3.id, &mut tab3.session)
                                         .with_font_size(font_sz)
+                                        .with_theme(current_theme)
                                         .with_search(search_ref)
                                         .ui(&mut cols[1], broadcast_tx);
                                 }
@@ -720,131 +865,295 @@ impl eframe::App for RustyBoxApp {
             }
         });
 
+        // Handle Action from Terminal
+        match triggered_action {
+            TerminalAction::MultiLinePaste(text) => {
+                self.pending_paste_text = Some(text);
+            }
+            TerminalAction::SaveBufferToFile => {
+                self.save_active_terminal_buffer();
+            }
+            _ => {}
+        }
+
         // 7. POPUP DIALOGS & MODAL WINDOWS
-        if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
-            self.sessions.push(new_session.clone());
-            let _ = self.storage.save_sessions(&self.sessions);
-            match new_session.session_type {
-                SessionType::LocalShell { ref custom_shell, ref working_dir } => {
-                    self.spawn_local_terminal(&new_session.name, custom_shell.as_deref(), working_dir.as_deref());
+
+        // Multi-line Paste Safety Warning Modal (MobaXterm TFORMCHECKCLIPBOARD)
+        if self.pending_paste_text.is_some() {
+            let mut close = false;
+            let mut run_paste = false;
+
+            egui::Window::new("⚠ Multi-line Paste Warning (MobaXterm Style)")
+                .default_size(Vec2::new(520.0, 320.0))
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("Warning: The clipboard text contains newlines!").color(Color32::from_rgb(255, 180, 50)).strong());
+                    ui.label("Review or modify commands before executing in the terminal:");
+                    ui.add_space(6.0);
+
+                    if let Some(ref mut text) = self.pending_paste_text {
+                        let lines_count = text.lines().count();
+                        ui.label(RichText::new(format!("Total lines: {} | Characters: {}", lines_count, text.len())).weak().size(11.0));
+
+                        ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                            ui.add(TextEdit::multiline(text).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+                        });
+                    }
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("✔ Execute in Terminal").strong().color(Color32::from_rgb(80, 240, 120))).clicked() {
+                            run_paste = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+
+            if run_paste {
+                if let Some(text) = self.pending_paste_text.take() {
+                    let bytes = text.as_bytes().to_vec();
+                    if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                        let _ = tab.session.write_bytes(&bytes);
+                        if self.multi_exec_enabled {
+                            let _ = self.broadcast_tx.send(bytes);
+                        }
+                    }
                 }
-                SessionType::Ssh { .. } => {
-                    self.spawn_ssh_terminal(new_session);
-                }
-                _ => {}
+            } else if close {
+                self.pending_paste_text = None;
             }
         }
 
-        // Network Tools Modal
+        // New Session Dialog
+        if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
+            self.sessions.push(new_session.clone());
+            let _ = self.storage.save_sessions(&self.sessions);
+            self.launch_generic_session(new_session);
+        }
+
+        // Network Tools & Scanner Modal (Port Scan, Subnet NetScan, Ping, Netstat)
         if self.show_network_tools {
             let mut open = self.show_network_tools;
             let rt_handle = self.tokio_runtime.handle().clone();
 
-            egui::Window::new("🌐 Network Scanner & Ping Utility")
+            egui::Window::new("🌐 Network Tools Suite (NetScan, Ping, Ports, Netstat)")
                 .open(&mut open)
-                .default_size(Vec2::new(550.0, 420.0))
+                .default_size(Vec2::new(620.0, 480.0))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Target Host / IP:");
-                        ui.text_edit_singleline(&mut self.network_tools.target_host);
-                        if ui.button("🔍 Scan Common Ports").clicked() {
-                            self.network_tools.start_port_scan(&rt_handle);
-                        }
+                        ui.selectable_value(&mut self.net_tools_tab, 0, "🔍 Port Scanner");
+                        ui.selectable_value(&mut self.net_tools_tab, 1, "📡 Subnet NetScan");
+                        ui.selectable_value(&mut self.net_tools_tab, 2, "⏱ TCP Ping");
+                        ui.selectable_value(&mut self.net_tools_tab, 3, "📊 Netstat Connections");
                     });
-
-                    let progress = *self.network_tools.scan_progress.lock();
-                    ui.add(egui::ProgressBar::new(progress).show_percentage());
-
                     ui.separator();
-                    ui.label(RichText::new("Scan Results:").strong());
 
-                    ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                        let results = self.network_tools.scan_results.lock().clone();
-                        for item in results {
-                            let status_text = if item.is_open {
-                                RichText::new(format!("OPEN ({}ms)", item.latency_ms.unwrap_or(0)))
-                                    .color(Color32::from_rgb(50, 220, 50))
-                            } else {
-                                RichText::new("Closed").color(Color32::from_rgb(180, 70, 70))
-                            };
-
+                    match self.net_tools_tab {
+                        0 => {
+                            // Port Scanner
                             ui.horizontal(|ui| {
-                                ui.label(format!("Port {:5} ({:12}):", item.port, item.service));
-                                ui.label(status_text);
+                                ui.label("Target Host / IP:");
+                                ui.text_edit_singleline(&mut self.network_tools.target_host);
+                                if ui.button("🔍 Scan Common Ports").clicked() {
+                                    self.network_tools.start_port_scan(&rt_handle);
+                                }
+                            });
+
+                            let progress = *self.network_tools.scan_progress.lock();
+                            ui.add(egui::ProgressBar::new(progress).show_percentage());
+
+                            ui.separator();
+                            ui.label(RichText::new("Port Scan Results:").strong());
+
+                            ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                                let results = self.network_tools.scan_results.lock().clone();
+                                for item in results {
+                                    let status_text = if item.is_open {
+                                        RichText::new(format!("OPEN ({}ms)", item.latency_ms.unwrap_or(0)))
+                                            .color(Color32::from_rgb(50, 220, 50))
+                                    } else {
+                                        RichText::new("Closed").color(Color32::from_rgb(180, 70, 70))
+                                    };
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("Port {:5} ({:12}):", item.port, item.service));
+                                        ui.label(status_text);
+                                    });
+                                }
                             });
                         }
-                    });
+                        1 => {
+                            // Subnet NetScan
+                            ui.label("Scan live IP addresses across your local network subnet:");
+                            ui.horizontal(|ui| {
+                                ui.label("Subnet Prefix:");
+                                ui.add(TextEdit::singleline(&mut self.network_tools.subnet_prefix).desired_width(120.0).hint_text("192.168.1"));
+                                if ui.button("📡 Scan Subnet (.1 - .50)").clicked() {
+                                    self.network_tools.start_subnet_scan(&rt_handle);
+                                }
+                            });
 
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Ping Host:");
-                        ui.text_edit_singleline(&mut self.network_tools.ping_host);
-                        if ui.button("📡 Start Ping").clicked() {
-                            self.network_tools.start_ping(&rt_handle);
-                        }
-                    });
+                            let progress = *self.network_tools.subnet_progress.lock();
+                            ui.add(egui::ProgressBar::new(progress).show_percentage());
 
-                    ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
-                        let logs = self.network_tools.ping_logs.lock().clone();
-                        for line in logs {
-                            ui.label(RichText::new(line).monospace().size(11.0));
+                            ui.separator();
+                            ui.label(RichText::new("Discovered Live Hosts:").strong());
+
+                            ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                                let results = self.network_tools.subnet_results.lock().clone();
+                                if results.is_empty() {
+                                    ui.label("No active hosts found yet. Click 'Scan Subnet' to start.");
+                                }
+                                for item in results {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("🟢 {}", item.ip)).strong().color(Color32::from_rgb(80, 230, 120)));
+                                        ui.label(format!("Latency: {}ms", item.latency_ms.unwrap_or(0)));
+                                        if let Some(srv) = item.open_service {
+                                            ui.label(RichText::new(format!("Service: {}", srv)).color(Color32::from_rgb(100, 200, 255)));
+                                        }
+                                    });
+                                }
+                            });
                         }
-                    });
+                        2 => {
+                            // TCP Ping
+                            ui.horizontal(|ui| {
+                                ui.label("Ping Target:");
+                                ui.text_edit_singleline(&mut self.network_tools.ping_host);
+                                if ui.button("📡 Start Ping").clicked() {
+                                    self.network_tools.start_ping(&rt_handle);
+                                }
+                            });
+
+                            ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                                let logs = self.network_tools.ping_logs.lock().clone();
+                                for line in logs {
+                                    ui.label(RichText::new(line).monospace().size(11.0));
+                                }
+                            });
+                        }
+                        3 => {
+                            // Netstat Viewer
+                            ui.horizontal(|ui| {
+                                if ui.button("🔄 Refresh Active Connections").clicked() {
+                                    self.network_tools.refresh_netstat(&rt_handle);
+                                }
+                            });
+                            ui.separator();
+
+                            ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                let entries = self.network_tools.netstat_entries.lock().clone();
+                                if entries.is_empty() {
+                                    ui.label("Click 'Refresh Active Connections' to view open ports and sockets.");
+                                } else {
+                                    for entry in entries {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(&entry.proto).color(Color32::from_rgb(255, 200, 80)));
+                                            ui.label(format!("{:22} -> {:22}", entry.local_addr, entry.remote_addr));
+                                            ui.label(RichText::new(&entry.state).color(Color32::from_rgb(80, 230, 120)).strong());
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
                 });
             self.show_network_tools = open;
         }
 
-        // Micro HTTP Server Modal (MobaXterm TFORMSERVICES Daemon)
-        if self.show_http_modal {
-            let mut open = self.show_http_modal;
+        // Embedded Network Daemons Suite (HTTP, Syslog)
+        if self.show_services_modal {
+            let mut open = self.show_services_modal;
             let rt_handle = self.tokio_runtime.handle().clone();
 
-            egui::Window::new("🚀 Micro HTTP File Sharing Daemon")
+            egui::Window::new("🚀 Embedded Network Daemons (MobaXterm TFORMSERVICES)")
                 .open(&mut open)
-                .default_size(Vec2::new(560.0, 360.0))
+                .default_size(Vec2::new(600.0, 420.0))
                 .show(ctx, |ui| {
-                    ui.label("Instantly share local files across your local network via HTTP:");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.services_tab, 0, "🌐 HTTP File Sharing");
+                        ui.selectable_value(&mut self.services_tab, 1, "📡 Syslog Server (UDP)");
+                    });
                     ui.separator();
 
-                    ui.horizontal(|ui| {
-                        ui.label("Serving Folder:");
-                        let path_str = self.network_tools.http_root.to_string_lossy().to_string();
-                        ui.label(RichText::new(path_str).monospace().color(Color32::from_rgb(100, 200, 255)));
-                        if ui.button("Browse...").clicked() {
-                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                self.network_tools.http_root = folder;
-                            }
-                        }
-                    });
+                    if self.services_tab == 0 {
+                        ui.label("Share local files across your local network instantly via HTTP:");
+                        ui.separator();
 
-                    ui.horizontal(|ui| {
-                        ui.label("HTTP Port:");
-                        ui.add(egui::DragValue::new(&mut self.network_tools.http_port).range(1024..=65535));
-
-                        let is_running = self.network_tools.http_running.load(std::sync::atomic::Ordering::Relaxed);
-                        if is_running {
-                            if ui.button(RichText::new("⏹ Stop Server").color(Color32::from_rgb(255, 100, 100))).clicked() {
-                                self.network_tools.stop_http_server();
+                        ui.horizontal(|ui| {
+                            ui.label("Serving Folder:");
+                            let path_str = self.network_tools.http_root.to_string_lossy().to_string();
+                            ui.label(RichText::new(path_str).monospace().color(Color32::from_rgb(100, 200, 255)));
+                            if ui.button("Browse...").clicked() {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                    self.network_tools.http_root = folder;
+                                }
                             }
-                            ui.label(RichText::new(format!("🟢 Online: http://127.0.0.1:{}", self.network_tools.http_port)).color(Color32::from_rgb(80, 240, 120)));
-                        } else {
-                            if ui.button(RichText::new("▶ Start Server").color(Color32::from_rgb(80, 240, 120))).clicked() {
-                                self.network_tools.start_http_server(&rt_handle);
-                            }
-                            ui.label(RichText::new("⚪ Offline").weak());
-                        }
-                    });
+                        });
 
-                    ui.separator();
-                    ui.label(RichText::new("Server Access Log:").strong());
-                    ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                        let logs = self.network_tools.http_logs.lock().clone();
-                        for log_line in logs {
-                            ui.label(RichText::new(log_line).monospace().size(11.0));
-                        }
-                    });
+                        ui.horizontal(|ui| {
+                            ui.label("HTTP Port:");
+                            ui.add(egui::DragValue::new(&mut self.network_tools.http_port).range(1024..=65535));
+
+                            let is_running = self.network_tools.http_running.load(std::sync::atomic::Ordering::Relaxed);
+                            if is_running {
+                                if ui.button(RichText::new("⏹ Stop Server").color(Color32::from_rgb(255, 100, 100))).clicked() {
+                                    self.network_tools.stop_http_server();
+                                }
+                                ui.label(RichText::new(format!("🟢 Online: http://127.0.0.1:{}", self.network_tools.http_port)).color(Color32::from_rgb(80, 240, 120)));
+                            } else {
+                                if ui.button(RichText::new("▶ Start Server").color(Color32::from_rgb(80, 240, 120))).clicked() {
+                                    self.network_tools.start_http_server(&rt_handle);
+                                }
+                                ui.label(RichText::new("⚪ Offline").weak());
+                            }
+                        });
+
+                        ui.separator();
+                        ui.label(RichText::new("HTTP Access Log:").strong());
+                        ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            let logs = self.network_tools.http_logs.lock().clone();
+                            for log_line in logs {
+                                ui.label(RichText::new(log_line).monospace().size(11.0));
+                            }
+                        });
+                    } else {
+                        // Syslog
+                        ui.label("Receive and analyze syslog stream from routers, switches, and remote servers:");
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Syslog UDP Port:");
+                            ui.add(egui::DragValue::new(&mut self.network_tools.syslog_port).range(1..=65535));
+
+                            let is_running = self.network_tools.syslog_running.load(std::sync::atomic::Ordering::Relaxed);
+                            if is_running {
+                                if ui.button(RichText::new("⏹ Stop Syslog").color(Color32::from_rgb(255, 100, 100))).clicked() {
+                                    self.network_tools.stop_syslog_server();
+                                }
+                                ui.label(RichText::new("🟢 Listening for UDP packets").color(Color32::from_rgb(80, 240, 120)));
+                            } else {
+                                if ui.button(RichText::new("▶ Start Syslog").color(Color32::from_rgb(80, 240, 120))).clicked() {
+                                    self.network_tools.start_syslog_server(&rt_handle);
+                                }
+                                ui.label(RichText::new("⚪ Offline").weak());
+                            }
+                        });
+
+                        ui.separator();
+                        ui.label(RichText::new("Live Syslog Stream:").strong());
+                        ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            let logs = self.network_tools.syslog_logs.lock().clone();
+                            for log_line in logs {
+                                ui.label(RichText::new(log_line).monospace().size(11.0));
+                            }
+                        });
+                    }
                 });
-            self.show_http_modal = open;
+            self.show_services_modal = open;
         }
 
         // SSH Tunnels Modal
@@ -878,6 +1187,56 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
             self.show_tunnels = open;
+        }
+
+        // Macro Manager Modal (MobaXterm TFORMMANAGEMACROS)
+        if self.show_macro_manager {
+            let mut open = self.show_macro_manager;
+            let mut delete_idx: Option<usize> = None;
+
+            egui::Window::new("⚡ Manage Sysadmin Quick Macros")
+                .open(&mut open)
+                .default_size(Vec2::new(480.0, 360.0))
+                .show(ctx, |ui| {
+                    ui.label("Add, remove, or customize single-click terminal macros:");
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.add(TextEdit::singleline(&mut self.new_macro_name).desired_width(100.0).hint_text("ps aux"));
+                        ui.label("Command:");
+                        ui.add(TextEdit::singleline(&mut self.new_macro_cmd).desired_width(160.0).hint_text("ps aux\n"));
+                        if ui.button("➕ Add").clicked() {
+                            if !self.new_macro_name.trim().is_empty() && !self.new_macro_cmd.is_empty() {
+                                self.quick_macros.push((self.new_macro_name.clone(), self.new_macro_cmd.clone()));
+                                self.new_macro_name.clear();
+                                self.new_macro_cmd.clear();
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(RichText::new("Existing Macros:").strong());
+
+                    ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        for (idx, (name, cmd)) in self.quick_macros.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(name).strong());
+                                ui.label(RichText::new(cmd.trim()).monospace().color(Color32::from_rgb(100, 200, 255)));
+                                if ui.small_button("🗑").clicked() {
+                                    delete_idx = Some(idx);
+                                }
+                            });
+                        }
+                    });
+                });
+
+            if let Some(idx) = delete_idx {
+                if idx < self.quick_macros.len() {
+                    self.quick_macros.remove(idx);
+                }
+            }
+            self.show_macro_manager = open;
         }
 
         // Master Password Vault Modal
@@ -918,24 +1277,25 @@ impl eframe::App for RustyBoxApp {
             let mut open = self.show_about;
             egui::Window::new("ℹ About RustyBox")
                 .open(&mut open)
-                .default_size(Vec2::new(420.0, 250.0))
+                .default_size(Vec2::new(440.0, 280.0))
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.heading("🚀 RustyBox");
-                        ui.label(RichText::new("Portable Cross-Platform Remote Toolbox in Pure Rust").strong());
+                        ui.label(RichText::new("Complete Portable MobaXterm Equivalent in Pure Rust").strong());
                         ui.add_space(8.0);
-                        ui.label("An open-source, zero-install, lightweight MobaXterm equivalent.");
-                        ui.label("Runs natively on Windows, macOS, and Linux (Ubuntu).");
+                        ui.label("High-performance, zero-install, lightweight remote terminal toolbox.");
+                        ui.label("Runs natively on Windows, macOS, and Linux.");
                         ui.add_space(8.0);
-                        ui.label(RichText::new("Features:").strong());
+                        ui.label(RichText::new("Integrated Features:").strong());
                         ui.label("• Multi-tab & Multi-Split Terminal (ConPTY / Unix PTY / VT100)");
                         ui.label("• Realtime Multi-Execution (Command Broadcasting)");
-                        ui.label("• Smart Syntax Highlighting (IPs, Error, Success, Warn)");
-                        ui.label("• Interactive Quick Macros / Sysadmin Toolbar");
-                        ui.label("• Integrated Micro HTTP Static File Daemon");
-                        ui.label("• Graphical SFTP Sidebar with Quick Editor");
+                        ui.label("• Multi-line Paste Safety Confirmation (Anti-accidental execution)");
+                        ui.label("• Terminal Themes (MobaDark, Dracula, Solarized, Monokai, Nord, Matrix)");
+                        ui.label("• Interactive Quick Macros / Sysadmin Toolbar & Manager");
+                        ui.label("• Embedded Services Hub (Micro HTTP Daemon, Syslog UDP Server)");
+                        ui.label("• Graphical SFTP Explorer with Quick Code Editor");
                         ui.label("• SSH Port Forwarding / Tunneling Manager");
-                        ui.label("• Network Port Scanner & Ping Tester");
+                        ui.label("• Network Tools (NetScan Subnet Scanner, Port Scanner, Ping, Netstat)");
                         ui.label("• AES-256-GCM Master Password Encrypted Vault");
                     });
                 });
