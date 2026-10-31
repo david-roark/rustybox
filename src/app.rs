@@ -67,6 +67,10 @@ pub struct RustyBoxApp {
     search_query: String,
     // Multi-line paste confirmation (MobaXterm TFORMCHECKCLIPBOARD)
     pending_paste_text: Option<String>,
+    paste_protection_enabled: bool,
+    // Settings & Hotkeys Dialogs (MobaXterm TFORMPARAMS & TFORMHOTKEYS)
+    show_settings_dialog: bool,
+    show_hotkeys_dialog: bool,
     // Quick Macros (MobaXterm TFORMMANAGEMACROS)
     quick_macros: Vec<(String, String)>,
     show_macro_manager: bool,
@@ -129,6 +133,9 @@ impl RustyBoxApp {
             search_open: false,
             search_query: String::new(),
             pending_paste_text: None,
+            paste_protection_enabled: true,
+            show_settings_dialog: false,
+            show_hotkeys_dialog: false,
             quick_macros: default_macros,
             show_macro_manager: false,
             new_macro_name: String::new(),
@@ -313,28 +320,20 @@ impl eframe::App for RustyBoxApp {
 
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
 
-        // 1. TOP MENU BAR
+        // 1. TOP MENU BAR (MobaXterm Standard Menu Structure)
         TopBottomPanel::top("top_menu").show(ctx, |ui| {
             menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
+                // SESSIONS MENU
+                ui.menu_button("Sessions", |ui| {
                     if ui.button("➕ New Session...").clicked() {
                         self.new_session_dialog.open_for_new();
                         ui.close_menu();
                     }
-                    if ui.button("💻 New Local Terminal").clicked() {
-                        self.spawn_local_terminal("Local Terminal", None, None);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("💾 Save Active Terminal Output...").clicked() {
-                        self.save_active_terminal_buffer();
-                        ui.close_menu();
-                    }
-                    ui.separator();
                     if ui.button("💾 Save Sessions").clicked() {
                         let _ = self.storage.save_sessions(&self.sessions);
                         ui.close_menu();
                     }
+                    ui.separator();
                     if ui.button("📤 Export Sessions (JSON)...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
                             let _ = self.storage.export_to_file(&path, &self.sessions);
@@ -356,18 +355,67 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
 
+                // TERMINAL MENU
+                ui.menu_button("Terminal", |ui| {
+                    if ui.button("💻 New Local Terminal\tCtrl+T").clicked() {
+                        self.spawn_local_terminal("Local Terminal", None, None);
+                        ui.close_menu();
+                    }
+                    if ui.button("📑 Duplicate Current Tab").clicked() {
+                        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                            let title = format!("{} (Copy)", tab.title);
+                            self.spawn_local_terminal(&title, None, None);
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("✖ Close Active Tab\tCtrl+W").clicked() {
+                        if !self.open_tabs.is_empty() {
+                            self.open_tabs.remove(self.active_tab_idx);
+                            if self.active_tab_idx >= self.open_tabs.len() && !self.open_tabs.is_empty() {
+                                self.active_tab_idx = self.open_tabs.len() - 1;
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("🧹 Clear Terminal Screen\tCtrl+L").clicked() {
+                        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                            let _ = tab.session.write_bytes(b"clear\n");
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("🔍 Find in Terminal...\tCtrl+F").clicked() {
+                        self.search_open = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("💾 Save Terminal Buffer to File...").clicked() {
+                        self.save_active_terminal_buffer();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("➕ Increase Font Size\tCtrl++").clicked() {
+                        self.font_size = (self.font_size + 1.0).min(28.0);
+                        ui.close_menu();
+                    }
+                    if ui.button("➖ Decrease Font Size\tCtrl+-").clicked() {
+                        self.font_size = (self.font_size - 1.0).max(9.0);
+                        ui.close_menu();
+                    }
+                });
+
+                // VIEW MENU
                 ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.show_sftp_sidebar, "Show Sidebar");
+                    ui.checkbox(&mut self.show_sftp_sidebar, "Show Sidebar (Sessions & SFTP)");
                     ui.separator();
                     if ui.selectable_label(self.split_mode == SplitMode::Single, "🗖 Single Terminal").clicked() {
                         self.split_mode = SplitMode::Single;
                         ui.close_menu();
                     }
-                    if ui.selectable_label(self.split_mode == SplitMode::Horizontal, "◫ Split Horizontal").clicked() {
+                    if ui.selectable_label(self.split_mode == SplitMode::Horizontal, "◫ Split 2 Columns").clicked() {
                         self.split_mode = SplitMode::Horizontal;
                         ui.close_menu();
                     }
-                    if ui.selectable_label(self.split_mode == SplitMode::Vertical, "⬒ Split Vertical").clicked() {
+                    if ui.selectable_label(self.split_mode == SplitMode::Vertical, "⬒ Split 2 Rows").clicked() {
                         self.split_mode = SplitMode::Vertical;
                         ui.close_menu();
                     }
@@ -375,6 +423,8 @@ impl eframe::App for RustyBoxApp {
                         self.split_mode = SplitMode::Grid2x2;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    ui.checkbox(&mut self.multi_exec_enabled, "⚡ Multi-Execution (Broadcast to all tabs)");
                     ui.separator();
                     ui.menu_button("🎨 Terminal Theme", |ui| {
                         for t in TerminalTheme::all() {
@@ -386,30 +436,65 @@ impl eframe::App for RustyBoxApp {
                     });
                 });
 
+                // TOOLS MENU
                 ui.menu_button("Tools", |ui| {
-                    if ui.button("🌐 Network Tools & Scanner").clicked() {
+                    if ui.button("🔍 Port Scanner").clicked() {
                         self.show_network_tools = true;
+                        self.net_tools_tab = 0;
                         ui.close_menu();
                     }
-                    if ui.button("🚀 Embedded Daemons / Services").clicked() {
+                    if ui.button("📡 Subnet NetScan (LAN IP Scanner)").clicked() {
+                        self.show_network_tools = true;
+                        self.net_tools_tab = 1;
+                        ui.close_menu();
+                    }
+                    if ui.button("⏱ TCP Ping Utility").clicked() {
+                        self.show_network_tools = true;
+                        self.net_tools_tab = 2;
+                        ui.close_menu();
+                    }
+                    if ui.button("📊 Active Connections (Netstat)").clicked() {
+                        self.show_network_tools = true;
+                        self.net_tools_tab = 3;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("🚀 Embedded Daemons (HTTP & Syslog)").clicked() {
                         self.show_services_modal = true;
                         ui.close_menu();
                     }
-                    if ui.button("🔀 SSH Tunnels Manager").clicked() {
+                    if ui.button("🔀 SSH Tunnels / Port Forwarding").clicked() {
                         self.show_tunnels = true;
                         ui.close_menu();
                     }
-                    if ui.button("⚡ Manage Quick Macros...").clicked() {
+                    if ui.button("⚡ Manage Sysadmin Macros...").clicked() {
                         self.show_macro_manager = true;
                         ui.close_menu();
                     }
-                    if ui.button("🔒 Master Password Vault").clicked() {
+                    if ui.button("🔒 Master Password & Vault").clicked() {
                         self.show_vault = true;
                         ui.close_menu();
                     }
                 });
 
+                // SETTINGS MENU (MobaXterm TFORMPARAMS)
+                ui.menu_button("Settings", |ui| {
+                    if ui.button("⚙ Configuration / Preferences...").clicked() {
+                        self.show_settings_dialog = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("🔒 Master Password Settings...").clicked() {
+                        self.show_vault = true;
+                        ui.close_menu();
+                    }
+                });
+
+                // HELP MENU
                 ui.menu_button("Help", |ui| {
+                    if ui.button("⌨ Keyboard Shortcuts (Hotkeys)").clicked() {
+                        self.show_hotkeys_dialog = true;
+                        ui.close_menu();
+                    }
                     if ui.button("ℹ About RustyBox").clicked() {
                         self.show_about = true;
                         ui.close_menu();
@@ -1270,6 +1355,106 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
             self.show_vault = open;
+        }
+
+        // Global Settings & Preferences Modal (MobaXterm TFORMPARAMS)
+        if self.show_settings_dialog {
+            let mut open = self.show_settings_dialog;
+            let mut close_dialog = false;
+            egui::Window::new("⚙ Global Configuration & Preferences (MobaXterm Style)")
+                .open(&mut open)
+                .default_size(Vec2::new(520.0, 360.0))
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("RustyBox Terminal & Security Configuration").strong());
+                    ui.separator();
+
+                    ui.checkbox(&mut self.paste_protection_enabled, "Enable Multi-line paste confirmation (Anti-accidental execution)");
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Default Terminal Font Size:");
+                        ui.add(egui::DragValue::new(&mut self.font_size).range(9.0..=28.0).speed(0.5));
+                        ui.label("px");
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Active Color Theme:");
+                        for t in crate::terminal::vt_screen::TerminalTheme::all() {
+                            ui.selectable_value(&mut self.theme, *t, t.name());
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(RichText::new("Storage & Sessions").strong());
+                    if self.storage.is_portable() {
+                        ui.label(RichText::new("Status: Running in Portable Mode (sessions.json stored next to executable)").color(Color32::from_rgb(100, 220, 100)));
+                    } else {
+                        ui.label("Status: Running in Standard Mode (sessions saved in home config folder)");
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Configuration").clicked() {
+                            let _ = self.storage.save_sessions(&self.sessions);
+                            close_dialog = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+                });
+            if close_dialog {
+                open = false;
+            }
+            self.show_settings_dialog = open;
+        }
+
+        // Keyboard Shortcuts (Hotkeys Cheatsheet) Modal (MobaXterm TFORMHOTKEYS)
+        if self.show_hotkeys_dialog {
+            let mut open = self.show_hotkeys_dialog;
+            let mut close_dialog = false;
+            egui::Window::new("⌨ Keyboard Shortcuts (Hotkeys Reference)")
+                .open(&mut open)
+                .default_size(Vec2::new(480.0, 380.0))
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("Default Keyboard Shortcuts:").strong());
+                    ui.separator();
+
+                    ScrollArea::vertical().show(ui, |ui| {
+                        let shortcuts = [
+                            ("Ctrl + T", "Open new Local Terminal tab"),
+                            ("Ctrl + W", "Close active tab"),
+                            ("Ctrl + F", "Find in active terminal screen buffer"),
+                            ("Ctrl + L", "Clear terminal screen buffer"),
+                            ("Ctrl + C", "Send SIGINT interrupt signal to process"),
+                            ("Ctrl + D", "Send EOF (End of File) / logout"),
+                            ("Ctrl + Z", "Send SIGTSTP suspend signal"),
+                            ("Ctrl + A", "Move cursor to beginning of line"),
+                            ("Ctrl + E", "Move cursor to end of line"),
+                            ("Ctrl + K", "Cut text from cursor to end of line"),
+                            ("Ctrl + U", "Cut whole line before cursor"),
+                            ("Ctrl + +", "Zoom in terminal font size"),
+                            ("Ctrl + -", "Zoom out terminal font size"),
+                            ("Right Click", "Context Menu: Copy, Paste, Clear, Save output"),
+                        ];
+
+                        for (key, desc) in shortcuts {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("{:15}", key)).monospace().color(Color32::from_rgb(100, 200, 255)).strong());
+                                ui.label(desc);
+                            });
+                        }
+                    });
+
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        close_dialog = true;
+                    }
+                });
+            if close_dialog {
+                open = false;
+            }
+            self.show_hotkeys_dialog = open;
         }
 
         // About Modal
