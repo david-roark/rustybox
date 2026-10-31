@@ -6,27 +6,37 @@ use egui::{
 
 pub struct TerminalWidget<'a> {
     session: &'a mut PtySession,
-    id_source: egui::Id,
-    pub is_focused: bool,
+    pub font_size: f32,
+    pub search_query: Option<&'a str>,
 }
 
 impl<'a> TerminalWidget<'a> {
-    pub fn new(id_source: impl std::hash::Hash, session: &'a mut PtySession) -> Self {
+    pub fn new(_id_source: impl std::hash::Hash, session: &'a mut PtySession) -> Self {
         Self {
             session,
-            id_source: egui::Id::new(id_source),
-            is_focused: false,
+            font_size: 14.0,
+            search_query: None,
         }
+    }
+
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size = size.max(9.0).min(32.0);
+        self
+    }
+
+    pub fn with_search(mut self, query: Option<&'a str>) -> Self {
+        self.search_query = query;
+        self
     }
 
     pub fn ui(self, ui: &mut Ui, broadcast_sender: Option<&crossbeam_channel::Sender<Vec<u8>>>) -> Response {
         let available_size = ui.available_size();
         let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
 
-        // Monospace font setup
-        let font_id = FontId::new(14.0, FontFamily::Monospace);
-        let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M')).max(7.5);
-        let row_height = ui.fonts(|f| f.row_height(&font_id)).max(16.0);
+        // Dynamic Monospace font setup
+        let font_id = FontId::new(self.font_size, FontFamily::Monospace);
+        let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M')).max(6.0);
+        let row_height = ui.fonts(|f| f.row_height(&font_id)).max(12.0);
 
         let cols = ((rect.width() / char_width).floor() as u16).max(20);
         let rows = ((rect.height() / row_height).floor() as u16).max(5);
@@ -44,8 +54,8 @@ impl<'a> TerminalWidget<'a> {
 
         let painter = ui.painter_at(rect);
 
-        // Terminal background
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(18, 20, 26));
+        // Terminal background (MobaXterm deep dark theme)
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(16, 18, 22));
 
         // Focus handling
         if response.clicked() {
@@ -53,7 +63,7 @@ impl<'a> TerminalWidget<'a> {
         }
         let has_focus = ui.memory(|m| m.has_focus(response.id));
 
-        // Render terminal contents
+        // Render terminal contents with Syntax Highlighting & Search Matching
         {
             let parser = self.session.parser.lock();
             let screen = parser.screen();
@@ -63,23 +73,73 @@ impl<'a> TerminalWidget<'a> {
             let (cursor_row, cursor_col) = screen.cursor_position();
             let cursor_hidden = screen.hide_cursor();
 
+            let search_term = self.search_query.map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+
             for r in 0..screen_rows.min(rows) {
+                // Collect row string to check syntax highlighting keywords
+                let mut row_str = String::with_capacity(screen_cols as usize);
+                for c in 0..screen_cols.min(cols) {
+                    if let Some(cell) = screen.cell(r, c) {
+                        row_str.push_str(cell.contents());
+                    } else {
+                        row_str.push(' ');
+                    }
+                }
+
+                // Check search highlight occurrences
+                let mut search_matches: Vec<std::ops::Range<usize>> = Vec::new();
+                if let Some(ref query) = search_term {
+                    let lower_row = row_str.to_lowercase();
+                    let q_len = query.chars().count();
+                    let mut start = 0;
+                    while let Some(pos) = lower_row[start..].find(query) {
+                        let actual_idx = start + pos;
+                        let char_idx = lower_row[..actual_idx].chars().count();
+                        search_matches.push(char_idx..(char_idx + q_len));
+                        start = actual_idx + query.len();
+                    }
+                }
+
                 for c in 0..screen_cols.min(cols) {
                     if let Some(cell) = screen.cell(r, c) {
                         let cell_x = rect.min.x + (c as f32) * char_width;
                         let cell_y = rect.min.y + (r as f32) * row_height;
                         let cell_rect = Rect::from_min_size(pos2(cell_x, cell_y), vec2(char_width, row_height));
 
+                        // Check if current cell is inside a search match
+                        let is_searched = search_matches.iter().any(|range| range.contains(&(c as usize)));
+
                         // Custom background
-                        let bg_color = vt_to_egui_color(cell.bgcolor(), false);
-                        if bg_color != Color32::from_rgb(18, 20, 26) {
+                        let bg_color = if is_searched {
+                            Color32::from_rgb(180, 140, 20) // Yellow highlight for search
+                        } else {
+                            vt_to_egui_color(cell.bgcolor(), false)
+                        };
+
+                        if bg_color != Color32::from_rgb(16, 18, 22) {
                             painter.rect_filled(cell_rect, 0.0, bg_color);
                         }
 
-                        // Text
+                        // Text & Syntax Highlighting
                         let contents = cell.contents();
                         if !contents.is_empty() && contents != " " {
-                            let fg_color = vt_to_egui_color(cell.fgcolor(), true);
+                            let mut fg_color = vt_to_egui_color(cell.fgcolor(), true);
+
+                            // Apply MobaXterm-style smart syntax coloring if default color
+                            if fg_color == Color32::from_rgb(220, 220, 225) {
+                                // Check if cell is in an IP address or Error/Success keyword
+                                let col_idx = c as usize;
+                                if is_in_keyword(&row_str, col_idx, &["error", "failed", "fatal", "exception", "err"]) {
+                                    fg_color = Color32::from_rgb(255, 90, 90); // Red
+                                } else if is_in_keyword(&row_str, col_idx, &["success", "ok", "passed", "running", "active"]) {
+                                    fg_color = Color32::from_rgb(80, 230, 120); // Green
+                                } else if is_in_keyword(&row_str, col_idx, &["warn", "warning"]) {
+                                    fg_color = Color32::from_rgb(255, 210, 60); // Yellow
+                                } else if is_ipv4_char(&row_str, col_idx) {
+                                    fg_color = Color32::from_rgb(80, 210, 245); // Cyan for IP addresses
+                                }
+                            }
+
                             painter.text(
                                 pos2(cell_x, cell_y),
                                 egui::Align2::LEFT_TOP,
@@ -169,4 +229,48 @@ impl<'a> TerminalWidget<'a> {
 
         response
     }
+}
+
+// Helper: check if a column position falls inside a keyword
+fn is_in_keyword(row: &str, col: usize, keywords: &[&str]) -> bool {
+    let lower = row.to_lowercase();
+    for kw in keywords {
+        let mut start = 0;
+        while let Some(pos) = lower[start..].find(kw) {
+            let actual = start + pos;
+            if col >= actual && col < actual + kw.len() {
+                // Word boundary check
+                let before_ok = actual == 0 || !lower.as_bytes()[actual - 1].is_ascii_alphanumeric();
+                let after_ok = actual + kw.len() >= lower.len() || !lower.as_bytes()[actual + kw.len()].is_ascii_alphanumeric();
+                if before_ok && after_ok {
+                    return true;
+                }
+            }
+            start = actual + kw.len();
+        }
+    }
+    false
+}
+
+// Helper: check if character is part of an IPv4 address pattern (e.g. 192.168.1.1)
+fn is_ipv4_char(row: &str, col: usize) -> bool {
+    let chars: Vec<char> = row.chars().collect();
+    if col >= chars.len() || (!chars[col].is_ascii_digit() && chars[col] != '.') {
+        return false;
+    }
+    // Expand left and right to get full token
+    let mut left = col;
+    while left > 0 && (chars[left - 1].is_ascii_digit() || chars[left - 1] == '.') {
+        left -= 1;
+    }
+    let mut right = col;
+    while right + 1 < chars.len() && (chars[right + 1].is_ascii_digit() || chars[right + 1] == '.') {
+        right += 1;
+    }
+    let token: String = chars[left..=right].iter().collect();
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok()) {
+        return true;
+    }
+    false
 }

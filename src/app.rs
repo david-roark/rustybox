@@ -18,7 +18,6 @@ pub struct OpenTab {
     pub id: String,
     pub title: String,
     pub session: PtySession,
-    pub original_session: Option<Session>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,9 +53,16 @@ pub struct RustyBoxApp {
     show_tunnels: bool,
     show_vault: bool,
     show_about: bool,
+    show_http_modal: bool,
     // Master Password Vault
     master_password: String,
     vault_status: Option<String>,
+    // Terminal Customization & Search
+    font_size: f32,
+    search_open: bool,
+    search_query: String,
+    // Quick Macros
+    quick_macros: Vec<(String, String)>,
     // Tokio Runtime
     tokio_runtime: tokio::runtime::Runtime,
 }
@@ -72,6 +78,17 @@ impl RustyBoxApp {
             .enable_all()
             .build()
             .expect("Failed to initialize Tokio runtime");
+
+        let default_macros = vec![
+            ("htop".into(), "htop\n".into()),
+            ("docker ps".into(), "docker ps\n".into()),
+            ("df -h".into(), "df -h\n".into()),
+            ("free -m".into(), "free -m\n".into()),
+            ("netstat".into(), "netstat -tlpn\n".into()),
+            ("systemctl".into(), "systemctl status\n".into()),
+            ("uptime".into(), "uptime\n".into()),
+            ("clear".into(), "clear\n".into()),
+        ];
 
         let mut app = Self {
             storage,
@@ -93,8 +110,13 @@ impl RustyBoxApp {
             show_tunnels: false,
             show_vault: false,
             show_about: false,
+            show_http_modal: false,
             master_password: String::new(),
             vault_status: None,
+            font_size: 14.0,
+            search_open: false,
+            search_query: String::new(),
+            quick_macros: default_macros,
             tokio_runtime,
         };
 
@@ -115,7 +137,6 @@ impl RustyBoxApp {
                     id: uuid::Uuid::new_v4().to_string(),
                     title: title.to_string(),
                     session,
-                    original_session: None,
                 };
                 self.open_tabs.push(tab);
                 self.active_tab_idx = self.open_tabs.len() - 1;
@@ -150,14 +171,13 @@ impl RustyBoxApp {
                         id: uuid::Uuid::new_v4().to_string(),
                         title: format!("SSH: {}", s.name),
                         session,
-                        original_session: Some(s.clone()),
                     };
                     self.open_tabs.push(tab);
                     self.active_tab_idx = self.open_tabs.len() - 1;
 
                     if s.auto_sftp {
                         self.show_sftp_sidebar = true;
-                        self.sidebar_tab = 1; // Switch to SFTP view
+                        self.sidebar_tab = 1;
                     }
                 }
                 Err(e) => {
@@ -167,15 +187,23 @@ impl RustyBoxApp {
         }
     }
 
+    pub fn execute_macro(&mut self, cmd: &str) {
+        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+            let bytes = cmd.as_bytes().to_vec();
+            let _ = tab.session.write_bytes(&bytes);
+            if self.multi_exec_enabled {
+                let _ = self.broadcast_tx.send(bytes);
+            }
+        }
+    }
+
     fn handle_multi_exec_broadcast(&mut self) {
-        // Collect all broadcasted inputs from active terminal
         let mut all_bytes = Vec::new();
         while let Ok(bytes) = self.broadcast_rx.try_recv() {
             all_bytes.extend(bytes);
         }
 
         if !all_bytes.is_empty() && self.multi_exec_enabled {
-            // Send to ALL open tabs except the one that initiated if possible, or all tabs
             for (idx, tab) in self.open_tabs.iter_mut().enumerate() {
                 if idx != self.active_tab_idx {
                     let _ = tab.session.write_bytes(&all_bytes);
@@ -189,7 +217,6 @@ impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_multi_exec_broadcast();
 
-        // Check if any tab child died, keep UI responsive
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
 
         // 1. TOP MENU BAR
@@ -256,6 +283,10 @@ impl eframe::App for RustyBoxApp {
                         self.show_network_tools = true;
                         ui.close_menu();
                     }
+                    if ui.button("🚀 Micro HTTP File Server").clicked() {
+                        self.show_http_modal = true;
+                        ui.close_menu();
+                    }
                     if ui.button("🔀 SSH Tunnels Manager").clicked() {
                         self.show_tunnels = true;
                         ui.close_menu();
@@ -300,7 +331,7 @@ impl eframe::App for RustyBoxApp {
 
                 ui.separator();
 
-                // Multi-Execution Toggle Button (Prominently styled)
+                // Multi-Execution Toggle Button
                 let multi_exec_text = if self.multi_exec_enabled {
                     RichText::new("⚡ Multi-Exec: ON").color(Color32::from_rgb(255, 220, 80)).strong()
                 } else {
@@ -312,8 +343,28 @@ impl eframe::App for RustyBoxApp {
 
                 ui.separator();
 
+                // Find Button (Ctrl+F)
+                if ui.selectable_label(self.search_open, "🔍 Find").clicked() {
+                    self.search_open = !self.search_open;
+                }
+
+                // Font Zoom Controls
+                ui.label(RichText::new("Font:").weak().size(12.0));
+                if ui.small_button("➖").clicked() {
+                    self.font_size = (self.font_size - 1.0).max(9.0);
+                }
+                ui.label(RichText::new(format!("{:.0}", self.font_size)).size(11.0));
+                if ui.small_button("➕").clicked() {
+                    self.font_size = (self.font_size + 1.0).min(28.0);
+                }
+
+                ui.separator();
+
                 if ui.button("🌐 NetScan").clicked() {
                     self.show_network_tools = true;
+                }
+                if ui.button("🚀 HTTP Daemon").clicked() {
+                    self.show_http_modal = true;
                 }
                 if ui.button("🔀 Tunnels").clicked() {
                     self.show_tunnels = true;
@@ -331,7 +382,23 @@ impl eframe::App for RustyBoxApp {
             });
         });
 
-        // 3. BOTTOM STATUS BAR
+        // 3. BOTTOM QUICK MACROS BAR (Classic MobaXterm Bottom Buttons)
+        TopBottomPanel::bottom("quick_macros_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("⚡ Quick Macro:").weak().size(11.0));
+                let mut macro_to_run: Option<String> = None;
+                for (name, cmd) in &self.quick_macros {
+                    if ui.small_button(name).clicked() {
+                        macro_to_run = Some(cmd.clone());
+                    }
+                }
+                if let Some(cmd) = macro_to_run {
+                    self.execute_macro(&cmd);
+                }
+            });
+        });
+
+        // 4. BOTTOM STATUS BAR
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
@@ -351,7 +418,7 @@ impl eframe::App for RustyBoxApp {
             });
         });
 
-        // 4. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
+        // 5. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
         if self.show_sftp_sidebar {
             egui::SidePanel::left("left_sidebar")
                 .resizable(true)
@@ -374,7 +441,6 @@ impl eframe::App for RustyBoxApp {
                         });
                         ui.add_space(4.0);
 
-                        // Group sessions by folder
                         let mut grouped: BTreeMap<String, Vec<Session>> = BTreeMap::new();
                         for s in &self.sessions {
                             if self.session_search.is_empty()
@@ -443,7 +509,7 @@ impl eframe::App for RustyBoxApp {
                 });
         }
 
-        // 5. CENTER WORKSPACE (Tabs Header & Terminals Grid)
+        // 6. CENTER WORKSPACE (Tabs Header, Search Bar & Terminals Grid)
         egui::CentralPanel::default().show(ctx, |ui| {
             // TAB BAR HEADER
             ui.horizontal(|ui| {
@@ -482,9 +548,21 @@ impl eframe::App for RustyBoxApp {
                 }
             });
 
+            // INLINE TERMINAL SEARCH BAR (Ctrl+F)
+            if self.search_open {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("🔍 Find in Terminal:");
+                    ui.add(TextEdit::singleline(&mut self.search_query).hint_text("Type keyword to highlight in real-time...").desired_width(300.0));
+                    if ui.small_button("✖").on_hover_text("Close Search").clicked() {
+                        self.search_open = false;
+                        self.search_query.clear();
+                    }
+                });
+            }
+
             ui.separator();
 
-            // RENDER TERMINALS ACCORDING TO SPLIT MODE
             let num_tabs = self.open_tabs.len();
             if num_tabs == 0 {
                 ui.centered_and_justified(|ui| {
@@ -499,15 +577,23 @@ impl eframe::App for RustyBoxApp {
                 None
             };
 
+            let search_ref = if self.search_open && !self.search_query.is_empty() {
+                Some(self.search_query.as_str())
+            } else {
+                None
+            };
+            let font_sz = self.font_size;
+
             match self.split_mode {
                 SplitMode::Single => {
                     let active_idx = self.active_tab_idx.min(num_tabs - 1);
                     let tab = &mut self.open_tabs[active_idx];
-                    let widget = TerminalWidget::new(&tab.id, &mut tab.session);
+                    let widget = TerminalWidget::new(&tab.id, &mut tab.session)
+                        .with_font_size(font_sz)
+                        .with_search(search_ref);
                     widget.ui(ui, broadcast_tx);
                 }
                 SplitMode::Horizontal => {
-                    // Split left / right into 2 columns
                     let tab_a_idx = self.active_tab_idx.min(num_tabs - 1);
                     let tab_b_idx = if num_tabs > 1 {
                         if tab_a_idx == 0 { 1 } else { 0 }
@@ -517,12 +603,16 @@ impl eframe::App for RustyBoxApp {
 
                     ui.columns(2, |columns| {
                         let tab_a = &mut self.open_tabs[tab_a_idx];
-                        let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session);
+                        let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
+                            .with_font_size(font_sz)
+                            .with_search(search_ref);
                         widget_a.ui(&mut columns[0], broadcast_tx);
 
                         if tab_a_idx != tab_b_idx {
                             let tab_b = &mut self.open_tabs[tab_b_idx];
-                            let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session);
+                            let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
+                                .with_font_size(font_sz)
+                                .with_search(search_ref);
                             widget_b.ui(&mut columns[1], broadcast_tx);
                         } else {
                             columns[1].centered_and_justified(|ui| {
@@ -532,7 +622,6 @@ impl eframe::App for RustyBoxApp {
                     });
                 }
                 SplitMode::Vertical => {
-                    // Split top / bottom
                     let tab_a_idx = self.active_tab_idx.min(num_tabs - 1);
                     let tab_b_idx = if num_tabs > 1 {
                         if tab_a_idx == 0 { 1 } else { 0 }
@@ -548,7 +637,9 @@ impl eframe::App for RustyBoxApp {
                             Layout::top_down(Align::Min),
                             |ui| {
                                 let tab_a = &mut self.open_tabs[tab_a_idx];
-                                let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session);
+                                let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
+                                    .with_font_size(font_sz)
+                                    .with_search(search_ref);
                                 widget_a.ui(ui, broadcast_tx);
                             },
                         );
@@ -561,7 +652,9 @@ impl eframe::App for RustyBoxApp {
                             |ui| {
                                 if tab_a_idx != tab_b_idx {
                                     let tab_b = &mut self.open_tabs[tab_b_idx];
-                                    let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session);
+                                    let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
+                                        .with_font_size(font_sz)
+                                        .with_search(search_ref);
                                     widget_b.ui(ui, broadcast_tx);
                                 } else {
                                     ui.centered_and_justified(|ui| {
@@ -576,7 +669,6 @@ impl eframe::App for RustyBoxApp {
                     let total_h = ui.available_height();
                     let half_h = (total_h - 10.0) / 2.0;
 
-                    // Row 1
                     ui.allocate_ui_with_layout(
                         vec2(ui.available_width(), half_h),
                         Layout::left_to_right(Align::Min),
@@ -584,11 +676,17 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 0 {
                                     let tab0 = &mut self.open_tabs[0];
-                                    TerminalWidget::new(&tab0.id, &mut tab0.session).ui(&mut cols[0], broadcast_tx);
+                                    TerminalWidget::new(&tab0.id, &mut tab0.session)
+                                        .with_font_size(font_sz)
+                                        .with_search(search_ref)
+                                        .ui(&mut cols[0], broadcast_tx);
                                 }
                                 if num_tabs > 1 {
                                     let tab1 = &mut self.open_tabs[1];
-                                    TerminalWidget::new(&tab1.id, &mut tab1.session).ui(&mut cols[1], broadcast_tx);
+                                    TerminalWidget::new(&tab1.id, &mut tab1.session)
+                                        .with_font_size(font_sz)
+                                        .with_search(search_ref)
+                                        .ui(&mut cols[1], broadcast_tx);
                                 }
                             });
                         },
@@ -596,7 +694,6 @@ impl eframe::App for RustyBoxApp {
 
                     ui.separator();
 
-                    // Row 2
                     ui.allocate_ui_with_layout(
                         vec2(ui.available_width(), half_h),
                         Layout::left_to_right(Align::Min),
@@ -604,11 +701,17 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 2 {
                                     let tab2 = &mut self.open_tabs[2];
-                                    TerminalWidget::new(&tab2.id, &mut tab2.session).ui(&mut cols[0], broadcast_tx);
+                                    TerminalWidget::new(&tab2.id, &mut tab2.session)
+                                        .with_font_size(font_sz)
+                                        .with_search(search_ref)
+                                        .ui(&mut cols[0], broadcast_tx);
                                 }
                                 if num_tabs > 3 {
                                     let tab3 = &mut self.open_tabs[3];
-                                    TerminalWidget::new(&tab3.id, &mut tab3.session).ui(&mut cols[1], broadcast_tx);
+                                    TerminalWidget::new(&tab3.id, &mut tab3.session)
+                                        .with_font_size(font_sz)
+                                        .with_search(search_ref)
+                                        .ui(&mut cols[1], broadcast_tx);
                                 }
                             });
                         },
@@ -617,7 +720,7 @@ impl eframe::App for RustyBoxApp {
             }
         });
 
-        // 6. POPUP DIALOGS & MODAL WINDOWS
+        // 7. POPUP DIALOGS & MODAL WINDOWS
         if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
             self.sessions.push(new_session.clone());
             let _ = self.storage.save_sessions(&self.sessions);
@@ -689,6 +792,59 @@ impl eframe::App for RustyBoxApp {
                     });
                 });
             self.show_network_tools = open;
+        }
+
+        // Micro HTTP Server Modal (MobaXterm TFORMSERVICES Daemon)
+        if self.show_http_modal {
+            let mut open = self.show_http_modal;
+            let rt_handle = self.tokio_runtime.handle().clone();
+
+            egui::Window::new("🚀 Micro HTTP File Sharing Daemon")
+                .open(&mut open)
+                .default_size(Vec2::new(560.0, 360.0))
+                .show(ctx, |ui| {
+                    ui.label("Instantly share local files across your local network via HTTP:");
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Serving Folder:");
+                        let path_str = self.network_tools.http_root.to_string_lossy().to_string();
+                        ui.label(RichText::new(path_str).monospace().color(Color32::from_rgb(100, 200, 255)));
+                        if ui.button("Browse...").clicked() {
+                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                self.network_tools.http_root = folder;
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("HTTP Port:");
+                        ui.add(egui::DragValue::new(&mut self.network_tools.http_port).range(1024..=65535));
+
+                        let is_running = self.network_tools.http_running.load(std::sync::atomic::Ordering::Relaxed);
+                        if is_running {
+                            if ui.button(RichText::new("⏹ Stop Server").color(Color32::from_rgb(255, 100, 100))).clicked() {
+                                self.network_tools.stop_http_server();
+                            }
+                            ui.label(RichText::new(format!("🟢 Online: http://127.0.0.1:{}", self.network_tools.http_port)).color(Color32::from_rgb(80, 240, 120)));
+                        } else {
+                            if ui.button(RichText::new("▶ Start Server").color(Color32::from_rgb(80, 240, 120))).clicked() {
+                                self.network_tools.start_http_server(&rt_handle);
+                            }
+                            ui.label(RichText::new("⚪ Offline").weak());
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(RichText::new("Server Access Log:").strong());
+                    ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        let logs = self.network_tools.http_logs.lock().clone();
+                        for log_line in logs {
+                            ui.label(RichText::new(log_line).monospace().size(11.0));
+                        }
+                    });
+                });
+            self.show_http_modal = open;
         }
 
         // SSH Tunnels Modal
@@ -774,6 +930,9 @@ impl eframe::App for RustyBoxApp {
                         ui.label(RichText::new("Features:").strong());
                         ui.label("• Multi-tab & Multi-Split Terminal (ConPTY / Unix PTY / VT100)");
                         ui.label("• Realtime Multi-Execution (Command Broadcasting)");
+                        ui.label("• Smart Syntax Highlighting (IPs, Error, Success, Warn)");
+                        ui.label("• Interactive Quick Macros / Sysadmin Toolbar");
+                        ui.label("• Integrated Micro HTTP Static File Daemon");
                         ui.label("• Graphical SFTP Sidebar with Quick Editor");
                         ui.label("• SSH Port Forwarding / Tunneling Manager");
                         ui.label("• Network Port Scanner & Ping Tester");
