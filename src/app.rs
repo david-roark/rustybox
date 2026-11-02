@@ -71,6 +71,14 @@ pub struct RustyBoxApp {
     // Settings & Hotkeys Dialogs (MobaXterm TFORMPARAMS & TFORMHOTKEYS)
     show_settings_dialog: bool,
     show_hotkeys_dialog: bool,
+    // Password Settings Dialog (MobaXterm TFormManagePasswords)
+    show_manage_passwords: bool,
+    manage_passwords_search: String,
+    manage_passwords_show_all: bool,
+    manage_passwords_save_mode: usize,
+    manage_passwords_save_ssh_keys: bool,
+    manage_passwords_tab: usize,
+    manage_passwords_unmasked_ids: Vec<String>,
     // Quick Macros (MobaXterm TFORMMANAGEMACROS)
     quick_macros: Vec<(String, String)>,
     show_macro_manager: bool,
@@ -136,6 +144,13 @@ impl RustyBoxApp {
             paste_protection_enabled: true,
             show_settings_dialog: false,
             show_hotkeys_dialog: false,
+            show_manage_passwords: false,
+            manage_passwords_search: String::new(),
+            manage_passwords_show_all: false,
+            manage_passwords_save_mode: 0,
+            manage_passwords_save_ssh_keys: false,
+            manage_passwords_tab: 0,
+            manage_passwords_unmasked_ids: Vec::new(),
             quick_macros: default_macros,
             show_macro_manager: false,
             new_macro_name: String::new(),
@@ -143,8 +158,65 @@ impl RustyBoxApp {
             tokio_runtime,
         };
 
+        // Configure modern cohesive dark theme across the entire application
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = Color32::from_rgb(22, 27, 34);
+        visuals.window_fill = Color32::from_rgb(26, 32, 44);
+        visuals.extreme_bg_color = Color32::from_rgb(13, 17, 23);
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(22, 27, 34);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(30, 36, 46);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
+        visuals.widgets.inactive.rounding = egui::Rounding::same(4.0);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 54, 61);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(31, 111, 235);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
+        visuals.widgets.active.rounding = egui::Rounding::same(4.0);
+        visuals.window_rounding = egui::Rounding::same(6.0);
+        _cc.egui_ctx.set_visuals(visuals);
+
         // Open an initial local shell tab on launch
         app.spawn_local_terminal("Local Terminal", None, None);
+
+        // QA Hook for automated verification
+        if let Ok(view) = std::env::var("RUSTYBOX_QA_VIEW") {
+            match view.as_str() {
+                "passwords" => {
+                    for s in &mut app.sessions {
+                        if s.password.is_none() {
+                            s.password = Some("MySecretP@ss2026!".into());
+                        }
+                    }
+                    app.show_manage_passwords = true;
+                }
+                "passwords_unmasked" => {
+                    for s in &mut app.sessions {
+                        if s.password.is_none() {
+                            s.password = Some("MySecretP@ss2026!".into());
+                        }
+                    }
+                    app.manage_passwords_show_all = true;
+                    app.show_manage_passwords = true;
+                }
+                "passwords_filtered" => {
+                    for s in &mut app.sessions {
+                        if s.password.is_none() {
+                            s.password = Some("MySecretP@ss2026!".into());
+                        }
+                    }
+                    app.manage_passwords_search = "192.168".into();
+                    app.manage_passwords_show_all = true;
+                    app.show_manage_passwords = true;
+                }
+                "vault" => {
+                    app.show_vault = true;
+                }
+                _ => {}
+            }
+        }
+
         app
     }
 
@@ -500,10 +572,14 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
 
-                // SETTINGS MENU (MobaXterm TFORMPARAMS)
+                // SETTINGS MENU (MobaXterm TFORMPARAMS & TFormManagePasswords)
                 ui.menu_button("Settings", |ui| {
                     if ui.button("⚙ Configuration / Preferences...").clicked() {
                         self.show_settings_dialog = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("🔑 Manage Passwords...").clicked() {
+                        self.show_manage_passwords = true;
                         ui.close_menu();
                     }
                     if ui.button("🔒 Master Password Settings...").clicked() {
@@ -526,86 +602,158 @@ impl eframe::App for RustyBoxApp {
             });
         });
 
-        // 2. MAIN TOOLBAR
-        TopBottomPanel::top("main_toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button(RichText::new("➕ New Session").strong()).clicked() {
-                    self.new_session_dialog.open_for_new();
-                }
+        // 2. MAIN TOOLBAR (Unified Toolbar Suite)
+        TopBottomPanel::top("main_toolbar")
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(22, 27, 34))
+                    .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let toolbar_h = 26.0;
 
-                ui.separator();
+                    let tb_button = |ui: &mut egui::Ui, text: &str, active: bool| -> egui::Response {
+                        let fill = if active {
+                            Color32::from_rgb(31, 111, 235)
+                        } else {
+                            Color32::from_rgb(30, 36, 46)
+                        };
+                        let stroke = if active {
+                            egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
+                        } else {
+                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61))
+                        };
+                        let text_color = if active {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(201, 209, 217)
+                        };
+                        let btn = egui::Button::new(RichText::new(text).color(text_color).size(12.0))
+                            .fill(fill)
+                            .stroke(stroke)
+                            .rounding(4.0)
+                            .min_size(egui::vec2(0.0, toolbar_h));
+                        ui.add(btn)
+                    };
 
-                // Split mode buttons
-                if ui.selectable_label(self.split_mode == SplitMode::Single, "🗖 Single").clicked() {
-                    self.split_mode = SplitMode::Single;
-                }
-                if ui.selectable_label(self.split_mode == SplitMode::Horizontal, "◫ 2-Cols").clicked() {
-                    self.split_mode = SplitMode::Horizontal;
-                }
-                if ui.selectable_label(self.split_mode == SplitMode::Vertical, "⬒ 2-Rows").clicked() {
-                    self.split_mode = SplitMode::Vertical;
-                }
-                if ui.selectable_label(self.split_mode == SplitMode::Grid2x2, "⊞ 2x2 Grid").clicked() {
-                    self.split_mode = SplitMode::Grid2x2;
-                }
+                    // Prominent New Session Button
+                    let new_sess_btn = egui::Button::new(
+                        RichText::new("➕ New Session").color(Color32::WHITE).size(12.0).strong()
+                    )
+                    .fill(Color32::from_rgb(31, 111, 235))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                    .rounding(4.0)
+                    .min_size(egui::vec2(0.0, toolbar_h));
+                    if ui.add(new_sess_btn).clicked() {
+                        self.new_session_dialog.open_for_new();
+                    }
 
-                ui.separator();
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
 
-                // Multi-Execution Toggle Button
-                let multi_exec_text = if self.multi_exec_enabled {
-                    RichText::new("⚡ Multi-Exec: ON").color(Color32::from_rgb(255, 220, 80)).strong()
-                } else {
-                    RichText::new("⚡ Multi-Exec: OFF").weak()
-                };
-                if ui.selectable_label(self.multi_exec_enabled, multi_exec_text).on_hover_text("Broadcast input to all open split terminals simultaneously").clicked() {
-                    self.multi_exec_enabled = !self.multi_exec_enabled;
-                }
+                    // Split mode buttons
+                    if tb_button(ui, "🗖 Single", self.split_mode == SplitMode::Single).clicked() {
+                        self.split_mode = SplitMode::Single;
+                    }
+                    if tb_button(ui, "◫ 2-Cols", self.split_mode == SplitMode::Horizontal).clicked() {
+                        self.split_mode = SplitMode::Horizontal;
+                    }
+                    if tb_button(ui, "⬒ 2-Rows", self.split_mode == SplitMode::Vertical).clicked() {
+                        self.split_mode = SplitMode::Vertical;
+                    }
+                    if tb_button(ui, "⊞ 2x2 Grid", self.split_mode == SplitMode::Grid2x2).clicked() {
+                        self.split_mode = SplitMode::Grid2x2;
+                    }
 
-                ui.separator();
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
 
-                // Find Button (Ctrl+F)
-                if ui.selectable_label(self.search_open, "🔍 Find").clicked() {
-                    self.search_open = !self.search_open;
-                }
+                    // Multi-Exec toggle
+                    let multi_btn = if self.multi_exec_enabled {
+                        egui::Button::new(RichText::new("⚡ Multi-Exec: ON").color(Color32::WHITE).size(12.0).strong())
+                            .fill(Color32::from_rgb(217, 119, 6))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(251, 191, 36)))
+                    } else {
+                        egui::Button::new(RichText::new("⚡ Multi-Exec: OFF").color(Color32::from_rgb(139, 148, 158)).size(12.0))
+                            .fill(Color32::from_rgb(30, 36, 46))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                    }
+                    .rounding(4.0)
+                    .min_size(egui::vec2(0.0, toolbar_h));
+                    if ui.add(multi_btn).on_hover_text("Broadcast input to all open split terminals simultaneously").clicked() {
+                        self.multi_exec_enabled = !self.multi_exec_enabled;
+                    }
 
-                // Font Zoom Controls
-                ui.label(RichText::new("Font:").weak().size(12.0));
-                if ui.small_button("➖").clicked() {
-                    self.font_size = (self.font_size - 1.0).max(9.0);
-                }
-                ui.label(RichText::new(format!("{:.0}", self.font_size)).size(11.0));
-                if ui.small_button("➕").clicked() {
-                    self.font_size = (self.font_size + 1.0).min(28.0);
-                }
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
 
-                ui.separator();
+                    // Find in terminal
+                    if tb_button(ui, "🔍 Find", self.search_open).clicked() {
+                        self.search_open = !self.search_open;
+                    }
 
-                // Theme quick selector
-                egui::ComboBox::from_id_salt("theme_selector_combo")
-                    .selected_text(self.theme.name())
-                    .show_ui(ui, |ui| {
-                        for t in TerminalTheme::all() {
-                            ui.selectable_value(&mut self.theme, *t, t.name());
+                    // Font stepper in a unified container
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(30, 36, 46))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                        .show(ui, |ui| {
+                            ui.set_height(toolbar_h);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Font:").color(Color32::from_rgb(139, 148, 158)).size(11.0));
+                                if ui.small_button("➖").clicked() && self.font_size > 8.0 {
+                                    self.font_size -= 1.0;
+                                }
+                                ui.label(RichText::new(format!("{:.0}", self.font_size)).size(11.0).strong());
+                                if ui.small_button("➕").clicked() && self.font_size < 32.0 {
+                                    self.font_size += 1.0;
+                                }
+                            });
+                        });
+
+                    // Theme selector in a unified container
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(30, 36, 46))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                        .show(ui, |ui| {
+                            ui.set_height(toolbar_h);
+                            egui::ComboBox::from_id_salt("toolbar_theme_select")
+                                .selected_text(RichText::new(self.theme.name()).size(11.0))
+                                .show_ui(ui, |ui| {
+                                    for t in TerminalTheme::all() {
+                                        ui.selectable_value(&mut self.theme, *t, t.name());
+                                    }
+                                });
+                        });
+
+                    // Right side utility tools
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if tb_button(ui, "📁 Files", self.show_sftp_sidebar && self.sidebar_tab == 1).clicked() {
+                            self.show_sftp_sidebar = !self.show_sftp_sidebar;
+                            self.sidebar_tab = 1;
+                        }
+                        if tb_button(ui, "🔑 Passwords", self.show_manage_passwords).clicked() {
+                            self.show_manage_passwords = !self.show_manage_passwords;
+                        }
+                        if tb_button(ui, "🔀 Tunnels", self.show_tunnels).clicked() {
+                            self.show_tunnels = !self.show_tunnels;
+                        }
+                        if tb_button(ui, "🚀 Daemons", self.show_services_modal).clicked() {
+                            self.show_services_modal = !self.show_services_modal;
+                        }
+                        if tb_button(ui, "🌐 NetTools", self.show_network_tools).clicked() {
+                            self.show_network_tools = !self.show_network_tools;
                         }
                     });
-
-                ui.separator();
-
-                if ui.button("🌐 NetTools").clicked() {
-                    self.show_network_tools = true;
-                }
-                if ui.button("🚀 Daemons").clicked() {
-                    self.show_services_modal = true;
-                }
-                if ui.button("🔀 Tunnels").clicked() {
-                    self.show_tunnels = true;
-                }
-                if ui.button("📁 Files").clicked() {
-                    self.show_sftp_sidebar = !self.show_sftp_sidebar;
-                    self.sidebar_tab = 1;
-                }
+                });
             });
-        });
 
         // 3. COMPACT BOTTOM PANEL (1 single row ~25px)
         TopBottomPanel::bottom("bottom_bar")
@@ -735,24 +883,64 @@ impl eframe::App for RustyBoxApp {
 
                 for (idx, tab) in self.open_tabs.iter().enumerate() {
                     let is_active = idx == self.active_tab_idx;
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            let title_text = if is_active {
-                                RichText::new(&tab.title).strong().color(Color32::from_rgb(100, 200, 255))
-                            } else {
-                                RichText::new(&tab.title).color(Color32::from_rgb(200, 200, 200))
-                            };
-                            if ui.selectable_label(is_active, title_text).clicked() {
-                                self.active_tab_idx = idx;
-                            }
-                            if ui.small_button("✖").on_hover_text("Close Tab").clicked() {
-                                close_tab_idx = Some(idx);
-                            }
+                    let (fill, stroke, text_color) = if is_active {
+                        (
+                            Color32::from_rgb(31, 111, 235),
+                            egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                            Color32::WHITE,
+                        )
+                    } else {
+                        (
+                            Color32::from_rgb(30, 36, 46),
+                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                            Color32::from_rgb(180, 190, 200),
+                        )
+                    };
+
+                    egui::Frame::none()
+                        .fill(fill)
+                        .stroke(stroke)
+                        .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 })
+                        .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let label = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!(">_ {}", &tab.title))
+                                            .strong()
+                                            .color(text_color)
+                                            .size(12.0),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if label.clicked() {
+                                    self.active_tab_idx = idx;
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(RichText::new("✕").size(10.0).color(text_color))
+                                            .frame(false),
+                                    )
+                                    .on_hover_text("Close Tab")
+                                    .clicked()
+                                {
+                                    close_tab_idx = Some(idx);
+                                }
+                            });
                         });
-                    });
                 }
 
-                if ui.button("➕").on_hover_text("Open new local terminal").clicked() {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("➕").size(12.0).color(Color32::from_rgb(180, 190, 200)))
+                            .fill(Color32::from_rgb(30, 36, 46))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .rounding(4.0)
+                            .min_size(egui::vec2(24.0, 24.0)),
+                    )
+                    .on_hover_text("Open new local terminal")
+                    .clicked()
+                {
                     self.spawn_local_terminal("Local Terminal", None, None);
                 }
 
@@ -1026,6 +1214,11 @@ impl eframe::App for RustyBoxApp {
             self.sessions.push(new_session.clone());
             let _ = self.storage.save_sessions(&self.sessions);
             self.launch_generic_session(new_session);
+        }
+
+        if self.new_session_dialog.request_open_passwords {
+            self.new_session_dialog.request_open_passwords = false;
+            self.show_manage_passwords = true;
         }
 
         // Network Tools & Scanner Modal (Port Scan, Subnet NetScan, Ping, Netstat)
@@ -1365,6 +1558,205 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
             self.show_vault = open;
+        }
+
+        // Manage Passwords Modal (MobaXterm TFormManagePasswords: "RustyBox passwords settings")
+        if self.show_manage_passwords {
+            let mut open = self.show_manage_passwords;
+            let mut close_dialog = false;
+            egui::Window::new("RustyBox passwords settings")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_size(Vec2::new(600.0, 480.0))
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    // 1. Radio: Save sessions passwords
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Save sessions passwords:").strong());
+                        ui.radio_value(&mut self.manage_passwords_save_mode, 0, "Always");
+                        ui.radio_value(&mut self.manage_passwords_save_mode, 1, "Never");
+                        ui.radio_value(&mut self.manage_passwords_save_mode, 2, "Ask");
+                    });
+                    ui.checkbox(&mut self.manage_passwords_save_ssh_keys, "Save SSH keys passphrases as well");
+                    ui.add_space(6.0);
+
+                    // 2. Tabs: Passwords / Credentials
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(self.manage_passwords_tab == 0, "🔑 Passwords").clicked() {
+                            self.manage_passwords_tab = 0;
+                        }
+                        if ui.selectable_label(self.manage_passwords_tab == 1, "👥 Credentials").clicked() {
+                            self.manage_passwords_tab = 1;
+                        }
+                    });
+                    ui.separator();
+
+                    if self.manage_passwords_tab == 0 {
+                        // 3. Search Filter & Show Passwords Toggle
+                        ui.horizontal(|ui| {
+                            ui.label("🔍 Filter:");
+                            ui.add(
+                                TextEdit::singleline(&mut self.manage_passwords_search)
+                                    .hint_text("Search username or IP / server...")
+                                    .desired_width(220.0),
+                            );
+                            if !self.manage_passwords_search.is_empty() && ui.small_button("✖").clicked() {
+                                self.manage_passwords_search.clear();
+                            }
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.checkbox(&mut self.manage_passwords_show_all, "👁 Show passwords");
+                            });
+                        });
+                        ui.add_space(4.0);
+
+                        // 4. Passwords Table
+                        let search_term = self.manage_passwords_search.to_lowercase().trim().to_string();
+                        let mut to_delete_id: Option<String> = None;
+
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(13, 17, 23))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .rounding(4.0)
+                            .inner_margin(egui::Margin::same(8.0))
+                            .show(ui, |ui| {
+                                ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                    egui::Grid::new("manage_passwords_grid")
+                                        .num_columns(5)
+                                        .striped(true)
+                                        .spacing([14.0, 6.0])
+                                        .show(ui, |ui| {
+                                            ui.label(RichText::new("Protocol").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Username").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Servername").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Password").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Action").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.end_row();
+
+                                            let mut row_count = 0;
+                                            for sess in &self.sessions {
+                                                let (proto, user, host) = match &sess.session_type {
+                                                    SessionType::Ssh { user, host, .. } => ("SSH", user.clone(), host.clone()),
+                                                    SessionType::Rdp { user, host, .. } => ("RDP", user.clone(), host.clone()),
+                                                    SessionType::Ftp { user, host, .. } => ("FTP", user.clone(), host.clone()),
+                                                    SessionType::Vnc { host, .. } => ("VNC", "-".into(), host.clone()),
+                                                    SessionType::Telnet { host, .. } => ("TELNET", "-".into(), host.clone()),
+                                                    _ => continue,
+                                                };
+
+                                                if let Some(ref pw) = sess.password {
+                                                    // Search filter matches either username or host/IP
+                                                    if !search_term.is_empty()
+                                                        && !user.to_lowercase().contains(&search_term)
+                                                        && !host.to_lowercase().contains(&search_term)
+                                                    {
+                                                        continue;
+                                                    }
+                                                    row_count += 1;
+
+                                                    ui.label(proto);
+                                                    ui.label(if user.is_empty() { "-" } else { &user });
+                                                    ui.label(&host);
+
+                                                    // Password Show/Hide
+                                                    let is_unmasked = self.manage_passwords_show_all
+                                                        || self.manage_passwords_unmasked_ids.contains(&sess.id);
+                                                    let pw_display = if is_unmasked {
+                                                        pw.clone()
+                                                    } else {
+                                                        "••••••••••••".to_string()
+                                                    };
+
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(pw_display).family(egui::FontFamily::Monospace));
+                                                        let eye_icon = if is_unmasked { "🔒" } else { "👁" };
+                                                        if ui.small_button(eye_icon).on_hover_text("Toggle password visibility for this row").clicked() {
+                                                            if let Some(pos) = self.manage_passwords_unmasked_ids.iter().position(|id| id == &sess.id) {
+                                                                self.manage_passwords_unmasked_ids.remove(pos);
+                                                            } else {
+                                                                self.manage_passwords_unmasked_ids.push(sess.id.clone());
+                                                            }
+                                                        }
+                                                    });
+
+                                                    if ui.small_button("🗑").on_hover_text("Delete saved password").clicked() {
+                                                        to_delete_id = Some(sess.id.clone());
+                                                    }
+                                                    ui.end_row();
+                                                }
+                                            }
+
+                                            if row_count == 0 {
+                                                ui.label(RichText::new("No saved passwords matching filter.").weak());
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                            });
+
+                        if let Some(del_id) = to_delete_id {
+                            for s in &mut self.sessions {
+                                if s.id == del_id {
+                                    s.password = None;
+                                }
+                            }
+                            let _ = self.storage.save_sessions(&self.sessions);
+                        }
+
+                        ui.add_space(4.0);
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("⚡ Delete all").clicked() {
+                                for s in &mut self.sessions {
+                                    s.password = None;
+                                }
+                                let _ = self.storage.save_sessions(&self.sessions);
+                            }
+                            if ui.button("📁 Export to file").clicked() {
+                                // Export action
+                            }
+                        });
+                    } else {
+                        // Credentials Tab
+                        ui.group(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new("Shared Credentials").strong());
+                            ui.label("Saved credential profiles for multiple remote sessions.");
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("No shared credentials configured.").weak());
+                        });
+                    }
+
+                    ui.separator();
+                    // 5. Storage Location & Master Password
+                    ui.horizontal(|ui| {
+                        ui.label("Where passwords are saved:");
+                        ui.label(RichText::new("Configuration file (data/RustyBox.json)").strong().color(Color32::from_rgb(100, 220, 100)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("🔒 Master Password settings").clicked() {
+                                self.show_vault = true;
+                            }
+                        });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("✖ Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                            if ui.button("✔ OK").clicked() {
+                                let _ = self.storage.save_sessions(&self.sessions);
+                                close_dialog = true;
+                            }
+                        });
+                    });
+                });
+            if close_dialog {
+                open = false;
+            }
+            self.show_manage_passwords = open;
         }
 
         // Global Settings & Preferences Modal (MobaXterm TFORMPARAMS)
