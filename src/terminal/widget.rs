@@ -86,6 +86,52 @@ impl<'a> TerminalWidget<'a> {
         painter.rect_filled(rect, 0.0, self.theme.default_bg());
 
         let term_id = egui::Id::new("terminal_focus").with(&self.tab_id);
+        let sel_id = egui::Id::new("term_selection").with(&self.tab_id);
+
+        let pos_to_cell = |pos: egui::Pos2| -> (usize, usize) {
+            let r = (((pos.y - rect.top()) / row_height).floor().max(0.0) as usize).min(rows.saturating_sub(1) as usize);
+            let c = (((pos.x - rect.left()) / char_width).floor().max(0.0) as usize).min(cols.saturating_sub(1) as usize);
+            (r, c)
+        };
+
+        let mut selection: Option<((usize, usize), (usize, usize))> = ui.data(|d| d.get_temp(sel_id));
+
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if rect.contains(pos) {
+                    let cell = pos_to_cell(pos);
+                    selection = Some((cell, cell));
+                }
+            }
+        } else if response.dragged() {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                let cell = pos_to_cell(pos);
+                if let Some((start, _)) = selection {
+                    selection = Some((start, cell));
+                }
+            }
+        }
+
+        if response.drag_stopped() {
+            if let Some((start, end)) = selection {
+                if start != end {
+                    let parser = self.session.parser.lock();
+                    let text = extract_selection_text(parser.screen(), start, end);
+                    if !text.is_empty() {
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(&text);
+                        }
+                        ui.output_mut(|o| o.copied_text = text);
+                    }
+                }
+            }
+        }
+
+        if response.clicked() && !response.dragged() {
+            selection = None;
+        }
+
+        ui.data_mut(|d| d.insert_temp(sel_id, selection));
 
         // Clicking or pressing inside terminal immediately steals focus from any TextEdit
         let pointer_in_terminal = ui.rect_contains_pointer(rect);
@@ -124,23 +170,49 @@ impl<'a> TerminalWidget<'a> {
 
         // Right-Click Context Menu (MobaXterm TFORMRIGHTCLICKMENU)
         response.context_menu(|ui| {
-            ui.set_min_width(180.0);
+            ui.set_min_width(200.0);
+
+            let has_selection = selection.map(|(s, e)| s != e).unwrap_or(false);
+            if has_selection {
+                if ui.button("📄 Copy Selection").clicked() {
+                    if let Some((s, e)) = selection {
+                        let parser = self.session.parser.lock();
+                        let text = extract_selection_text(parser.screen(), s, e);
+                        if !text.is_empty() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(&text);
+                            }
+                            ui.output_mut(|o| o.copied_text = text);
+                        }
+                    }
+                    ui.close_menu();
+                }
+            }
+
             if ui.button("📋 Paste Clipboard").clicked() {
-                let text = ui.output(|o| o.copied_text.clone());
-                if !text.is_empty() {
-                    if text.contains('\n') {
-                        action = TerminalAction::MultiLinePaste(text);
-                    } else {
-                        let bytes = text.as_bytes().to_vec();
-                        let _ = self.session.write_bytes(&bytes);
-                        if let Some(sender) = broadcast_sender {
-                            let _ = sender.send(bytes);
+                let text_opt = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok())
+                    .or_else(|| {
+                        let t = ui.output(|o| o.copied_text.clone());
+                        if t.is_empty() { None } else { Some(t) }
+                    });
+
+                if let Some(text) = text_opt {
+                    if !text.is_empty() {
+                        if text.contains('\n') {
+                            action = TerminalAction::MultiLinePaste(text);
+                        } else {
+                            let bytes = text.as_bytes().to_vec();
+                            let _ = self.session.write_bytes(&bytes);
+                            if let Some(sender) = broadcast_sender {
+                                let _ = sender.send(bytes);
+                            }
                         }
                     }
                 }
                 ui.close_menu();
             }
-            if ui.button("📄 Copy Terminal Text").clicked() {
+
+            if ui.button("📄 Copy All Terminal Text").clicked() {
                 let mut all_text = String::new();
                 let parser = self.session.parser.lock();
                 let screen = parser.screen();
@@ -156,6 +228,9 @@ impl<'a> TerminalWidget<'a> {
                     }
                     all_text.push_str(row_str.trim_end());
                     all_text.push('\n');
+                }
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(&all_text);
                 }
                 ui.output_mut(|o| o.copied_text = all_text);
                 ui.close_menu();
@@ -236,29 +311,35 @@ impl<'a> TerminalWidget<'a> {
                         let cell_rect =
                             Rect::from_min_size(pos2(cell_x, cell_y), vec2(char_width, row_height));
 
-                        // Check if current cell is inside a search match
+                        // Check if current cell is selected or inside search match
+                        let is_selected_cell = is_cell_selected(r as usize, c as usize, selection);
                         let is_searched =
                             search_matches.iter().any(|range| range.contains(&(c as usize)));
 
                         // Custom background
-                        let bg_color = if is_searched {
+                        let bg_color = if is_selected_cell {
+                            Color32::from_rgb(30, 95, 175) // Vibrant selection blue
+                        } else if is_searched {
                             Color32::from_rgb(180, 140, 20) // Yellow highlight for search
                         } else {
                             vt_to_egui_color(cell.bgcolor(), false, self.theme)
                         };
 
-                        if bg_color != self.theme.default_bg() {
+                        if bg_color != self.theme.default_bg() || is_selected_cell {
                             painter.rect_filled(cell_rect, 0.0, bg_color);
                         }
 
                         // Text & Syntax Highlighting
                         let contents = cell.contents();
                         if !contents.is_empty() && contents != " " {
-                            let mut fg_color =
-                                vt_to_egui_color(cell.fgcolor(), true, self.theme);
+                            let mut fg_color = if is_selected_cell {
+                                Color32::WHITE
+                            } else {
+                                vt_to_egui_color(cell.fgcolor(), true, self.theme)
+                            };
 
                             // Apply MobaXterm-style smart syntax coloring if default color
-                            if fg_color == self.theme.default_fg() {
+                            if fg_color == self.theme.default_fg() && !is_selected_cell {
                                 let col_idx = c as usize;
                                 if is_in_keyword(
                                     &row_str,
@@ -359,12 +440,64 @@ impl<'a> TerminalWidget<'a> {
                                 Key::PageUp => input_bytes.extend_from_slice(b"\x1b[5~"),
                                 Key::PageDown => input_bytes.extend_from_slice(b"\x1b[6~"),
                                 Key::Delete => input_bytes.extend_from_slice(b"\x1b[3~"),
+                                Key::Insert if modifiers.shift => {
+                                    // Shift+Insert: Paste
+                                    let text_opt = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+                                    if let Some(text) = text_opt {
+                                        if text.contains('\n') {
+                                            paste_text_to_check = Some(text);
+                                        } else {
+                                            input_bytes.extend_from_slice(text.as_bytes());
+                                        }
+                                    }
+                                }
+                                Key::Insert if ctrl => {
+                                    // Ctrl+Insert: Copy
+                                    let parser = self.session.parser.lock();
+                                    let text = if let Some((s, e)) = selection {
+                                        extract_selection_text(parser.screen(), s, e)
+                                    } else {
+                                        String::new()
+                                    };
+                                    if !text.is_empty() {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(&text);
+                                        }
+                                        ui.output_mut(|o| o.copied_text = text);
+                                    }
+                                }
                                 Key::Insert => input_bytes.extend_from_slice(b"\x1b[2~"),
                                 Key::F if ctrl => action = TerminalAction::OpenSearch,
                                 Key::Plus if ctrl => action = TerminalAction::ZoomIn,
                                 Key::Equals if ctrl => action = TerminalAction::ZoomIn,
                                 Key::Minus if ctrl => action = TerminalAction::ZoomOut,
                                 Key::Num0 if ctrl => action = TerminalAction::ZoomReset,
+                                Key::C if ctrl && modifiers.shift => {
+                                    // Ctrl+Shift+C: Copy Selection or Screen Text
+                                    let parser = self.session.parser.lock();
+                                    let text = if let Some((s, e)) = selection {
+                                        extract_selection_text(parser.screen(), s, e)
+                                    } else {
+                                        String::new()
+                                    };
+                                    if !text.is_empty() {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(&text);
+                                        }
+                                        ui.output_mut(|o| o.copied_text = text);
+                                    }
+                                }
+                                Key::V if ctrl && modifiers.shift => {
+                                    // Ctrl+Shift+V: Paste from Clipboard
+                                    let text_opt = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+                                    if let Some(text) = text_opt {
+                                        if text.contains('\n') {
+                                            paste_text_to_check = Some(text);
+                                        } else {
+                                            input_bytes.extend_from_slice(text.as_bytes());
+                                        }
+                                    }
+                                }
                                 Key::A if ctrl => input_bytes.extend_from_slice(b"\x01"), // Ctrl+A
                                 Key::B if ctrl => input_bytes.extend_from_slice(b"\x02"), // Ctrl+B
                                 Key::C if ctrl => input_bytes.extend_from_slice(b"\x03"), // Ctrl+C (SIGINT)
@@ -452,4 +585,61 @@ fn is_ipv4_char(row: &str, col: usize) -> bool {
         return true;
     }
     false
+}
+
+fn is_cell_selected(r: usize, c: usize, sel: Option<((usize, usize), (usize, usize))>) -> bool {
+    let Some(((r1, c1), (r2, c2))) = sel else {
+        return false;
+    };
+    if (r1, c1) == (r2, c2) {
+        return false;
+    }
+    let (start, end) = if (r1, c1) <= (r2, c2) {
+        ((r1, c1), (r2, c2))
+    } else {
+        ((r2, c2), (r1, c1))
+    };
+    if r < start.0 || r > end.0 {
+        return false;
+    }
+    if start.0 == end.0 {
+        return c >= start.1 && c <= end.1;
+    }
+    if r == start.0 {
+        c >= start.1
+    } else if r == end.0 {
+        c <= end.1
+    } else {
+        true
+    }
+}
+
+fn extract_selection_text(
+    screen: &vt100::Screen,
+    start: (usize, usize),
+    end: (usize, usize),
+) -> String {
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let (screen_rows, screen_cols) = screen.size();
+    let max_r = screen_rows.get() as usize;
+    let max_c = screen_cols.get() as usize;
+
+    let mut result = String::new();
+    for r in start.0..=end.0.min(max_r.saturating_sub(1)) {
+        let col_start = if r == start.0 { start.1 } else { 0 };
+        let col_end = if r == end.0 { end.1 } else { max_c.saturating_sub(1) };
+        let mut row_str = String::new();
+        for c in col_start..=col_end.min(max_c.saturating_sub(1)) {
+            if let Some(cell) = screen.cell(r as u16, c as u16) {
+                row_str.push_str(cell.contents());
+            } else {
+                row_str.push(' ');
+            }
+        }
+        if r > start.0 {
+            result.push('\n');
+        }
+        result.push_str(row_str.trim_end());
+    }
+    result
 }
