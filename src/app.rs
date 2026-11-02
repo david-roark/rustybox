@@ -604,53 +604,39 @@ impl eframe::App for RustyBoxApp {
                     self.show_sftp_sidebar = !self.show_sftp_sidebar;
                     self.sidebar_tab = 1;
                 }
+            });
+        });
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if self.storage.is_portable() {
-                        ui.label(RichText::new("💾 Portable Mode").color(Color32::from_rgb(100, 220, 100)).size(11.0));
+        // 3. COMPACT BOTTOM PANEL (1 single row ~25px)
+        TopBottomPanel::bottom("bottom_bar")
+            .min_height(25.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("⚡ Quick:").weak().size(11.0));
+                    let mut macro_to_run: Option<String> = None;
+                    for (name, cmd) in &self.quick_macros {
+                        if ui.small_button(name).clicked() {
+                            macro_to_run = Some(cmd.clone());
+                        }
                     }
+                    if ui.small_button("⚙ Manage").clicked() {
+                        self.show_macro_manager = true;
+                    }
+                    if let Some(cmd) = macro_to_run {
+                        self.execute_macro(&cmd);
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if self.multi_exec_enabled {
+                            ui.label(RichText::new("⚠ MULTI-EXEC").color(Color32::from_rgb(255, 180, 50)).size(11.0).strong());
+                        }
+                        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                            let alive_str = if tab.session.is_alive() { "🟢 Connected" } else { "🔴 Disconnected" };
+                            ui.label(RichText::new(alive_str).size(11.0));
+                        }
+                    });
                 });
             });
-        });
-
-        // 3. BOTTOM QUICK MACROS BAR (Classic MobaXterm Bottom Buttons)
-        TopBottomPanel::bottom("quick_macros_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("⚡ Quick Macro:").weak().size(11.0));
-                let mut macro_to_run: Option<String> = None;
-                for (name, cmd) in &self.quick_macros {
-                    if ui.small_button(name).clicked() {
-                        macro_to_run = Some(cmd.clone());
-                    }
-                }
-                if ui.small_button("⚙ Manage").clicked() {
-                    self.show_macro_manager = true;
-                }
-                if let Some(cmd) = macro_to_run {
-                    self.execute_macro(&cmd);
-                }
-            });
-        });
-
-        // 4. BOTTOM STATUS BAR
-        TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-                    let pid_str = tab.session.child_pid.map(|p| format!("PID: {}", p)).unwrap_or_else(|| "PID: -".into());
-                    let alive_str = if tab.session.is_alive() { "🟢 Connected" } else { "🔴 Disconnected" };
-                    ui.label(RichText::new(format!("{} | {} | Active: {}", alive_str, pid_str, tab.title)).size(11.0));
-                } else {
-                    ui.label(RichText::new("No active session").size(11.0));
-                }
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if self.multi_exec_enabled {
-                        ui.label(RichText::new("⚠ MULTI-EXEC ACTIVE").color(Color32::from_rgb(255, 180, 50)).size(11.0).strong());
-                    }
-                    ui.label(RichText::new(format!("Theme: {} | Tabs: {}", self.theme.name(), self.open_tabs.len())).size(11.0));
-                });
-            });
-        });
 
         // 5. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
         if self.show_sftp_sidebar {
