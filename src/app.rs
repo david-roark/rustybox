@@ -147,6 +147,13 @@ pub struct RustyBoxApp {
     new_tunnel_remote_port: u16,
     // Configuration tabs
     settings_tab: usize,
+    // MobaXterm Session Import Dialog
+    show_import_dialog: bool,
+    import_raw_text: String,
+    import_file_path: String,
+    import_default_folder: String,
+    import_status_msg: Option<(String, bool)>,
+    focus_search: bool,
     // Tokio Runtime
     tokio_runtime: tokio::runtime::Runtime,
 }
@@ -283,6 +290,12 @@ impl RustyBoxApp {
             new_tunnel_remote_host: "127.0.0.1".into(),
             new_tunnel_remote_port: 80,
             settings_tab: 0,
+            show_import_dialog: false,
+            import_raw_text: String::new(),
+            import_file_path: "/mnt/d/OneDrive/working/Moba-07-26.txt".into(),
+            import_default_folder: "MobaXterm".into(),
+            import_status_msg: None,
+            focus_search: false,
             tokio_runtime,
         };
 
@@ -772,10 +785,149 @@ b3BlbnNzaC1rZXktdjEAAAAA{}
             }
         }
     }
+
+    fn render_import_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_import_dialog {
+            return;
+        }
+
+        // Auto-preload file if path exists and text is empty
+        if self.import_raw_text.is_empty() && std::path::Path::new(&self.import_file_path).exists() {
+            if let Ok(content) = std::fs::read_to_string(&self.import_file_path) {
+                let len = content.len();
+                self.import_raw_text = content;
+                self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, self.import_file_path), false));
+            }
+        }
+
+        let mut close = false;
+        egui::Window::new("📁 Import Sessions (MobaXterm / .txt / .ini / .mxtpro / JSON)")
+            .default_size(egui::vec2(680.0, 540.0))
+            .resizable(true)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading(RichText::new("Import Sessions into RustyBox").color(Color32::from_rgb(56, 189, 248)));
+                ui.label("Import server bookmarks and credentials directly from MobaXterm exports, configuration files, or server lists.");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Target Folder:").strong());
+                    ui.text_edit_singleline(&mut self.import_default_folder);
+                    ui.label(RichText::new("(e.g. MobaXterm, Production, Servers)").size(11.0).color(Color32::GRAY));
+                });
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label(RichText::new("Option A: Load from File on Disk").strong());
+                    ui.horizontal(|ui| {
+                        ui.add(TextEdit::singleline(&mut self.import_file_path).desired_width(ui.available_width() - 170.0));
+                        if ui.button("📂 Browse...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Supported Files", &["txt", "ini", "mxtpro", "csv", "json"])
+                                .pick_file()
+                            {
+                                self.import_file_path = path.to_string_lossy().to_string();
+                            }
+                        }
+                        if ui.button(RichText::new("📥 Read File").strong()).clicked() {
+                            match std::fs::read_to_string(&self.import_file_path) {
+                                Ok(content) => {
+                                    let len = content.len();
+                                    self.import_raw_text = content;
+                                    self.import_status_msg = Some((format!("Read {} bytes from file.", len), false));
+                                }
+                                Err(e) => {
+                                    self.import_status_msg = Some((format!("Failed to read file: {}", e), true));
+                                }
+                            }
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label(RichText::new("Option B: Paste Session Text / MobaXterm Data directly").strong());
+                    ui.label(RichText::new("Supports MobaXterm bookmark lines (#109#...), user@host=password, host:port=password, or JSON").size(11.0).color(Color32::GRAY));
+                    ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut self.import_raw_text)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(10)
+                                .hint_text("Paste your MobaXterm export, server list, or JSON here...")
+                        );
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                // Preview count
+                let preview_parsed = crate::session::import_export::parse_sessions_from_text(&self.import_raw_text, &self.import_default_folder);
+                ui.label(RichText::new(format!("📊 Detected: {} valid sessions in input", preview_parsed.len()))
+                    .strong()
+                    .color(if preview_parsed.is_empty() { Color32::GRAY } else { Color32::from_rgb(100, 220, 100) }));
+
+                if let Some((ref msg, is_err)) = self.import_status_msg {
+                    ui.add_space(4.0);
+                    let color = if is_err { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(34, 197, 94) };
+                    ui.label(RichText::new(msg).color(color).strong());
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let can_import = !preview_parsed.is_empty();
+                    if ui.add_enabled(can_import, egui::Button::new(RichText::new("📥 Import & Merge Sessions").strong().color(Color32::WHITE))
+                        .fill(Color32::from_rgb(34, 197, 94))
+                        .min_size(egui::vec2(190.0, 30.0))).clicked()
+                    {
+                        let parsed = crate::session::import_export::parse_sessions_from_text(&self.import_raw_text, &self.import_default_folder);
+                        let summary = crate::session::import_export::merge_imported_sessions(&mut self.sessions, parsed);
+                        let _ = self.storage.save_sessions(&self.sessions);
+                        self.import_status_msg = Some((
+                            format!("✅ Successfully imported {} new sessions! ({} skipped as duplicate, total {} parsed)",
+                                summary.new_imported, summary.duplicates_skipped, summary.total_parsed),
+                            false
+                        ));
+                    }
+
+                    if ui.button(RichText::new("Clear Text").color(Color32::LIGHT_GRAY)).clicked() {
+                        self.import_raw_text.clear();
+                        self.import_status_msg = None;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+
+        if close {
+            self.show_import_dialog = false;
+        }
+    }
 }
 
 impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Global Keyboard Shortcuts
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            self.search_open = true;
+            self.focus_search = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::I) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
+            self.show_import_dialog = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::T) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::T)) {
+            self.spawn_local_terminal("Local Terminal", None, None);
+        }
+
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.show_network_tools = false;
             self.show_services_modal = false;
@@ -791,6 +943,7 @@ impl eframe::App for RustyBoxApp {
             self.show_hotkeys_dialog = false;
             self.show_about = false;
             self.show_manage_passwords = false;
+            self.show_import_dialog = false;
             self.new_session_dialog.is_open = false;
             self.connect_as_target = None;
             self.rename_session_target = None;
@@ -850,7 +1003,11 @@ impl eframe::App for RustyBoxApp {
                         }
                         ui.close_menu();
                     }
-                    if ui.button("📥 Import Sessions (JSON)...").clicked() {
+                    if ui.button("📁 Import MobaXterm Sessions (.txt / .ini / .mxtpro)...").clicked() {
+                        self.show_import_dialog = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("📥 Import Sessions from File (JSON)...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
                             if let Ok(imported) = self.storage.import_from_file(&path) {
                                 self.sessions = imported.sessions;
@@ -1387,12 +1544,18 @@ impl eframe::App for RustyBoxApp {
                         // SESSIONS TREE
                         ui.horizontal(|ui| {
                             let filter_hint = format!("Filter {} sessions...", self.sessions.len());
-                            ui.add(TextEdit::singleline(&mut self.session_search).hint_text(filter_hint).desired_width(ui.available_width() - 32.0));
+                            ui.add(TextEdit::singleline(&mut self.session_search).hint_text(filter_hint).desired_width(ui.available_width() - 60.0));
                             let add_btn = egui::Button::new(RichText::new("➕").color(Color32::WHITE).size(12.0))
                                 .fill(Color32::from_rgb(34, 197, 94))
                                 .rounding(3.0);
                             if ui.add(add_btn).on_hover_text("New Session").clicked() {
                                 self.new_session_dialog.open_for_new();
+                            }
+                            let imp_btn = egui::Button::new(RichText::new("📥").color(Color32::WHITE).size(12.0))
+                                .fill(Color32::from_rgb(59, 130, 246))
+                                .rounding(3.0);
+                            if ui.add(imp_btn).on_hover_text("Import MobaXterm Sessions...").clicked() {
+                                self.show_import_dialog = true;
                             }
                         });
                         ui.add_space(6.0);
@@ -2107,15 +2270,57 @@ impl eframe::App for RustyBoxApp {
 
             // INLINE TERMINAL SEARCH BAR (Ctrl+F)
             if self.search_open {
-                ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("🔍 Find in Terminal:");
-                    ui.add(TextEdit::singleline(&mut self.search_query).hint_text("Type keyword to highlight in real-time...").desired_width(300.0));
-                    if ui.small_button("✖").on_hover_text("Close Search").clicked() {
+                    ui.label(RichText::new("🔍 Find:").strong().color(Color32::from_rgb(255, 200, 80)));
+                    let text_resp = ui.add(TextEdit::singleline(&mut self.search_query)
+                        .hint_text("Search & highlight in terminal...")
+                        .desired_width(260.0));
+                    if self.focus_search {
+                        text_resp.request_focus();
+                        self.focus_search = false;
+                    }
+
+                    // Count occurrences on screen if active tab exists
+                    if !self.search_query.is_empty() {
+                        let query_lower = self.search_query.trim().to_lowercase();
+                        let mut match_count = 0;
+                        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                            let parser = tab.session.parser.lock();
+                            let screen = parser.screen();
+                            let (rows_nz, cols_nz) = screen.size();
+                            for r in 0..rows_nz.get() {
+                                let mut line = String::new();
+                                for c in 0..cols_nz.get() {
+                                    if let Some(cell) = screen.cell(r, c) {
+                                        line.push_str(cell.contents());
+                                    }
+                                }
+                                let line_lower = line.to_lowercase();
+                                let mut start = 0;
+                                while let Some(pos) = line_lower[start..].find(&query_lower) {
+                                    match_count += 1;
+                                    start += pos + query_lower.len();
+                                }
+                            }
+                        }
+                        if match_count > 0 {
+                            ui.label(RichText::new(format!("{} match{}", match_count, if match_count > 1 { "es" } else { "" }))
+                                .color(Color32::from_rgb(100, 220, 100)).strong());
+                        } else {
+                            ui.label(RichText::new("0 matches").color(Color32::from_rgb(200, 100, 100)));
+                        }
+
+                        if ui.small_button("Clear").clicked() {
+                            self.search_query.clear();
+                        }
+                    }
+
+                    if ui.small_button("✖ Close (Esc)").clicked() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.search_open = false;
                         self.search_query.clear();
                     }
                 });
+                ui.separator();
             }
 
             ui.separator();
@@ -2318,6 +2523,22 @@ impl eframe::App for RustyBoxApp {
             }
             TerminalAction::OpenSearch => {
                 self.search_open = true;
+                self.focus_search = true;
+            }
+            TerminalAction::RestartTab => {
+                let active = self.active_tab_idx;
+                self.restart_tab(active);
+            }
+            TerminalAction::CloseTab => {
+                if !self.open_tabs.is_empty() {
+                    let active = self.active_tab_idx;
+                    if active < self.open_tabs.len() {
+                        self.open_tabs.remove(active);
+                        if self.active_tab_idx >= self.open_tabs.len() && !self.open_tabs.is_empty() {
+                            self.active_tab_idx = self.open_tabs.len() - 1;
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -3870,6 +4091,9 @@ impl eframe::App for RustyBoxApp {
                 *n = new_tab_name;
             }
         }
+
+        // Modal: Import Sessions (MobaXterm / .txt / .ini / .mxtpro / JSON)
+        self.render_import_dialog(ctx);
 
         // Status Toast Notification
         if let Some((msg, created_at)) = &self.status_toast {

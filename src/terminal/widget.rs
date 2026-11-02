@@ -20,6 +20,8 @@ pub enum TerminalAction {
     ZoomOut,
     ZoomReset,
     OpenSearch,
+    RestartTab,
+    CloseTab,
 }
 
 impl<'a> TerminalWidget<'a> {
@@ -418,7 +420,13 @@ impl<'a> TerminalWidget<'a> {
                         } => {
                             let ctrl = modifiers.ctrl || modifiers.command;
                             match key {
-                                Key::Enter => input_bytes.extend_from_slice(b"\r"),
+                                Key::Enter => {
+                                    if !self.session.running.load(std::sync::atomic::Ordering::Relaxed) {
+                                        action = TerminalAction::RestartTab;
+                                    } else {
+                                        input_bytes.extend_from_slice(b"\r");
+                                    }
+                                }
                                 Key::Backspace => {
                                     #[cfg(target_os = "windows")]
                                     {
@@ -506,7 +514,13 @@ impl<'a> TerminalWidget<'a> {
                                 Key::K if ctrl => input_bytes.extend_from_slice(b"\x0b"), // Ctrl+K
                                 Key::L if ctrl => input_bytes.extend_from_slice(b"\x0c"), // Ctrl+L (Clear)
                                 Key::U if ctrl => input_bytes.extend_from_slice(b"\x15"), // Ctrl+U
-                                Key::W if ctrl => input_bytes.extend_from_slice(b"\x17"), // Ctrl+W
+                                Key::W if ctrl => {
+                                    if !self.session.running.load(std::sync::atomic::Ordering::Relaxed) {
+                                        action = TerminalAction::CloseTab;
+                                    } else {
+                                        input_bytes.extend_from_slice(b"\x17");
+                                    }
+                                }
                                 Key::Z if ctrl => input_bytes.extend_from_slice(b"\x1a"), // Ctrl+Z (SIGTSTP)
                                 _ => {}
                             }

@@ -190,6 +190,20 @@ impl PtySession {
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             running_clone.store(false, Ordering::Relaxed);
+                            {
+                                let mut p = parser_clone.lock();
+                                p.process(b"\r\n\x1b[33m----------------------------------------------------------------\x1b[0m\r\n\x1b[1;31mSession stopped (connection closed).\x1b[0m\r\n\x1b[1;36mPress <Enter> to restart session, or <Ctrl+W> to close tab.\x1b[0m\r\n");
+                            }
+                            has_new_data_clone.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        Err(_) => {
+                            running_clone.store(false, Ordering::Relaxed);
+                            {
+                                let mut p = parser_clone.lock();
+                                p.process(b"\r\n\x1b[33m----------------------------------------------------------------\x1b[0m\r\n\x1b[1;31mSession stopped (connection closed).\x1b[0m\r\n\x1b[1;36mPress <Enter> to restart session, or <Ctrl+W> to close tab.\x1b[0m\r\n");
+                            }
+                            has_new_data_clone.store(true, Ordering::Relaxed);
                             break;
                         }
                         Ok(n) => {
@@ -243,10 +257,6 @@ impl PtySession {
                             let mut p = parser_clone.lock();
                             p.process(chunk);
                             has_new_data_clone.store(true, Ordering::Relaxed);
-                        }
-                        Err(_) => {
-                            running_clone.store(false, Ordering::Relaxed);
-                            break;
                         }
                     }
                 }
