@@ -50,7 +50,10 @@ impl<'a> TerminalWidget<'a> {
         broadcast_sender: Option<&crossbeam_channel::Sender<Vec<u8>>>,
     ) -> (Response, TerminalAction) {
         let available_size = ui.available_size();
-        let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(
+            available_size,
+            Sense::click_and_drag().union(Sense::focusable_noninteractive()),
+        );
 
         let mut action = TerminalAction::None;
 
@@ -80,19 +83,28 @@ impl<'a> TerminalWidget<'a> {
 
         let term_id = egui::Id::new("terminal_focus").with(&self.tab_id);
 
-        // When no other interactive widget (like search/dialog) explicitly has focus,
-        // the active terminal tab ALWAYS owns focus!
+        // Clicking or pressing inside terminal immediately steals focus from any TextEdit
+        let pointer_in_terminal = ui.rect_contains_pointer(rect);
+        let pointer_pressed = ui.input(|i| i.pointer.any_pressed() || i.pointer.any_down());
+        if response.clicked() || (pointer_in_terminal && pointer_pressed) {
+            ui.memory_mut(|m| {
+                if let Some(fid) = m.focused() {
+                    if fid != response.id && fid != term_id {
+                        m.surrender_focus(fid);
+                    }
+                }
+                m.request_focus(response.id);
+            });
+        }
+
+        // Active terminal tab owns focus unless an external TextEdit (like search) is actively focused
         let other_widget_focused = ui.memory(|m| {
             if let Some(fid) = m.focused() {
-                fid != term_id && fid != response.id
+                fid != response.id && fid != term_id
             } else {
                 false
             }
         });
-
-        if response.clicked() || !other_widget_focused {
-            ui.memory_mut(|m| m.request_focus(term_id));
-        }
 
         let has_focus = !other_widget_focused;
 
@@ -274,7 +286,16 @@ impl<'a> TerminalWidget<'a> {
                             let ctrl = modifiers.ctrl || modifiers.command;
                             match key {
                                 Key::Enter => input_bytes.extend_from_slice(b"\r"),
-                                Key::Backspace => input_bytes.extend_from_slice(b"\x7f"),
+                                Key::Backspace => {
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        input_bytes.extend_from_slice(b"\x08");
+                                    }
+                                    #[cfg(not(target_os = "windows"))]
+                                    {
+                                        input_bytes.extend_from_slice(b"\x7f");
+                                    }
+                                }
                                 Key::Tab => input_bytes.extend_from_slice(b"\t"),
                                 Key::Escape => input_bytes.extend_from_slice(b"\x1b"),
                                 Key::ArrowUp => input_bytes.extend_from_slice(b"\x1b[A"),
@@ -318,6 +339,7 @@ impl<'a> TerminalWidget<'a> {
 
             if !input_bytes.is_empty() {
                 let _ = self.session.write_bytes(&input_bytes);
+                ui.ctx().request_repaint();
                 if let Some(sender) = broadcast_sender {
                     let _ = sender.send(input_bytes);
                 }

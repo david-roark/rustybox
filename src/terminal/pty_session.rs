@@ -46,11 +46,7 @@ impl PtySession {
             #[cfg(target_os = "windows")]
             {
                 let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-                let mut c = CommandBuilder::new(&shell);
-                if shell.to_lowercase().ends_with("cmd.exe") {
-                    c.arg("/k");
-                }
-                c
+                CommandBuilder::new(&shell)
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -70,14 +66,12 @@ impl PtySession {
 
         let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
         let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title)?;
+        #[cfg(not(target_os = "windows"))]
         {
-            let banner = format!(
-                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
-                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal ({})\x1b[0m\r\n\
+            let banner = "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
+                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal (bash)\x1b[0m\r\n\
                  \x1b[32m  ✔\x1b[0m Interactive Shell  \x1b[32m✔\x1b[0m VT100/ANSI Emulation  \x1b[32m✔\x1b[0m UTF-8\r\n\
-                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n",
-                if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" }
-            );
+                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n";
             let mut p = sess.parser.lock();
             p.process(banner.as_bytes());
         }

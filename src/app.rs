@@ -719,7 +719,7 @@ impl eframe::App for RustyBoxApp {
         if has_pty_data || self.multi_exec_enabled {
             ctx.request_repaint();
         } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
         // 1. TOP MENU BAR (Branded Header + Menus + Quick Utilities)
