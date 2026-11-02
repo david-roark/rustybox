@@ -9,7 +9,7 @@ use std::thread;
 
 pub struct PtySession {
     pub parser: Arc<parking_lot::Mutex<vt100::Parser>>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     pub running: Arc<AtomicBool>,
     pub title: Arc<parking_lot::Mutex<String>>,
@@ -66,12 +66,15 @@ impl PtySession {
 
         let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
         let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title)?;
-        #[cfg(not(target_os = "windows"))]
         {
-            let banner = "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
-                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal (bash)\x1b[0m\r\n\
+            let shell_name = if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" };
+            let banner = format!(
+                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
+                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal ({})\x1b[0m\r\n\
                  \x1b[32m  ✔\x1b[0m Interactive Shell  \x1b[32m✔\x1b[0m VT100/ANSI Emulation  \x1b[32m✔\x1b[0m UTF-8\r\n\
-                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n";
+                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n",
+                shell_name
+            );
             let mut p = sess.parser.lock();
             p.process(banner.as_bytes());
         }
@@ -158,10 +161,12 @@ impl PtySession {
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone reader: {}", e))?;
-        let writer = pair
+        let writer_raw = pair
             .master
             .take_writer()
             .map_err(|e| format!("Failed to take writer: {}", e))?;
+        let writer = Arc::new(parking_lot::Mutex::new(writer_raw));
+        let writer_reply = Arc::clone(&writer);
 
         let nz_rows = NonZeroU16::new(rows).unwrap_or(NonZeroU16::new(24).unwrap());
         let nz_cols = NonZeroU16::new(cols).unwrap_or(NonZeroU16::new(80).unwrap());
@@ -180,6 +185,7 @@ impl PtySession {
             .name("pty-reader".into())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
+                let mut prev_tail: Vec<u8> = Vec::new();
                 while running_clone.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
                         Ok(0) => {
@@ -187,8 +193,55 @@ impl PtySession {
                             break;
                         }
                         Ok(n) => {
+                            let chunk = &buf[..n];
+
+                            // ConPTY / VT terminal query handling & auto-reply
+                            // ConPTY on Windows blocks startup and resize waiting for CPR (\x1b[6n)
+                            let mut combined = prev_tail.clone();
+                            combined.extend_from_slice(chunk);
+
+                            // 1. DSR Cursor Position Query (\x1b[6n or \x1b[?6n)
+                            if combined.windows(4).any(|w| w == b"\x1b[6n") {
+                                let (r, c) = {
+                                    let p = parser_clone.lock();
+                                    p.screen().cursor_position()
+                                };
+                                let resp = format!("\x1b[{};{}R", r + 1, c + 1);
+                                let mut w = writer_reply.lock();
+                                let _ = w.write_all(resp.as_bytes());
+                                let _ = w.flush();
+                            } else if combined.windows(5).any(|w| w == b"\x1b[?6n") {
+                                let (r, c) = {
+                                    let p = parser_clone.lock();
+                                    p.screen().cursor_position()
+                                };
+                                let resp = format!("\x1b[?{};{}R", r + 1, c + 1);
+                                let mut w = writer_reply.lock();
+                                let _ = w.write_all(resp.as_bytes());
+                                let _ = w.flush();
+                            }
+
+                            // 2. Primary Device Attributes (\x1b[c or \x1b[0c)
+                            if combined.windows(3).any(|w| w == b"\x1b[c")
+                                || combined.windows(4).any(|w| w == b"\x1b[0c")
+                            {
+                                let mut w = writer_reply.lock();
+                                let _ = w.write_all(b"\x1b[?1;2c");
+                                let _ = w.flush();
+                            }
+
+                            // 3. Status Report Query (\x1b[5n)
+                            if combined.windows(4).any(|w| w == b"\x1b[5n") {
+                                let mut w = writer_reply.lock();
+                                let _ = w.write_all(b"\x1b[0n");
+                                let _ = w.flush();
+                            }
+
+                            let tail_len = combined.len().min(8);
+                            prev_tail = combined[combined.len() - tail_len..].to_vec();
+
                             let mut p = parser_clone.lock();
-                            p.process(&buf[..n]);
+                            p.process(chunk);
                             has_new_data_clone.store(true, Ordering::Relaxed);
                         }
                         Err(_) => {
@@ -212,13 +265,15 @@ impl PtySession {
     }
 
     pub fn write_str(&mut self, s: &str) -> std::io::Result<()> {
-        self.writer.write_all(s.as_bytes())?;
-        self.writer.flush()
+        let mut w = self.writer.lock();
+        w.write_all(s.as_bytes())?;
+        w.flush()
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        let mut w = self.writer.lock();
+        w.write_all(bytes)?;
+        w.flush()
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
