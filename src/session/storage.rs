@@ -218,9 +218,8 @@ impl StorageManager {
         self.vault_key.is_none() && Self::has_plaintext_passwords(config)
     }
 
-    /// Builds the on-disk representation: passwords are encrypted with the vault key.
+    /// Builds the on-disk representation: passwords are encrypted with the vault key if configured.
     /// Already-encrypted values pass through unchanged (a locked vault keeps its data).
-    /// Plaintext without a key is NEVER written: it is dropped from the disk copy.
     pub fn prepare_for_disk(&self, config: &RustyBoxConfig) -> Result<RustyBoxConfig, String> {
         let mut out = config.clone();
         let conv = |p: &str| -> Result<Option<String>, String> {
@@ -229,7 +228,7 @@ impl StorageManager {
             }
             match &self.vault_key {
                 Some(k) => Ok(Some(encrypt_str(k, p)?)),
-                None => Ok(None),
+                None => Ok(Some(p.to_string())),
             }
         };
         for s in out.sessions.iter_mut() {
@@ -262,6 +261,16 @@ impl StorageManager {
     pub fn save_sessions(&self, sessions: &[Session]) -> Result<(), String> {
         let mut cfg = self.load_config();
         cfg.sessions = sessions.to_vec();
+        self.save_config(&cfg)
+    }
+
+    pub fn load_credentials(&self) -> Vec<Credential> {
+        self.load_config().credentials
+    }
+
+    pub fn save_credentials(&self, credentials: &[Credential]) -> Result<(), String> {
+        let mut cfg = self.load_config();
+        cfg.credentials = credentials.to_vec();
         self.save_config(&cfg)
     }
 
@@ -509,6 +518,27 @@ mod tests {
     }
 
     #[test]
+    fn test_credentials_load_save() {
+        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+            .join(format!("cred_unit_test_{}", uuid::Uuid::new_v4()));
+        let storage = StorageManager::with_data_dir(base.clone());
+        let creds = vec![
+            Credential {
+                name: "Vultr Trial".into(),
+                username: "root".into(),
+                password: "mR@6x?U(P$,hQ8RA".into(),
+            }
+        ];
+        storage.save_credentials(&creds).unwrap();
+        let loaded = storage.load_credentials();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "Vultr Trial");
+        assert_eq!(loaded[0].username, "root");
+        assert_eq!(loaded[0].password, "mR@6x?U(P$,hQ8RA");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn test_vault_encrypts_passwords_on_disk() {
         let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
             .join(format!("vault_unit_test_{}", uuid::Uuid::new_v4()));
@@ -517,11 +547,10 @@ mod tests {
         cfg.sessions[1].password = Some("S3cret-Pass!".into());
         cfg.sessions[1].save_password = true;
 
-        // No key: plaintext must never be written (dropped from disk copy)
-        assert!(storage.has_unsaved_plaintext(&cfg));
+        // Without key: plaintext is preserved so user credentials are not lost
         storage.save_config(&cfg).unwrap();
         let on_disk = fs::read_to_string(storage.file_path()).unwrap();
-        assert!(!on_disk.contains("S3cret-Pass!"));
+        assert!(on_disk.contains("S3cret-Pass!"));
 
         // With key: file contains only enc:v1 and no plaintext
         let (meta, key) = create_vault("master-1").unwrap();

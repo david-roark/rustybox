@@ -8,6 +8,7 @@ pub struct NewSessionDialog {
     pub is_open: bool,
     pub editing_session_id: Option<String>,
     pub request_open_passwords: bool,
+    pub available_credentials: Vec<crate::session::storage::Credential>,
     pub session_name: String,
     pub folder_name: String,
     pub protocol_tab: usize, // 0: SSH, 1: Shell, 2: Serial, 3: Telnet, 4: RDP, 5: VNC, 6: FTP, 7: WSL, 8: SFTP
@@ -107,6 +108,7 @@ impl NewSessionDialog {
             is_open: false,
             editing_session_id: None,
             request_open_passwords: false,
+            available_credentials: Vec::new(),
             session_name: "".into(),
             folder_name: "Servers".into(),
             protocol_tab: 0,
@@ -881,42 +883,29 @@ pub fn render_new_session_dialog(
                                         .hint_text("ruby / root"),
                                 );
                                 // RustyBox Credentials / User+Key button right next to username
-                                let (cred_r, cred_resp) =
-                                    ui.allocate_exact_size(vec2(24.0, 23.0), Sense::click());
-                                {
-                                    let cp = ui.painter();
-                                    cp.rect(
-                                        cred_r,
-                                        Rounding::same(4.0),
-                                        if cred_resp.hovered() {
-                                            Color32::from_rgb(48, 54, 61)
-                                        } else {
-                                            Color32::from_rgb(33, 38, 45)
-                                        },
-                                        Stroke::new(1.0, Color32::from_rgb(72, 79, 88)),
-                                    );
-                                    let cc = cred_r.center();
-                                    // Person head + shoulders + mini gold key
-                                    cp.circle_stroke(
-                                        pos2(cc.x - 2.0, cc.y - 2.5),
-                                        2.3,
-                                        Stroke::new(1.3, Color32::from_rgb(56, 189, 248)),
-                                    );
-                                    cp.line_segment(
-                                        [pos2(cc.x - 5.5, cc.y + 3.5), pos2(cc.x + 1.5, cc.y + 3.5)],
-                                        Stroke::new(1.4, Color32::from_rgb(56, 189, 248)),
-                                    );
-                                    cp.circle_filled(
-                                        pos2(cc.x + 4.2, cc.y - 0.5),
-                                        1.8,
-                                        Color32::from_rgb(251, 191, 36),
-                                    );
-                                }
-                                if cred_resp
-                                    .on_hover_text("Open RustyBox passwords & credentials settings")
+                                if ui.add(egui::Button::new(RichText::new("👤🔑").size(12.0)))
+                                    .on_hover_text("Manage credentials & add new user profile")
                                     .clicked()
                                 {
                                     dialog.request_open_passwords = true;
+                                }
+
+                                if !dialog.available_credentials.is_empty() {
+                                    egui::ComboBox::from_id_source("ssh_cred_picker")
+                                        .selected_text(if dialog.ssh_user.is_empty() { "Saved users..." } else { &dialog.ssh_user })
+                                        .width(95.0)
+                                        .show_ui(ui, |ui| {
+                                            for cred in &dialog.available_credentials {
+                                                let label = format!("{} ({})", cred.name, cred.username);
+                                                if ui.selectable_label(dialog.ssh_user == cred.username, label).clicked() {
+                                                    dialog.ssh_user = cred.username.clone();
+                                                    if !cred.password.is_empty() {
+                                                        dialog.password = cred.password.clone();
+                                                        dialog.save_password = true;
+                                                    }
+                                                }
+                                            }
+                                        });
                                 }
 
                                 ui.add_space(6.0);

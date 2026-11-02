@@ -1,5 +1,5 @@
 use crate::network_tools::NetworkTools;
-use crate::session::storage::StorageManager;
+use crate::session::storage::{Credential, StorageManager};
 use crate::session::ui::{render_new_session_dialog, NewSessionDialog};
 use crate::session::{Session, SessionType};
 use crate::sftp::ui::render_sftp_sidebar;
@@ -82,6 +82,12 @@ pub struct RustyBoxApp {
     manage_passwords_save_ssh_keys: bool,
     manage_passwords_tab: usize,
     manage_passwords_unmasked_ids: Vec<String>,
+    // Shared Credentials (MobaXterm User Credentials Profiles)
+    credentials: Vec<Credential>,
+    show_new_cred_modal: bool,
+    new_cred_name: String,
+    new_cred_user: String,
+    new_cred_password: String,
     // Quick Macros (MobaXterm TFORMMANAGEMACROS)
     quick_macros: Vec<(String, String)>,
     show_macro_manager: bool,
@@ -149,6 +155,7 @@ impl RustyBoxApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let storage = StorageManager::new();
         let mut sessions = storage.load_sessions();
+        let credentials = storage.load_credentials();
         let (broadcast_tx, broadcast_rx) = unbounded();
 
         // Ensure every session has a unique UUID (auto-repair any historical duplicate IDs)
@@ -222,6 +229,11 @@ impl RustyBoxApp {
             manage_passwords_save_ssh_keys: false,
             manage_passwords_tab: 0,
             manage_passwords_unmasked_ids: Vec::new(),
+            credentials,
+            show_new_cred_modal: false,
+            new_cred_name: String::new(),
+            new_cred_user: String::new(),
+            new_cred_password: String::new(),
             quick_macros: default_macros,
             show_macro_manager: false,
             new_macro_name: String::new(),
@@ -2361,6 +2373,7 @@ impl eframe::App for RustyBoxApp {
         }
 
         // New Session Dialog
+        self.new_session_dialog.available_credentials = self.credentials.clone();
         if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
             if let Some(idx) = self.sessions.iter().position(|s| s.id == new_session.id) {
                 // Editing existing session: update in-place
@@ -2377,6 +2390,7 @@ impl eframe::App for RustyBoxApp {
 
         if self.new_session_dialog.request_open_passwords {
             self.new_session_dialog.request_open_passwords = false;
+            self.manage_passwords_tab = 1; // Open Credentials / Users tab directly
             self.show_manage_passwords = true;
         }
 
@@ -3344,14 +3358,63 @@ impl eframe::App for RustyBoxApp {
                             }
                         });
                     } else {
-                        // Credentials Tab
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(RichText::new("Shared Credentials").strong());
-                            ui.label("Saved credential profiles for multiple remote sessions.");
-                            ui.add_space(4.0);
-                            ui.label(RichText::new("No shared credentials configured.").weak());
+                        // Credentials Tab (MobaXterm User Credentials Profiles)
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Shared Credentials & User Profiles").strong());
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button(RichText::new("➕ New credential / user").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
+                                    self.new_cred_name.clear();
+                                    self.new_cred_user.clear();
+                                    self.new_cred_password.clear();
+                                    self.show_new_cred_modal = true;
+                                }
+                            });
                         });
+                        ui.add_space(4.0);
+
+                        let mut to_delete_cred_idx: Option<usize> = None;
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(13, 17, 23))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .rounding(4.0)
+                            .inner_margin(egui::Margin::same(8.0))
+                            .show(ui, |ui| {
+                                ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                    egui::Grid::new("manage_credentials_grid")
+                                        .num_columns(5)
+                                        .striped(true)
+                                        .spacing([14.0, 6.0])
+                                        .show(ui, |ui| {
+                                            ui.label(RichText::new("Profile Name").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Username").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Password").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.label(RichText::new("Action").strong().color(Color32::from_rgb(56, 189, 248)));
+                                            ui.end_row();
+
+                                            for (c_idx, cred) in self.credentials.iter().enumerate() {
+                                                ui.label(&cred.name);
+                                                ui.label(&cred.username);
+                                                ui.label("••••••••••••");
+                                                if ui.small_button("🗑").on_hover_text("Delete credential").clicked() {
+                                                    to_delete_cred_idx = Some(c_idx);
+                                                }
+                                                ui.end_row();
+                                            }
+
+                                            if self.credentials.is_empty() {
+                                                ui.label(RichText::new("No shared credentials configured. Click '+ New credential / user' above to add one.").weak());
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                            });
+
+                        if let Some(del_idx) = to_delete_cred_idx {
+                            if del_idx < self.credentials.len() {
+                                self.credentials.remove(del_idx);
+                                let _ = self.storage.save_credentials(&self.credentials);
+                            }
+                        }
                     }
 
                     ui.separator();
@@ -3383,6 +3446,60 @@ impl eframe::App for RustyBoxApp {
                 open = false;
             }
             self.show_manage_passwords = open;
+        }
+
+        // Add New Credential / User Profile Modal
+        if self.show_new_cred_modal {
+            let mut open = self.show_new_cred_modal;
+            egui::Window::new("➕ New User Credential Profile")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_size(Vec2::new(380.0, 240.0))
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Enter user credentials details:").strong());
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Profile name:");
+                            ui.add(TextEdit::singleline(&mut self.new_cred_name).desired_width(180.0).hint_text("e.g. Root VPS"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Username:");
+                            ui.add(TextEdit::singleline(&mut self.new_cred_user).desired_width(180.0).hint_text("e.g. root / admin"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Password:");
+                            ui.add(TextEdit::singleline(&mut self.new_cred_password).password(true).desired_width(180.0));
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("✔ Save Credential").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if !self.new_cred_user.trim().is_empty() {
+                                let name = if self.new_cred_name.trim().is_empty() {
+                                    self.new_cred_user.trim().to_string()
+                                } else {
+                                    self.new_cred_name.trim().to_string()
+                                };
+                                self.credentials.push(Credential {
+                                    name,
+                                    username: self.new_cred_user.trim().to_string(),
+                                    password: self.new_cred_password.clone(),
+                                });
+                                let _ = self.storage.save_credentials(&self.credentials);
+                                self.show_new_cred_modal = false;
+                            }
+                        }
+                        if ui.button("✖ Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.show_new_cred_modal = false;
+                        }
+                    });
+                });
+            self.show_new_cred_modal = open;
         }
 
         // Global Settings & Preferences Modal (MobaXterm TFORMPARAMS)
