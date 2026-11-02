@@ -19,6 +19,9 @@ pub struct OpenTab {
     pub id: String,
     pub title: String,
     pub session: PtySession,
+    pub session_def: Option<Session>,
+    pub custom_cmd: Option<String>,
+    pub workdir: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -101,6 +104,7 @@ pub struct RustyBoxApp {
     connect_as_target: Option<(Session, String)>,
     rename_session_target: Option<(String, String)>,
     rename_folder_target: Option<(String, String)>,
+    rename_tab_target: Option<(usize, String)>,
     status_toast: Option<(String, std::time::Instant)>,
     // SSH Key Generator (RustyBox KeyGen)
     show_keygen: bool,
@@ -222,6 +226,7 @@ impl RustyBoxApp {
             connect_as_target: None,
             rename_session_target: None,
             rename_folder_target: None,
+            rename_tab_target: None,
             status_toast: None,
             show_keygen: false,
             keygen_type: 0,
@@ -329,6 +334,9 @@ impl RustyBoxApp {
                     id: uuid::Uuid::new_v4().to_string(),
                     title: title.to_string(),
                     session,
+                    session_def: None,
+                    custom_cmd: shell.map(|s| s.to_string()),
+                    workdir: workdir.map(|w| w.to_string()),
                 };
                 self.open_tabs.push(tab);
                 self.active_tab_idx = self.open_tabs.len() - 1;
@@ -363,6 +371,9 @@ impl RustyBoxApp {
                         id: uuid::Uuid::new_v4().to_string(),
                         title: format!("SSH: {}", s.name),
                         session,
+                        session_def: Some(s.clone()),
+                        custom_cmd: None,
+                        workdir: None,
                     };
                     self.open_tabs.push(tab);
                     self.active_tab_idx = self.open_tabs.len() - 1;
@@ -374,6 +385,43 @@ impl RustyBoxApp {
                 }
                 Err(e) => {
                     eprintln!("Failed to spawn SSH session: {}", e);
+                }
+            }
+        }
+    }
+
+    pub fn restart_tab(&mut self, idx: usize) {
+        if let Some(tab) = self.open_tabs.get_mut(idx) {
+            if let Some(ref s) = tab.session_def {
+                if let SessionType::Ssh {
+                    ref host,
+                    port,
+                    ref user,
+                    ref key_path,
+                    ref jump_host,
+                    ..
+                } = s.session_type
+                {
+                    if let Ok(session) = PtySession::spawn_ssh(
+                        24,
+                        80,
+                        host,
+                        port,
+                        user,
+                        key_path.as_deref(),
+                        jump_host.as_deref(),
+                    ) {
+                        tab.session = session;
+                    }
+                }
+            } else {
+                if let Ok(session) = PtySession::spawn_local(
+                    24,
+                    80,
+                    tab.custom_cmd.as_deref(),
+                    tab.workdir.as_deref(),
+                ) {
+                    tab.session = session;
                 }
             }
         }
@@ -1172,80 +1220,98 @@ impl eframe::App for RustyBoxApp {
 
                     // RIGHT: LIVE SYSTEM TELEMETRY MONITOR
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let stat_chip = |ui: &mut egui::Ui, text: RichText| {
+                            egui::Frame::none()
+                                .fill(Color32::from_rgb(26, 32, 42))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
+                                .rounding(3.0)
+                                .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                                .show(ui, |ui| {
+                                    ui.label(text);
+                                });
+                        };
+
                         // Connection status
                         if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
                             if tab.session.is_alive() {
-                                ui.label(RichText::new("✔ Connected").color(Color32::from_rgb(100, 220, 100)).size(11.0).strong());
+                                stat_chip(ui, RichText::new("● Connected").color(Color32::from_rgb(34, 197, 94)).size(10.5).strong());
                             } else {
-                                ui.label(RichText::new("✖ Disconnected").color(Color32::from_rgb(248, 113, 113)).size(11.0));
+                                stat_chip(ui, RichText::new("● Disconnected").color(Color32::from_rgb(248, 113, 113)).size(10.5));
                             }
                         } else {
-                            ui.label(RichText::new("○ Idle").weak().size(11.0));
+                            stat_chip(ui, RichText::new("○ Idle").weak().size(10.5));
                         }
 
                         if self.multi_exec_enabled {
-                            ui.separator();
-                            ui.label(RichText::new("⚠ MULTI-EXEC").color(Color32::from_rgb(255, 180, 50)).size(11.0).strong());
+                            stat_chip(ui, RichText::new("⚠ MULTI-EXEC").color(Color32::from_rgb(251, 191, 36)).size(10.5).strong());
                         }
 
-                        ui.separator();
-
                         // Disk usage
-                        ui.label(
-                            RichText::new(format!("HDD: / {}%", self.telemetry_disk_pct))
-                                .color(Color32::from_rgb(100, 220, 100))
-                                .size(11.0),
+                        stat_chip(
+                            ui,
+                            RichText::new(format!("🖴 {}%", self.telemetry_disk_pct))
+                                .color(Color32::from_rgb(74, 222, 128))
+                                .size(10.5),
                         );
 
-                        ui.separator();
-
                         // User
-                        ui.label(RichText::new(format!("User: {}", self.telemetry_user)).size(11.0).color(Color32::from_rgb(201, 209, 217)));
-
-                        ui.separator();
+                        stat_chip(ui, RichText::new(format!("👤 {}", self.telemetry_user)).size(10.5).color(Color32::from_rgb(201, 209, 217)));
 
                         // Uptime
-                        ui.label(RichText::new(&self.telemetry_uptime).size(11.0).color(Color32::from_rgb(139, 148, 158)));
-
-                        ui.separator();
+                        stat_chip(ui, RichText::new(&self.telemetry_uptime).size(10.5).color(Color32::from_rgb(156, 163, 175)));
 
                         // Network
                         #[cfg(target_os = "windows")]
                         let net_text = "▲0.02M  ▼0.01M";
                         #[cfg(not(target_os = "windows"))]
-                        let net_text = "Net: ^0.02M  v0.01M";
-                        ui.label(RichText::new(net_text).color(Color32::from_rgb(56, 189, 248)).size(11.0));
-
-                        ui.separator();
+                        let net_text = "^0.02M  v0.01M";
+                        stat_chip(ui, RichText::new(format!("🌐 {}", net_text)).color(Color32::from_rgb(56, 189, 248)).size(10.5));
 
                         // RAM with visual gauge
                         let ram_pct = (self.telemetry_ram_used_gb / self.telemetry_ram_total_gb.max(0.1)).clamp(0.0, 1.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("RAM: {:.1}/{:.1}G", self.telemetry_ram_used_gb, self.telemetry_ram_total_gb)).size(11.0));
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 8.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
-                            let mut filled_rect = rect;
-                            filled_rect.set_width(rect.width() * ram_pct);
-                            ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(59, 130, 246));
-                        });
-
-                        ui.separator();
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(26, 32, 42))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
+                            .rounding(3.0)
+                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("💾 {:.1}/{:.1}G", self.telemetry_ram_used_gb, self.telemetry_ram_total_gb)).size(10.5));
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                                    let mut filled_rect = rect;
+                                    filled_rect.set_width(rect.width() * ram_pct);
+                                    ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(59, 130, 246));
+                                });
+                            });
 
                         // CPU with visual gauge
                         let cpu_frac = (self.telemetry_cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("CPU: {}%", self.telemetry_cpu_pct)).size(11.0));
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 8.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
-                            let mut filled_rect = rect;
-                            filled_rect.set_width(rect.width() * cpu_frac);
-                            ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(34, 197, 94));
-                        });
-
-                        ui.separator();
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(26, 32, 42))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
+                            .rounding(3.0)
+                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("⚡ {}%", self.telemetry_cpu_pct)).size(10.5));
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                                    let mut filled_rect = rect;
+                                    filled_rect.set_width(rect.width() * cpu_frac);
+                                    let bar_color = if self.telemetry_cpu_pct > 75 {
+                                        Color32::from_rgb(239, 68, 68)
+                                    } else if self.telemetry_cpu_pct > 50 {
+                                        Color32::from_rgb(245, 158, 11)
+                                    } else {
+                                        Color32::from_rgb(34, 197, 94)
+                                    };
+                                    ui.painter().rect_filled(filled_rect, 2.0, bar_color);
+                                });
+                            });
 
                         // Host
-                        ui.label(RichText::new(format!("Host: {}", self.telemetry_host)).strong().size(11.0).color(Color32::WHITE));
+                        stat_chip(ui, RichText::new(format!("🖥 {}", self.telemetry_host)).strong().size(10.5).color(Color32::WHITE));
                     });
                 });
             });
@@ -1594,64 +1660,77 @@ impl eframe::App for RustyBoxApp {
                     )
                 };
 
-                egui::Frame::none()
-                    .fill(h_fill)
-                    .stroke(h_stroke)
-                    .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 })
-                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
-                    .show(ui, |ui| {
-                        let label = ui.add(
-                            egui::Label::new(
-                                RichText::new("🏠 Home")
-                                    .strong()
-                                    .color(h_text)
-                                    .size(12.0),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if label.clicked() {
-                            self.is_home_active = true;
-                        }
-                    });
+                let h_btn = egui::Button::new(
+                    RichText::new("🏠 Home")
+                        .strong()
+                        .color(h_text)
+                        .size(12.0),
+                )
+                .fill(h_fill)
+                .stroke(h_stroke)
+                .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 });
+                if ui.add(h_btn).clicked() {
+                    self.is_home_active = true;
+                }
 
-                enum TabMenuAction { Duplicate, Close, CloseOthers, CloseRight }
+                enum TabMenuAction { Duplicate, Restart, Rename, Close, CloseOthers, CloseRight }
                 let mut tab_menu_action: Option<(usize, TabMenuAction)> = None;
 
                 for (idx, tab) in self.open_tabs.iter().enumerate() {
                     let is_active = !self.is_home_active && idx == self.active_tab_idx;
                     let (fill, stroke, text_color) = if is_active {
                         (
-                            Color32::from_rgb(31, 111, 235),
+                            Color32::from_rgb(24, 34, 52),
                             egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
                             Color32::WHITE,
                         )
                     } else {
                         (
-                            Color32::from_rgb(30, 36, 46),
-                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
-                            Color32::from_rgb(180, 190, 200),
+                            Color32::from_rgb(26, 32, 42),
+                            egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)),
+                            Color32::from_rgb(175, 185, 195),
                         )
                     };
 
                     let frame_res = egui::Frame::none()
                         .fill(fill)
                         .stroke(stroke)
-                        .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 })
+                        .rounding(egui::Rounding { nw: 5.0, ne: 5.0, sw: 0.0, se: 0.0 })
                         .inner_margin(egui::Margin::symmetric(10.0, 5.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                // Status dot (Green = Alive, Red = Exited)
+                                let (dot_rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
+                                let dot_col = if tab.session.is_alive() {
+                                    Color32::from_rgb(34, 197, 94)
+                                } else {
+                                    Color32::from_rgb(239, 68, 68)
+                                };
+                                ui.painter().circle_filled(dot_rect.center(), 3.0, dot_col);
+
+                                let icon = if tab.title.contains("SSH") {
+                                    "🔒 "
+                                } else if tab.title.contains("WSL") {
+                                    "🐧 "
+                                } else if tab.title.contains("Telnet") {
+                                    "⚡ "
+                                } else {
+                                    ">_ "
+                                };
+
                                 ui.label(
-                                    RichText::new(format!("{}. {}", idx + 1, &tab.title))
+                                    RichText::new(format!("{}{}", icon, &tab.title))
                                         .strong()
                                         .color(text_color)
                                         .size(12.0),
                                 );
+
                                 if ui
                                     .add(
-                                        egui::Button::new(RichText::new("×").size(11.0).color(text_color))
+                                        egui::Button::new(RichText::new("×").size(11.5).color(text_color))
                                             .frame(false),
                                     )
-                                    .on_hover_text("Close Tab")
+                                    .on_hover_text("Close Tab (or Middle Click)")
                                     .clicked()
                                 {
                                     close_tab_idx = Some(idx);
@@ -1659,15 +1738,35 @@ impl eframe::App for RustyBoxApp {
                             });
                         });
 
-                    let tab_resp = ui.interact(frame_res.response.rect, ui.make_persistent_id(format!("tab_hdr_{}", idx)), egui::Sense::click());
+                    let r = frame_res.response.rect;
+                    if is_active {
+                        // Sleek electric top bar on active tab
+                        ui.painter().line_segment(
+                            [egui::pos2(r.left(), r.top() + 1.0), egui::pos2(r.right(), r.top() + 1.0)],
+                            egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                        );
+                    }
+
+                    let tab_resp = ui.interact(r, ui.make_persistent_id(format!("tab_hdr_{}", idx)), egui::Sense::click());
                     if tab_resp.clicked() {
                         self.is_home_active = false;
                         self.active_tab_idx = idx;
                     }
+                    if tab_resp.middle_clicked() {
+                        close_tab_idx = Some(idx);
+                    }
                     tab_resp.context_menu(|ui| {
-                        ui.set_min_width(170.0);
+                        ui.set_min_width(180.0);
                         if ui.button("🔑 Duplicate Tab").clicked() {
                             tab_menu_action = Some((idx, TabMenuAction::Duplicate));
+                            ui.close_menu();
+                        }
+                        if ui.button("🔄 Restart / Reconnect").clicked() {
+                            tab_menu_action = Some((idx, TabMenuAction::Restart));
+                            ui.close_menu();
+                        }
+                        if ui.button("✏ Rename Tab").clicked() {
+                            tab_menu_action = Some((idx, TabMenuAction::Rename));
                             ui.close_menu();
                         }
                         if ui.button("× Close Tab").clicked() {
@@ -1694,38 +1793,77 @@ impl eframe::App for RustyBoxApp {
                             .rounding(4.0)
                             .min_size(egui::vec2(24.0, 24.0)),
                     )
-                    .on_hover_text("Open new local terminal")
+                    .on_hover_text("Open new local terminal (or Double-Click tab bar)")
                     .clicked()
                 {
                     self.spawn_local_terminal("Local Terminal", None, None);
                     self.is_home_active = false;
                 }
 
-                // Quick Connect Bar at top right of Tab Bar
+                // Double-click empty tab bar area to open local terminal
+                let avail_tab_w = (ui.available_width() - 250.0).max(30.0);
+                let (_empty_tab_rect, empty_tab_resp) = ui.allocate_exact_size(vec2(avail_tab_w, 24.0), egui::Sense::click());
+                if empty_tab_resp.double_clicked() {
+                    self.spawn_local_terminal("Local Terminal", None, None);
+                    self.is_home_active = false;
+                }
+
+                // Modern Pill Quick Connect Bar at top right of Tab Bar
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let run_btn = egui::Button::new(RichText::new("▶").color(Color32::WHITE).size(12.0))
+                    let run_btn = egui::Button::new(RichText::new("▶ Connect").color(Color32::WHITE).size(11.5).strong())
                         .fill(Color32::from_rgb(31, 111, 235))
-                        .rounding(3.0);
-                    if ui.add(run_btn).on_hover_text("Quick Connect to user@host:port").clicked() {
+                        .rounding(4.0);
+                    if ui.add(run_btn).on_hover_text("Quick Connect to user@host:port or local shell").clicked() {
                         self.handle_quick_connect();
                     }
 
-                    let q_edit = ui.add_sized(
-                        egui::vec2(160.0, 22.0),
-                        TextEdit::singleline(&mut self.quick_connect_input)
-                            .hint_text("Quick connect...")
-                    );
-                    if q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        self.handle_quick_connect();
-                    }
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(18, 22, 28))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(8.0, 2.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("⚡").color(Color32::from_rgb(56, 189, 248)).size(11.0));
+                                let q_edit = ui.add_sized(
+                                    egui::vec2(160.0, 18.0),
+                                    TextEdit::singleline(&mut self.quick_connect_input)
+                                        .hint_text("user@host:port...")
+                                        .frame(false)
+                                );
+                                if q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    self.handle_quick_connect();
+                                }
+                            });
+                        });
                 });
 
                 if let Some((idx, action)) = tab_menu_action {
                     match action {
                         TabMenuAction::Duplicate => {
+                            let dup_info = self.open_tabs.get(idx).map(|tab| {
+                                (
+                                    tab.title.clone(),
+                                    tab.session_def.clone(),
+                                    tab.custom_cmd.clone(),
+                                    tab.workdir.clone(),
+                                )
+                            });
+                            if let Some((title, session_def, custom_cmd, workdir)) = dup_info {
+                                if let Some(s) = session_def {
+                                    self.spawn_ssh_terminal(s);
+                                } else {
+                                    let name = format!("{}_copy", title);
+                                    self.spawn_local_terminal(&name, custom_cmd.as_deref(), workdir.as_deref());
+                                }
+                            }
+                        }
+                        TabMenuAction::Restart => {
+                            self.restart_tab(idx);
+                        }
+                        TabMenuAction::Rename => {
                             if let Some(tab) = self.open_tabs.get(idx) {
-                                let name = format!("{}_copy", tab.title);
-                                self.spawn_local_terminal(&name, None, None);
+                                self.rename_tab_target = Some((idx, tab.title.clone()));
                             }
                         }
                         TabMenuAction::Close => {
@@ -1760,48 +1898,144 @@ impl eframe::App for RustyBoxApp {
 
             // If Home tab is active, render Welcome Dashboard
             if self.is_home_active {
-                ui.add_space(25.0);
+                ui.add_space(15.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("RustyBox").size(28.0).strong().color(Color32::from_rgb(56, 189, 248)));
-                    ui.label(RichText::new("Enhanced Terminal & Remote Toolbox").size(13.5).weak());
-                    ui.add_space(25.0);
+                    ui.label(RichText::new("⚡ RustyBox").size(28.0).strong().color(Color32::from_rgb(56, 189, 248)));
+                    ui.label(RichText::new("Remote Toolbox & All-in-One Multi-Terminal").size(13.5).weak());
+                    ui.add_space(16.0);
+
+                    // Hero Quick Connect Box
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(22, 27, 34))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("⚡ Quick Connect:").strong().color(Color32::from_rgb(56, 189, 248)).size(13.0));
+                                let q_edit = ui.add(
+                                    TextEdit::singleline(&mut self.quick_connect_input)
+                                        .hint_text("user@host:port, cmd, wsl...")
+                                        .desired_width(320.0),
+                                );
+                                let conn_btn = egui::Button::new(
+                                    RichText::new("▶ Connect").strong().color(Color32::WHITE),
+                                )
+                                .fill(Color32::from_rgb(31, 111, 235))
+                                .rounding(4.0);
+                                if (q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                    || ui.add(conn_btn).clicked()
+                                {
+                                    self.handle_quick_connect();
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let chip = |ui: &mut egui::Ui, text: &str| -> egui::Response {
+                                    ui.add(
+                                        egui::Button::new(
+                                            RichText::new(text).size(11.0).color(Color32::from_rgb(180, 190, 205)),
+                                        )
+                                        .fill(Color32::from_rgb(30, 36, 46))
+                                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                                        .rounding(4.0),
+                                    )
+                                };
+                                if chip(ui, "💻 Local Shell").clicked() {
+                                    self.spawn_local_terminal("Local Terminal", None, None);
+                                    self.is_home_active = false;
+                                }
+                                if chip(ui, "🐧 WSL").clicked() {
+                                    self.spawn_local_terminal("WSL", Some("wsl"), None);
+                                    self.is_home_active = false;
+                                }
+                                if chip(ui, "🌐 New Session").clicked() {
+                                    self.new_session_dialog.open_for_new();
+                                }
+                                if chip(ui, "📡 NetScan").clicked() {
+                                    self.show_network_tools = true;
+                                    self.net_tools_tab = 1;
+                                }
+                                if chip(ui, "🔀 Tunnels").clicked() {
+                                    self.show_tunnels = true;
+                                }
+                            });
+                        });
+
+                    ui.add_space(20.0);
+
+                    // 6 Modern Action Cards
+                    let modern_card = |ui: &mut egui::Ui, icon: &str, title: &str, desc: &str| -> egui::Response {
+                        let w = 210.0;
+                        let h = 68.0;
+                        let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+                        let is_hovered = resp.hovered();
+                        let bg = if is_hovered {
+                            Color32::from_rgb(30, 38, 52)
+                        } else {
+                            Color32::from_rgb(22, 27, 34)
+                        };
+                        let border = if is_hovered {
+                            egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248))
+                        } else {
+                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61))
+                        };
+                        ui.painter().rect(rect, egui::Rounding::same(8.0), bg, border);
+
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new()
+                                .max_rect(rect.shrink(8.0))
+                                .layout(Layout::top_down(Align::Min)),
+                            |c_ui| {
+                                c_ui.horizontal(|ui| {
+                                    ui.label(RichText::new(icon).size(22.0));
+                                    ui.vertical(|ui| {
+                                        let tc = if is_hovered {
+                                            Color32::from_rgb(56, 189, 248)
+                                        } else {
+                                            Color32::WHITE
+                                        };
+                                        ui.label(RichText::new(title).strong().size(12.5).color(tc));
+                                        ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(139, 148, 158)));
+                                    });
+                                });
+                            },
+                        );
+                        resp
+                    };
 
                     ui.horizontal_wrapped(|ui| {
-                        let big_btn = |ui: &mut egui::Ui, icon: &str, text: &str| -> egui::Response {
-                            ui.add_sized(
-                                egui::vec2(170.0, 56.0),
-                                egui::Button::new(
-                                    RichText::new(format!("{}  {}", icon, text)).size(13.0).strong()
-                                )
-                                .fill(Color32::from_rgb(30, 36, 46))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                                .rounding(6.0)
-                            )
-                        };
-
-                        if big_btn(ui, "💻", "Start local terminal").clicked() {
+                        if modern_card(ui, "💻", "Local Terminal", "Interactive shell (cmd / bash) with ConPTY").clicked() {
                             self.spawn_local_terminal("Local Terminal", None, None);
                             self.is_home_active = false;
                         }
                         ui.add_space(8.0);
-                        if big_btn(ui, "🌐", "New SSH session").clicked() {
+                        if modern_card(ui, "🌐", "SSH Client", "Remote shell with key auth & auto-SFTP").clicked() {
                             self.new_session_dialog.open_for_new();
                         }
                         ui.add_space(8.0);
-                        if big_btn(ui, "📁", "Open SFTP browser").clicked() {
+                        if modern_card(ui, "📁", "SFTP Browser", "Dual-pane remote file manager & transfer").clicked() {
                             self.show_sftp_sidebar = true;
                             self.sidebar_tab = 1;
                         }
                         ui.add_space(8.0);
-                        if big_btn(ui, "📡", "Network scanner").clicked() {
+                        if modern_card(ui, "📡", "Network Scanner", "Subnet IP discovery, Ping & Port Scan").clicked() {
                             self.show_network_tools = true;
                             self.net_tools_tab = 1;
                         }
+                        ui.add_space(8.0);
+                        if modern_card(ui, "🔀", "SSH Tunnels", "Local, remote & dynamic SOCKS5 proxy").clicked() {
+                            self.show_tunnels = true;
+                        }
+                        ui.add_space(8.0);
+                        if modern_card(ui, "🕊", "Network Daemons", "Micro HTTP, TFTP & Syslog servers").clicked() {
+                            self.show_services_modal = true;
+                        }
                     });
 
-                    ui.add_space(35.0);
+                    ui.add_space(25.0);
                     ui.label(RichText::new("★ Quick Launch Sessions").strong().size(13.5).color(Color32::from_rgb(234, 179, 8)));
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
 
                     let mut to_launch_quick: Option<Session> = None;
                     for s in self.sessions.iter().take(6) {
@@ -2025,6 +2259,18 @@ impl eframe::App for RustyBoxApp {
             }
             TerminalAction::SaveBufferToFile => {
                 self.save_active_terminal_buffer();
+            }
+            TerminalAction::ZoomIn => {
+                self.font_size = (self.font_size + 1.0).min(32.0);
+            }
+            TerminalAction::ZoomOut => {
+                self.font_size = (self.font_size - 1.0).max(9.0);
+            }
+            TerminalAction::ZoomReset => {
+                self.font_size = 14.0;
+            }
+            TerminalAction::OpenSearch => {
+                self.search_open = true;
             }
             _ => {}
         }
@@ -3423,6 +3669,45 @@ impl eframe::App for RustyBoxApp {
                 self.rename_folder_target = None;
             } else if let Some((_, ref mut f)) = self.rename_folder_target {
                 *f = new_folder;
+            }
+        }
+
+        // Modal: Rename Tab
+        if let Some((tab_idx, mut new_tab_name)) = self.rename_tab_target.clone() {
+            let mut close_modal = false;
+            let mut do_rename = false;
+            egui::Window::new("✏ Rename Tab")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.label("Enter new tab title:");
+                    ui.text_edit_singleline(&mut new_tab_name);
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("✓ Rename").strong()).clicked() {
+                            do_rename = true;
+                            close_modal = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+            if do_rename {
+                let clean_name = new_tab_name.trim().to_string();
+                if !clean_name.is_empty() {
+                    if let Some(tab) = self.open_tabs.get_mut(tab_idx) {
+                        tab.title = clean_name;
+                    }
+                }
+            }
+            if close_modal {
+                self.rename_tab_target = None;
+            } else if let Some((_, ref mut n)) = self.rename_tab_target {
+                *n = new_tab_name;
             }
         }
 

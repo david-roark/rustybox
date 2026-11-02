@@ -1,7 +1,7 @@
 use super::pty_session::PtySession;
 use super::vt_screen::{vt_to_egui_color, TerminalTheme};
 use egui::{
-    pos2, vec2, Color32, Event, FontFamily, FontId, Key, Rect, Response, Sense, Stroke, Ui,
+    pos2, vec2, Color32, Event, FontFamily, FontId, Key, Rect, Response, RichText, Sense, Stroke, Ui,
 };
 
 pub struct TerminalWidget<'a> {
@@ -16,6 +16,10 @@ pub enum TerminalAction {
     None,
     MultiLinePaste(String),
     SaveBufferToFile,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    OpenSearch,
 }
 
 impl<'a> TerminalWidget<'a> {
@@ -108,8 +112,19 @@ impl<'a> TerminalWidget<'a> {
 
         let has_focus = !other_widget_focused;
 
+        // Ctrl + Mouse Wheel Zoom
+        if response.hovered() && ui.input(|i| i.modifiers.ctrl) {
+            let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll_y > 1.0 {
+                action = TerminalAction::ZoomIn;
+            } else if scroll_y < -1.0 {
+                action = TerminalAction::ZoomOut;
+            }
+        }
+
         // Right-Click Context Menu (MobaXterm TFORMRIGHTCLICKMENU)
         response.context_menu(|ui| {
+            ui.set_min_width(180.0);
             if ui.button("📋 Paste Clipboard").clicked() {
                 let text = ui.output(|o| o.copied_text.clone());
                 if !text.is_empty() {
@@ -125,16 +140,53 @@ impl<'a> TerminalWidget<'a> {
                 }
                 ui.close_menu();
             }
+            if ui.button("📄 Copy Terminal Text").clicked() {
+                let mut all_text = String::new();
+                let parser = self.session.parser.lock();
+                let screen = parser.screen();
+                let (screen_rows, screen_cols) = screen.size();
+                for r in 0..screen_rows.get() {
+                    let mut row_str = String::new();
+                    for c in 0..screen_cols.get() {
+                        if let Some(cell) = screen.cell(r, c) {
+                            row_str.push_str(cell.contents());
+                        } else {
+                            row_str.push(' ');
+                        }
+                    }
+                    all_text.push_str(row_str.trim_end());
+                    all_text.push('\n');
+                }
+                ui.output_mut(|o| o.copied_text = all_text);
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("🔍 Find in Terminal (Ctrl+F)").clicked() {
+                action = TerminalAction::OpenSearch;
+                ui.close_menu();
+            }
+            if ui.button("🔎 Zoom In (Ctrl +)").clicked() {
+                action = TerminalAction::ZoomIn;
+                ui.close_menu();
+            }
+            if ui.button("🔍 Zoom Out (Ctrl -)").clicked() {
+                action = TerminalAction::ZoomOut;
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.button("🧹 Clear Terminal Screen").clicked() {
+                #[cfg(target_os = "windows")]
+                let _ = self.session.write_bytes(b"cls\r\n");
+                #[cfg(not(target_os = "windows"))]
                 let _ = self.session.write_bytes(b"clear\n");
                 ui.close_menu();
             }
-            if ui.button("💾 Save Terminal Buffer to File...").clicked() {
+            if ui.button("💾 Save Buffer to File...").clicked() {
                 action = TerminalAction::SaveBufferToFile;
                 ui.close_menu();
             }
             ui.separator();
-            ui.label(format!("Size: {} cols x {} rows", cols, rows));
+            ui.label(RichText::new(format!("Size: {} cols x {} rows", cols, rows)).weak().size(11.0));
         });
 
         // Render terminal contents with Syntax Highlighting & Search Matching
@@ -308,6 +360,11 @@ impl<'a> TerminalWidget<'a> {
                                 Key::PageDown => input_bytes.extend_from_slice(b"\x1b[6~"),
                                 Key::Delete => input_bytes.extend_from_slice(b"\x1b[3~"),
                                 Key::Insert => input_bytes.extend_from_slice(b"\x1b[2~"),
+                                Key::F if ctrl => action = TerminalAction::OpenSearch,
+                                Key::Plus if ctrl => action = TerminalAction::ZoomIn,
+                                Key::Equals if ctrl => action = TerminalAction::ZoomIn,
+                                Key::Minus if ctrl => action = TerminalAction::ZoomOut,
+                                Key::Num0 if ctrl => action = TerminalAction::ZoomReset,
                                 Key::A if ctrl => input_bytes.extend_from_slice(b"\x01"), // Ctrl+A
                                 Key::B if ctrl => input_bytes.extend_from_slice(b"\x02"), // Ctrl+B
                                 Key::C if ctrl => input_bytes.extend_from_slice(b"\x03"), // Ctrl+C (SIGINT)
