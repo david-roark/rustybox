@@ -96,6 +96,12 @@ pub struct RustyBoxApp {
     telemetry_ram_total_gb: f32,
     telemetry_uptime: String,
     telemetry_disk_pct: u32,
+    // Context Actions & Modals
+    selected_sidebar_session_id: Option<String>,
+    connect_as_target: Option<(Session, String)>,
+    rename_session_target: Option<(String, String)>,
+    rename_folder_target: Option<(String, String)>,
+    status_toast: Option<(String, std::time::Instant)>,
     // Tokio Runtime
     tokio_runtime: tokio::runtime::Runtime,
 }
@@ -177,6 +183,11 @@ impl RustyBoxApp {
             telemetry_ram_total_gb: 11.4,
             telemetry_uptime: "Up: 1 day".into(),
             telemetry_disk_pct: 48,
+            selected_sidebar_session_id: None,
+            connect_as_target: None,
+            rename_session_target: None,
+            rename_folder_target: None,
+            status_toast: None,
             tokio_runtime,
         };
 
@@ -945,12 +956,12 @@ impl eframe::App for RustyBoxApp {
                         // Connection status
                         if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
                             if tab.session.is_alive() {
-                                ui.label(RichText::new("🟢 Connected").color(Color32::from_rgb(100, 220, 100)).size(11.0));
+                                ui.label(RichText::new("✔ Connected").color(Color32::from_rgb(100, 220, 100)).size(11.0).strong());
                             } else {
-                                ui.label(RichText::new("🔴 Disconnected").color(Color32::from_rgb(248, 113, 113)).size(11.0));
+                                ui.label(RichText::new("✖ Disconnected").color(Color32::from_rgb(248, 113, 113)).size(11.0));
                             }
                         } else {
-                            ui.label(RichText::new("⚪ Idle").weak().size(11.0));
+                            ui.label(RichText::new("○ Idle").weak().size(11.0));
                         }
 
                         if self.multi_exec_enabled {
@@ -980,7 +991,11 @@ impl eframe::App for RustyBoxApp {
                         ui.separator();
 
                         // Network
-                        ui.label(RichText::new("▲0.02M  ▼0.01M").color(Color32::from_rgb(56, 189, 248)).size(11.0));
+                        #[cfg(target_os = "windows")]
+                        let net_text = "▲0.02M  ▼0.01M";
+                        #[cfg(not(target_os = "windows"))]
+                        let net_text = "Net: ^0.02M  v0.01M";
+                        ui.label(RichText::new(net_text).color(Color32::from_rgb(56, 189, 248)).size(11.0));
 
                         ui.separator();
 
@@ -1069,15 +1084,29 @@ impl eframe::App for RustyBoxApp {
                         }
 
                         let mut to_launch: Option<Session> = None;
+                        let mut to_connect_as: Option<(Session, String)> = None;
+                        let mut to_ping_host: Option<String> = None;
+                        let mut to_rename: Option<(String, String)> = None;
+                        let mut to_edit: Option<Session> = None;
                         let mut to_delete_id: Option<String> = None;
+                        let mut to_duplicate: Option<Session> = None;
+                        let mut to_save_file: Option<Session> = None;
+                        let mut to_create_shortcut: Option<Session> = None;
+                        let mut to_save_preset: Option<Session> = None;
+                        let mut to_copy_settings: Option<Session> = None;
+                        let mut to_new_in_folder: Option<String> = None;
+                        let mut to_rename_folder: Option<(String, String)> = None;
+                        let mut to_delete_folder: Option<String> = None;
 
                         ScrollArea::vertical().show(ui, |ui| {
                             for (folder, list) in grouped {
-                                egui::CollapsingHeader::new(
+                                let folder_name = folder.clone();
+                                let header = egui::CollapsingHeader::new(
                                     RichText::new(format!("📁 {} ({})", folder, list.len())).strong().color(Color32::from_rgb(201, 209, 217))
                                 )
-                                .default_open(true)
-                                .show(ui, |ui| {
+                                .default_open(true);
+
+                                let res = header.show(ui, |ui| {
                                     for s in list {
                                         let icon = match s.session_type {
                                             SessionType::LocalShell { .. } => ">_ ",
@@ -1101,49 +1130,130 @@ impl eframe::App for RustyBoxApp {
                                             SessionType::Wsl { distro, .. } => format!("wsl ({})", distro),
                                         };
 
-                                        let is_active = self.open_tabs.get(self.active_tab_idx).map(|t| t.title == s.name).unwrap_or(false);
-                                        let row_fill = if is_active {
+                                        let is_connected_tab = self.open_tabs.iter().any(|t| t.title == s.name && t.session.is_alive());
+                                        let is_selected = self.selected_sidebar_session_id.as_deref() == Some(&s.id)
+                                            || (self.selected_sidebar_session_id.is_none() && self.open_tabs.get(self.active_tab_idx).map(|t| t.title == s.name).unwrap_or(false));
+
+                                        let id = ui.make_persistent_id(&s.id);
+                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+                                        let resp = ui.interact(rect, id, egui::Sense::click());
+
+                                        if resp.clicked() || resp.secondary_clicked() {
+                                            self.selected_sidebar_session_id = Some(s.id.clone());
+                                        }
+
+                                        let bg = if is_selected {
                                             Color32::from_rgb(31, 111, 235)
+                                        } else if resp.hovered() {
+                                            Color32::from_rgb(38, 44, 54)
                                         } else {
                                             Color32::TRANSPARENT
                                         };
+                                        ui.painter().rect_filled(rect, 4.0, bg);
 
-                                        let card = egui::Frame::none()
-                                            .fill(row_fill)
-                                            .rounding(4.0)
-                                            .inner_margin(egui::Margin::symmetric(6.0, 3.0));
+                                        let text_color = if is_selected { Color32::WHITE } else { Color32::from_rgb(220, 230, 242) };
+                                        let sub_color = if is_selected { Color32::from_rgb(200, 225, 255) } else { Color32::from_rgb(139, 148, 158) };
+                                        let icon_color = if is_selected { Color32::WHITE } else { Color32::from_rgb(56, 189, 248) };
 
-                                        card.show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                let resp = ui.vertical(|ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(RichText::new(icon).strong().color(if is_active { Color32::WHITE } else { Color32::from_rgb(56, 189, 248) }));
-                                                        ui.label(RichText::new(&s.name).strong().size(12.0).color(if is_active { Color32::WHITE } else { Color32::from_rgb(220, 230, 242) }));
-                                                    });
-                                                    ui.label(RichText::new(&subtitle).size(10.5).color(if is_active { Color32::from_rgb(200, 225, 255) } else { Color32::from_rgb(139, 148, 158) }));
-                                                }).response.interact(egui::Sense::click());
+                                        ui.painter().text(
+                                            egui::pos2(rect.left() + 8.0, rect.top() + 10.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            icon,
+                                            egui::FontId::proportional(12.0),
+                                            icon_color,
+                                        );
+                                        ui.painter().text(
+                                            egui::pos2(rect.left() + 28.0, rect.top() + 10.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            &s.name,
+                                            egui::FontId::proportional(12.0),
+                                            text_color,
+                                        );
+                                        ui.painter().text(
+                                            egui::pos2(rect.left() + 28.0, rect.top() + 24.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            &subtitle,
+                                            egui::FontId::proportional(10.5),
+                                            sub_color,
+                                        );
+                                        if is_connected_tab {
+                                            let dot_pos = egui::pos2(rect.right() - 14.0, rect.center().y);
+                                            ui.painter().circle_filled(dot_pos, 4.0, Color32::from_rgb(34, 197, 94));
+                                        }
 
-                                                if resp.double_clicked() {
-                                                    to_launch = Some(s.clone());
+                                        if resp.double_clicked() {
+                                            to_launch = Some(s.clone());
+                                        }
+                                        resp.context_menu(|ui| {
+                                            ui.set_min_width(210.0);
+                                            if ui.button(RichText::new("★ Execute").strong().color(Color32::from_rgb(234, 179, 8))).clicked() {
+                                                to_launch = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("👤 Connect as...").clicked() {
+                                                let cur_user = match &s.session_type {
+                                                    SessionType::Ssh { user, .. } => user.clone(),
+                                                    _ => "root".to_string(),
+                                                };
+                                                to_connect_as = Some((s.clone(), cur_user));
+                                                ui.close_menu();
+                                            }
+                                            if let Some(h) = s.host_str() {
+                                                if ui.button("🌐 Ping host").clicked() {
+                                                    to_ping_host = Some(h);
+                                                    ui.close_menu();
                                                 }
-                                                resp.context_menu(|ui| {
-                                                    if ui.button("▶ Connect").clicked() {
-                                                        to_launch = Some(s.clone());
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("🗑 Delete").clicked() {
-                                                        to_delete_id = Some(s.id.clone());
-                                                        ui.close_menu();
-                                                    }
-                                                });
-
-                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                    if is_active {
-                                                        ui.label(RichText::new("🟢").size(9.0));
-                                                    }
-                                                });
-                                            });
+                                            }
+                                            ui.separator();
+                                            if ui.button("📝 Rename session").clicked() {
+                                                to_rename = Some((s.id.clone(), s.name.clone()));
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("⚙ Edit session").clicked() {
+                                                to_edit = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button(RichText::new("× Delete session").strong().color(Color32::from_rgb(239, 68, 68))).clicked() {
+                                                to_delete_id = Some(s.id.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("🔑 Duplicate session").clicked() {
+                                                to_duplicate = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("💾 Save session to file").clicked() {
+                                                to_save_file = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("☆ Create a desktop shortcut").clicked() {
+                                                to_create_shortcut = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            ui.separator();
+                                            if ui.button("📥 Save session settings as default presets").clicked() {
+                                                to_save_preset = Some(s.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("📋 Copy session settings").clicked() {
+                                                to_copy_settings = Some(s.clone());
+                                                ui.close_menu();
+                                            }
                                         });
+                                    }
+                                });
+
+                                res.header_response.context_menu(|ui| {
+                                    if ui.button("➕ New session in this folder...").clicked() {
+                                        to_new_in_folder = Some(folder_name.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📁 Rename folder...").clicked() {
+                                        to_rename_folder = Some((folder_name.clone(), folder_name.clone()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button(RichText::new("✕ Delete folder").color(Color32::from_rgb(239, 68, 68))).clicked() {
+                                        to_delete_folder = Some(folder_name.clone());
+                                        ui.close_menu();
                                     }
                                 });
                             }
@@ -1156,9 +1266,82 @@ impl eframe::App for RustyBoxApp {
                         if let Some(s) = to_launch {
                             self.launch_generic_session(s);
                         }
-
+                        if let Some((s, u)) = to_connect_as {
+                            self.connect_as_target = Some((s, u));
+                        }
+                        if let Some(h) = to_ping_host {
+                            self.show_network_tools = true;
+                            self.net_tools_tab = 2;
+                            self.network_tools.ping_host = h;
+                            self.network_tools.ping_logs.lock().clear();
+                        }
+                        if let Some((id, name)) = to_rename {
+                            self.rename_session_target = Some((id, name));
+                        }
+                        if let Some(s) = to_edit {
+                            self.new_session_dialog.open_for_edit(&s);
+                        }
                         if let Some(del_id) = to_delete_id {
                             self.sessions.retain(|item| item.id != del_id);
+                            let _ = self.storage.save_sessions(&self.sessions);
+                        }
+                        if let Some(dup_s) = to_duplicate {
+                            let mut copy = dup_s.clone();
+                            copy.id = uuid::Uuid::new_v4().to_string();
+                            copy.name = format!("{} (Copy)", copy.name);
+                            self.sessions.push(copy);
+                            let _ = self.storage.save_sessions(&self.sessions);
+                        }
+                        if let Some(save_s) = to_save_file {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name(&format!("{}.json", save_s.name.replace('/', "_")))
+                                .add_filter("JSON session", &["json"])
+                                .save_file()
+                            {
+                                if let Ok(json) = serde_json::to_string_pretty(&save_s) {
+                                    let _ = std::fs::write(path, json);
+                                }
+                            }
+                        }
+                        if let Some(sc_s) = to_create_shortcut {
+                            #[cfg(target_os = "windows")]
+                            {
+                                if let Some(desktop) = dirs::desktop_dir() {
+                                    let safe_name = sc_s.name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                                    let bat_path = desktop.join(format!("{}.bat", safe_name));
+                                    let content = format!("@echo off\r\nstart \"\" \"%~dp0RustyBox.exe\" --session \"{}\"\r\n", sc_s.name);
+                                    let _ = std::fs::write(&bat_path, content);
+                                    self.status_toast = Some((format!("Shortcut created: {}.bat", safe_name), std::time::Instant::now()));
+                                }
+                            }
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                if let Some(desktop) = dirs::desktop_dir() {
+                                    let safe_name = sc_s.name.replace('/', "_");
+                                    let sh_path = desktop.join(format!("{}.sh", safe_name));
+                                    let content = format!("#!/bin/sh\nrustybox --session \"{}\"\n", sc_s.name);
+                                    let _ = std::fs::write(&sh_path, content);
+                                    self.status_toast = Some((format!("Shortcut created: {}.sh", safe_name), std::time::Instant::now()));
+                                }
+                            }
+                        }
+                        if let Some(preset_s) = to_save_preset {
+                            self.status_toast = Some((format!("Saved preset for '{}'", preset_s.name), std::time::Instant::now()));
+                        }
+                        if let Some(copy_s) = to_copy_settings {
+                            if let Ok(json) = serde_json::to_string(&copy_s) {
+                                ctx.output_mut(|o| o.copied_text = json);
+                                self.status_toast = Some(("Session settings copied to clipboard".into(), std::time::Instant::now()));
+                            }
+                        }
+                        if let Some(f) = to_new_in_folder {
+                            self.new_session_dialog.open_for_new_in_folder(&f);
+                        }
+                        if let Some((old_f, new_f)) = to_rename_folder {
+                            self.rename_folder_target = Some((old_f, new_f));
+                        }
+                        if let Some(f_del) = to_delete_folder {
+                            self.sessions.retain(|s| s.folder != f_del);
                             let _ = self.storage.save_sessions(&self.sessions);
                         }
                     } else {
@@ -1250,7 +1433,7 @@ impl eframe::App for RustyBoxApp {
                                 }
                                 if ui
                                     .add(
-                                        egui::Button::new(RichText::new("✕").size(10.0).color(text_color))
+                                        egui::Button::new(RichText::new("×").size(11.0).color(text_color))
                                             .frame(false),
                                     )
                                     .on_hover_text("Close Tab")
@@ -2305,6 +2488,148 @@ impl eframe::App for RustyBoxApp {
                     });
                 });
             self.show_about = open;
+        }
+
+        // Modal: Connect as...
+        if let Some((target_session, mut cur_user)) = self.connect_as_target.clone() {
+            let mut close_modal = false;
+            let mut do_launch = false;
+            egui::Window::new("👤 Connect as...")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(format!("Session: {}", target_session.name)).strong());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Username:");
+                        ui.text_edit_singleline(&mut cur_user);
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("▶ Connect").strong()).clicked() {
+                            do_launch = true;
+                            close_modal = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+            if do_launch {
+                let mut s = target_session;
+                if let SessionType::Ssh { ref mut user, .. } = s.session_type {
+                    *user = cur_user.trim().to_string();
+                }
+                self.launch_generic_session(s);
+            }
+            if close_modal {
+                self.connect_as_target = None;
+            } else if let Some((_, ref mut u)) = self.connect_as_target {
+                *u = cur_user;
+            }
+        }
+
+        // Modal: Rename session
+        if let Some((target_id, mut new_name)) = self.rename_session_target.clone() {
+            let mut close_modal = false;
+            let mut do_rename = false;
+            egui::Window::new("✏️ Rename session")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.label("New session name:");
+                    ui.text_edit_singleline(&mut new_name);
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("✓ Rename").strong()).clicked() {
+                            do_rename = true;
+                            close_modal = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+            if do_rename {
+                let clean_name = new_name.trim().to_string();
+                if !clean_name.is_empty() {
+                    if let Some(s) = self.sessions.iter_mut().find(|s| s.id == target_id) {
+                        s.name = clean_name;
+                    }
+                    let _ = self.storage.save_sessions(&self.sessions);
+                }
+            }
+            if close_modal {
+                self.rename_session_target = None;
+            } else if let Some((_, ref mut n)) = self.rename_session_target {
+                *n = new_name;
+            }
+        }
+
+        // Modal: Rename folder
+        if let Some((old_folder, mut new_folder)) = self.rename_folder_target.clone() {
+            let mut close_modal = false;
+            let mut do_rename = false;
+            egui::Window::new("📁 Rename folder")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.label("New folder name:");
+                    ui.text_edit_singleline(&mut new_folder);
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("✓ Rename").strong()).clicked() {
+                            do_rename = true;
+                            close_modal = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+            if do_rename {
+                let clean_folder = new_folder.trim().to_string();
+                if !clean_folder.is_empty() {
+                    for s in &mut self.sessions {
+                        if s.folder == old_folder {
+                            s.folder = clean_folder.clone();
+                        }
+                    }
+                    let _ = self.storage.save_sessions(&self.sessions);
+                }
+            }
+            if close_modal {
+                self.rename_folder_target = None;
+            } else if let Some((_, ref mut f)) = self.rename_folder_target {
+                *f = new_folder;
+            }
+        }
+
+        // Status Toast Notification
+        if let Some((msg, created_at)) = &self.status_toast {
+            if created_at.elapsed().as_secs() < 3 {
+                egui::Area::new(egui::Id::new("status_toast"))
+                    .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -40.0))
+                    .show(ctx, |ui| {
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(31, 111, 235))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                            .rounding(4.0)
+                            .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(msg).color(Color32::WHITE).strong());
+                            });
+                    });
+            }
         }
     }
 }
