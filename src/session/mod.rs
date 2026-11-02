@@ -55,6 +55,32 @@ pub enum SessionType {
     },
 }
 
+impl SessionType {
+    pub fn is_remote(&self) -> bool {
+        matches!(
+            self,
+            SessionType::Ssh { .. }
+                | SessionType::Telnet { .. }
+                | SessionType::Ftp { .. }
+                | SessionType::Rdp { .. }
+                | SessionType::Vnc { .. }
+        )
+    }
+
+    pub fn remote_host_and_user(&self) -> (String, String) {
+        match self {
+            SessionType::Ssh { host, user, .. } => (host.clone(), user.clone()),
+            SessionType::Telnet { host, .. } => (host.clone(), "telnet".into()),
+            SessionType::Rdp { host, user, .. } => (host.clone(), user.clone()),
+            SessionType::Vnc { host, .. } => (host.clone(), "vnc".into()),
+            SessionType::Ftp { host, user, .. } => (host.clone(), user.clone()),
+            SessionType::Wsl { distro, user, .. } => (distro.clone(), user.clone().unwrap_or_else(|| "wsl".into())),
+            SessionType::Serial { port_name, .. } => (port_name.clone(), "serial".into()),
+            SessionType::LocalShell { .. } => ("LOCALHOST".into(), "user".into()),
+        }
+    }
+}
+
 fn default_ssh_browser_type() -> String {
     "SFTP protocol".to_string()
 }
