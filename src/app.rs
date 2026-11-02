@@ -148,8 +148,22 @@ pub struct RustyBoxApp {
 impl RustyBoxApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let storage = StorageManager::new();
-        let sessions = storage.load_sessions();
+        let mut sessions = storage.load_sessions();
         let (broadcast_tx, broadcast_rx) = unbounded();
+
+        // Ensure every session has a unique UUID (auto-repair any historical duplicate IDs)
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut id_repaired = false;
+        for s in &mut sessions {
+            if s.id.is_empty() || seen_ids.contains(&s.id) {
+                s.id = uuid::Uuid::new_v4().to_string();
+                id_repaired = true;
+            }
+            seen_ids.insert(s.id.clone());
+        }
+        if id_repaired {
+            let _ = storage.save_sessions(&sessions);
+        }
 
         let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -328,13 +342,24 @@ impl RustyBoxApp {
         shell: Option<&str>,
         workdir: Option<&str>,
     ) {
+        self.spawn_local_terminal_ext(title, shell, workdir, None);
+    }
+
+    pub fn spawn_local_terminal_ext(
+        &mut self,
+        title: &str,
+        shell: Option<&str>,
+        workdir: Option<&str>,
+        session_def: Option<Session>,
+    ) {
+        self.is_home_active = false;
         match PtySession::spawn_local(24, 80, shell, workdir) {
             Ok(session) => {
                 let tab = OpenTab {
                     id: uuid::Uuid::new_v4().to_string(),
                     title: title.to_string(),
                     session,
-                    session_def: None,
+                    session_def,
                     custom_cmd: shell.map(|s| s.to_string()),
                     workdir: workdir.map(|w| w.to_string()),
                 };
@@ -348,6 +373,8 @@ impl RustyBoxApp {
     }
 
     pub fn spawn_ssh_terminal(&mut self, s: Session) {
+        self.is_home_active = false;
+        self.selected_sidebar_session_id = Some(s.id.clone());
         if let SessionType::Ssh {
             ref host,
             port,
@@ -428,20 +455,22 @@ impl RustyBoxApp {
     }
 
     pub fn launch_generic_session(&mut self, s: Session) {
+        self.is_home_active = false;
+        self.selected_sidebar_session_id = Some(s.id.clone());
         match s.session_type {
             SessionType::LocalShell { ref custom_shell, ref working_dir } => {
-                self.spawn_local_terminal(&s.name, custom_shell.as_deref(), working_dir.as_deref());
+                self.spawn_local_terminal_ext(&s.name, custom_shell.as_deref(), working_dir.as_deref(), Some(s.clone()));
             }
             SessionType::Ssh { .. } => {
                 self.spawn_ssh_terminal(s);
             }
             SessionType::Telnet { ref host, port } => {
                 let cmd = format!("telnet {} {}", host, port);
-                let _ = self.spawn_local_terminal(&format!("Telnet: {}", host), Some(&cmd), None);
+                let _ = self.spawn_local_terminal_ext(&format!("Telnet: {}", host), Some(&cmd), None, Some(s.clone()));
             }
             SessionType::Serial { ref port_name, baud_rate } => {
                 let cmd = format!("screen {} {}", port_name, baud_rate);
-                let _ = self.spawn_local_terminal(&format!("Serial: {}", port_name), Some(&cmd), None);
+                let _ = self.spawn_local_terminal_ext(&format!("Serial: {}", port_name), Some(&cmd), None, Some(s.clone()));
             }
             SessionType::Rdp { ref host, port, .. } => {
                 // Open system RDP client
@@ -487,7 +516,7 @@ impl RustyBoxApp {
                         cmd.push_str(&format!(" -u {}", u));
                     }
                 }
-                self.spawn_local_terminal(&s.name, Some(&cmd), working_dir.as_deref());
+                self.spawn_local_terminal_ext(&s.name, Some(&cmd), working_dir.as_deref(), Some(s.clone()));
             }
         }
     }
@@ -1415,9 +1444,13 @@ impl eframe::App for RustyBoxApp {
                                             SessionType::Wsl { distro, .. } => format!("wsl ({})", distro),
                                         };
 
-                                        let is_connected_tab = self.open_tabs.iter().any(|t| t.title == s.name && t.session.is_alive());
+                                        let is_connected_tab = self.open_tabs.iter().any(|t| {
+                                            t.session_def.as_ref().map(|def| def.id == s.id).unwrap_or(false) && t.session.is_alive()
+                                        });
                                         let is_selected = self.selected_sidebar_session_id.as_deref() == Some(&s.id)
-                                            || (self.selected_sidebar_session_id.is_none() && self.open_tabs.get(self.active_tab_idx).map(|t| t.title == s.name).unwrap_or(false));
+                                            || (self.selected_sidebar_session_id.is_none()
+                                                && !self.is_home_active
+                                                && self.open_tabs.get(self.active_tab_idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id == s.id).unwrap_or(false));
 
                                         let id = ui.make_persistent_id(&s.id);
                                         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
@@ -1671,6 +1704,7 @@ impl eframe::App for RustyBoxApp {
                 .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 });
                 if ui.add(h_btn).clicked() {
                     self.is_home_active = true;
+                    self.selected_sidebar_session_id = None;
                 }
 
                 enum TabMenuAction { Duplicate, Restart, Rename, Close, CloseOthers, CloseRight }
@@ -1751,6 +1785,7 @@ impl eframe::App for RustyBoxApp {
                     if tab_resp.clicked() {
                         self.is_home_active = false;
                         self.active_tab_idx = idx;
+                        self.selected_sidebar_session_id = self.open_tabs.get(idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id.clone());
                     }
                     if tab_resp.middle_clicked() {
                         close_tab_idx = Some(idx);
@@ -2327,8 +2362,16 @@ impl eframe::App for RustyBoxApp {
 
         // New Session Dialog
         if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
-            self.sessions.push(new_session.clone());
+            if let Some(idx) = self.sessions.iter().position(|s| s.id == new_session.id) {
+                // Editing existing session: update in-place
+                self.sessions[idx] = new_session.clone();
+            } else {
+                // Brand new session: append to list
+                self.sessions.push(new_session.clone());
+            }
             let _ = self.storage.save_sessions(&self.sessions);
+            self.selected_sidebar_session_id = Some(new_session.id.clone());
+            self.is_home_active = false;
             self.launch_generic_session(new_session);
         }
 

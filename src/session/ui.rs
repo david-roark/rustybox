@@ -1632,11 +1632,12 @@ pub fn render_new_session_dialog(
             // 4. CENTERED RUSTYBOX OK / CANCEL BUTTONS
             let (ok_clicked, cancel_clicked) =
                 rusty_ok_cancel_buttons(ui, "✔  OK", "✖  Cancel");
-            if ok_clicked {
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ok_clicked || enter_pressed {
                 create_session = Some(dialog.to_session());
                 close_dialog = true;
             }
-            if cancel_clicked {
+            if cancel_clicked || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 close_dialog = true;
             }
         });
