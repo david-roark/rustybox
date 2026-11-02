@@ -35,7 +35,7 @@ pub struct NetworkTools {
     pub is_scanning: Arc<AtomicBool>,
     pub scan_results: Arc<parking_lot::Mutex<Vec<ScanResult>>>,
     pub scan_progress: Arc<parking_lot::Mutex<f32>>,
-    // Subnet / LAN IP Scanner (MobaXterm NetScan)
+    // Subnet / LAN IP Scanner (RustyBox NetScan)
     pub subnet_prefix: String,
     pub is_subnet_scanning: Arc<AtomicBool>,
     pub subnet_results: Arc<parking_lot::Mutex<Vec<SubnetHostResult>>>,
@@ -44,10 +44,10 @@ pub struct NetworkTools {
     pub ping_host: String,
     pub is_pinging: Arc<AtomicBool>,
     pub ping_logs: Arc<parking_lot::Mutex<Vec<String>>>,
-    // Netstat Viewer (MobaXterm TFORMNETSTAT)
+    // Netstat Viewer (RustyBox TFORMNETSTAT)
     pub netstat_entries: Arc<parking_lot::Mutex<Vec<NetstatEntry>>>,
     pub is_netstat_loading: Arc<AtomicBool>,
-    // Micro HTTP Server (MobaXterm TFORMSERVICES HTTP Daemon)
+    // Micro HTTP Server (RustyBox TFORMSERVICES HTTP Daemon)
     pub http_port: u16,
     pub http_root: PathBuf,
     pub http_running: Arc<AtomicBool>,
@@ -56,6 +56,18 @@ pub struct NetworkTools {
     pub syslog_port: u16,
     pub syslog_running: Arc<AtomicBool>,
     pub syslog_logs: Arc<parking_lot::Mutex<Vec<String>>>,
+    // Wake-On-LAN (WOL)
+    pub wol_mac: String,
+    pub wol_port: u16,
+    pub wol_status: Option<String>,
+    // DNS Lookup Tool
+    pub dns_query: String,
+    pub dns_results: Vec<String>,
+    // Micro TFTP Server (RFC 1350)
+    pub tftp_port: u16,
+    pub tftp_root: PathBuf,
+    pub tftp_running: Arc<AtomicBool>,
+    pub tftp_logs: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl NetworkTools {
@@ -76,12 +88,21 @@ impl NetworkTools {
             netstat_entries: Arc::new(parking_lot::Mutex::new(Vec::new())),
             is_netstat_loading: Arc::new(AtomicBool::new(false)),
             http_port: 8080,
-            http_root: initial_root,
+            http_root: initial_root.clone(),
             http_running: Arc::new(AtomicBool::new(false)),
             http_logs: Arc::new(parking_lot::Mutex::new(Vec::new())),
             syslog_port: 1514,
             syslog_running: Arc::new(AtomicBool::new(false)),
             syslog_logs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            wol_mac: "00:11:22:33:44:55".to_string(),
+            wol_port: 9,
+            wol_status: None,
+            dns_query: "google.com".to_string(),
+            dns_results: Vec::new(),
+            tftp_port: 6969,
+            tftp_root: initial_root.clone(),
+            tftp_running: Arc::new(AtomicBool::new(false)),
+            tftp_logs: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -399,7 +420,7 @@ impl NetworkTools {
                                                             html.push_str(&format!("<li>{} <a style='color:#68d391;text-decoration:none;' href='{}'>{}{}</a></li>", icon, href, name, slash));
                                                         }
                                                     }
-                                                    html.push_str("</ul><hr><p style='color:#777;font-size:12px;'>Powered by RustyBox Portable HTTP Daemon</p></body></html>");
+                                                    html.push_str("</ul><hr><p style='color:#777;font-size:12px;'>Powered by RustyBox HTTP Daemon</p></body></html>");
                                                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", html.len(), html);
                                                     let _ = socket.write_all(response.as_bytes()).await;
                                                 } else if target.is_file() {
@@ -479,6 +500,118 @@ impl NetworkTools {
     pub fn stop_syslog_server(&self) {
         self.syslog_running.store(false, Ordering::Relaxed);
         self.syslog_logs.lock().push("🛑 Syslog Daemon stopped.".to_string());
+    }
+
+    pub fn send_wol(&mut self) {
+        let clean = self.wol_mac.replace([':', '-', '.'], "");
+        if clean.len() != 12 {
+            self.wol_status = Some("❌ Invalid MAC address (expected 12 hex digits)".into());
+            return;
+        }
+        let mut mac_bytes = [0u8; 6];
+        for i in 0..6 {
+            if let Ok(b) = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16) {
+                mac_bytes[i] = b;
+            } else {
+                self.wol_status = Some("❌ Invalid hex characters in MAC".into());
+                return;
+            }
+        }
+        let mut packet = vec![0xFFu8; 6];
+        for _ in 0..16 {
+            packet.extend_from_slice(&mac_bytes);
+        }
+        match std::net::UdpSocket::bind("0.0.0.0:0") {
+            Ok(socket) => {
+                let _ = socket.set_broadcast(true);
+                let target = format!("255.255.255.255:{}", self.wol_port);
+                match socket.send_to(&packet, &target) {
+                    Ok(sent) => {
+                        self.wol_status = Some(format!("✔ WOL Magic Packet ({} bytes) sent to {}", sent, target));
+                    }
+                    Err(e) => {
+                        self.wol_status = Some(format!("❌ Failed to send packet: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.wol_status = Some(format!("❌ Failed to bind UDP: {}", e));
+            }
+        }
+    }
+
+    pub fn lookup_dns(&mut self) {
+        self.dns_results.clear();
+        let query = self.dns_query.trim().to_string();
+        if query.is_empty() { return; }
+
+        match std::net::ToSocketAddrs::to_socket_addrs(&(query.as_str(), 80)) {
+            Ok(addrs) => {
+                let mut results = Vec::new();
+                for addr in addrs {
+                    results.push(format!("Resolved IP: {}", addr.ip()));
+                }
+                if results.is_empty() {
+                    self.dns_results.push(format!("No IP addresses found for {}", query));
+                } else {
+                    self.dns_results = results;
+                }
+            }
+            Err(e) => {
+                self.dns_results.push(format!("DNS lookup error: {}", e));
+            }
+        }
+    }
+
+    pub fn start_tftp_server(&self, runtime: &tokio::runtime::Handle) {
+        if self.tftp_running.load(Ordering::Relaxed) {
+            return;
+        }
+        self.tftp_running.store(true, Ordering::Relaxed);
+        let port = self.tftp_port;
+        let root = self.tftp_root.clone();
+        let running = Arc::clone(&self.tftp_running);
+        let logs = Arc::clone(&self.tftp_logs);
+
+        logs.lock().push(format!("🚀 TFTP Server listening on UDP :{} (Root: {:?})", port, root));
+
+        runtime.spawn(async move {
+            let bind_addr = format!("0.0.0.0:{}", port);
+            match UdpSocket::bind(&bind_addr).await {
+                Ok(socket) => {
+                    let mut buf = [0u8; 1024];
+                    while running.load(Ordering::Relaxed) {
+                        tokio::select! {
+                            res = socket.recv_from(&mut buf) => {
+                                if let Ok((len, src)) = res {
+                                    let opcode = if len >= 2 { u16::from_be_bytes([buf[0], buf[1]]) } else { 0 };
+                                    let op_str = match opcode {
+                                        1 => "RRQ (Read Request)",
+                                        2 => "WRQ (Write Request)",
+                                        3 => "DATA",
+                                        4 => "ACK",
+                                        5 => "ERROR",
+                                        _ => "UNKNOWN",
+                                    };
+                                    let now = chrono::Local::now().format("%H:%M:%S");
+                                    logs.lock().push(format!("[{}] TFTP {} from {} ({} bytes)", now, op_str, src, len));
+                                }
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                        }
+                    }
+                }
+                Err(e) => {
+                    logs.lock().push(format!("❌ Failed to bind TFTP on {}: {}", bind_addr, e));
+                    running.store(false, Ordering::Relaxed);
+                }
+            }
+        });
+    }
+
+    pub fn stop_tftp_server(&self) {
+        self.tftp_running.store(false, Ordering::Relaxed);
+        self.tftp_logs.lock().push("🛑 TFTP Server stopped.".to_string());
     }
 }
 

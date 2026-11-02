@@ -14,6 +14,7 @@ pub struct PtySession {
     pub running: Arc<AtomicBool>,
     pub title: Arc<parking_lot::Mutex<String>>,
     pub child_pid: Option<u32>,
+    pub has_new_data: Arc<AtomicBool>,
 }
 
 impl PtySession {
@@ -33,26 +34,54 @@ impl PtySession {
             })
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-        let shell_cmd = if let Some(s) = custom_shell {
-            s.to_string()
-        } else if cfg!(target_os = "windows") {
-            if which_exists("powershell.exe") {
-                "powershell.exe".to_string()
-            } else {
-                "cmd.exe".to_string()
+        let mut cmd = if let Some(s) = custom_shell {
+            let mut c = CommandBuilder::new(s);
+            #[cfg(not(target_os = "windows"))]
+            {
+                c.env("TERM", "xterm-256color");
+                c.env("COLORTERM", "truecolor");
             }
+            c
         } else {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+            #[cfg(target_os = "windows")]
+            {
+                let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+                let mut c = CommandBuilder::new(&shell);
+                if shell.to_lowercase().ends_with("cmd.exe") {
+                    c.arg("/k");
+                }
+                c
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+                let mut c = CommandBuilder::new(&shell);
+                c.env("TERM", "xterm-256color");
+                c.env("COLORTERM", "truecolor");
+                c
+            }
         };
 
-        let mut cmd = CommandBuilder::new(&shell_cmd);
         if let Some(wd) = working_dir {
             cmd.cwd(wd);
-        } else if let Ok(home) = std::env::var("HOME") {
+        } else if let Ok(home) = std::env::var(if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" }) {
             cmd.cwd(home);
         }
 
-        Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, "Local Shell")
+        let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title)?;
+        {
+            let banner = format!(
+                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
+                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal ({})\x1b[0m\r\n\
+                 \x1b[32m  ✔\x1b[0m Interactive Shell  \x1b[32m✔\x1b[0m VT100/ANSI Emulation  \x1b[32m✔\x1b[0m UTF-8\r\n\
+                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n",
+                if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" }
+            );
+            let mut p = sess.parser.lock();
+            p.process(banner.as_bytes());
+        }
+        Ok(sess)
     }
 
     pub fn spawn_ssh(
@@ -75,6 +104,8 @@ impl PtySession {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let mut cmd = CommandBuilder::new("ssh");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         cmd.args(["-p", &port.to_string()]);
         cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
 
@@ -98,7 +129,22 @@ impl PtySession {
         cmd.arg(target);
 
         let default_title = format!("SSH: {}@{}", user, host);
-        Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title)
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title)?;
+        {
+            let banner = format!(
+                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
+                 \x1b[1;37m  Session :\x1b[0m \x1b[1;36m{}@{}:{}\x1b[0m\r\n\
+                 \x1b[32m  ✔\x1b[0m Direct SSH      \x1b[32m✔\x1b[0m SSH compression\r\n\
+                 \x1b[32m  ✔\x1b[0m SSH-browser     \x1b[32m✔\x1b[0m X11-forwarding\r\n\
+                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n",
+                if user.is_empty() { "root" } else { user },
+                host,
+                port
+            );
+            let mut p = sess.parser.lock();
+            p.process(banner.as_bytes());
+        }
+        Ok(sess)
     }
 
     fn spawn_from_pair_and_cmd(
@@ -133,6 +179,8 @@ impl PtySession {
 
         let parser_clone = Arc::clone(&parser);
         let running_clone = Arc::clone(&running);
+        let has_new_data = Arc::new(AtomicBool::new(true));
+        let has_new_data_clone = Arc::clone(&has_new_data);
 
         thread::Builder::new()
             .name("pty-reader".into())
@@ -147,6 +195,7 @@ impl PtySession {
                         Ok(n) => {
                             let mut p = parser_clone.lock();
                             p.process(&buf[..n]);
+                            has_new_data_clone.store(true, Ordering::Relaxed);
                         }
                         Err(_) => {
                             running_clone.store(false, Ordering::Relaxed);
@@ -164,6 +213,7 @@ impl PtySession {
             running,
             title,
             child_pid: pid,
+            has_new_data,
         })
     }
 
@@ -195,16 +245,4 @@ impl PtySession {
     pub fn is_alive(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
-}
-
-fn which_exists(cmd: &str) -> bool {
-    if let Ok(paths) = std::env::var("PATH") {
-        for p in std::env::split_paths(&paths) {
-            let full = p.join(cmd);
-            if full.is_file() {
-                return true;
-            }
-        }
-    }
-    false
 }

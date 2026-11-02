@@ -1,20 +1,15 @@
-# 🚀 RustyBox - Portable Cross-Platform Remote Terminal Toolbox (Pure Rust)
+# 🚀 RustyBox - Cross-Platform Remote Terminal Toolbox (Pure Rust)
 
-> **Một giải pháp thay thế hoàn hảo cho MobaXterm:** Viết 100% bằng **Rust**, mã nguồn mở, hoàn toàn miễn phí, **Portable (chạy ngay, không cần cài đặt)**, hỗ trợ mượt mà trên cả **Windows, macOS (Apple Silicon + Intel), và Ubuntu/Linux**.
+> **Bộ công cụ terminal & remote toolbox đa nền tảng:** Viết 100% bằng **Rust**, mã nguồn mở, miễn phí, chạy ngay không cần cài đặt, hỗ trợ **Windows, macOS và Linux**.
 
 ---
 
-## 📊 Bảng so sánh chi tiết: RustyBox vs. MobaXterm
+## 📊 Thông số chính
 
-| Tiêu chí | MobaXterm (Mobatek) | RustyBox (Dự án này) |
-| :--- | :--- | :--- |
-| **Nền tảng hỗ trợ** | ❌ Chỉ chạy trên Windows |  **Đa nền tảng: Windows, macOS, Ubuntu/Linux** |
-| **Bản quyền / Giới hạn** | ❌ Bản Home giới hạn 12 sessions, 2 tunnels |  **100% Miễn phí, không giới hạn bất kỳ tính năng nào** |
-| **Công nghệ lõi** | Delphi (VCL) + nhúng Cygwin + PuTTY |  **100% Native Rust** (`egui` GPU render + `portable-pty` + `vt100`) |
-| **Độ gọn nhẹ / Dung lượng** | ~30 MB nén, bung ra chiếm >150 MB |  **Chỉ ~8.4 MB** (Single executable duy nhất) |
-| **Mức tiêu thụ RAM** | 120 - 250 MB |  **Chỉ 25 - 45 MB RAM** |
-| **Độ trễ khởi động** | 3 - 6 giây (phải giải nén Cygwin DLLs) | ⚡ **Tức thì (<0.2 giây)** |
-| **Chế độ Portable** | Hỗ trợ (Windows only) |  **Portable tự nhận diện** (tự lưu `sessions.json` cạnh file thực thi) |
+* **Nền tảng:** Windows, macOS, Ubuntu/Linux
+* **Công nghệ lõi:** 100% Native Rust (`egui` GPU render + `portable-pty` + `vt100`)
+* **Chế độ lưu cấu hình:** tự lưu `data/RustyBox.json` cạnh file thực thi (mật khẩu mã hóa Argon2id + AES-256-GCM)
+
 
 ---
 
@@ -30,7 +25,7 @@
 * **Bộ giả lập VT100 / Xterm:** Hỗ trợ đầy đủ bảng màu 256 ANSI, 24-bit TrueColor, con trỏ nhấp nháy, phím điều hướng và phím tắt chuẩn terminal (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, `Ctrl+L`...).
 
 ### 2. Multi-Execution (Phát lệnh đồng thời)
-* Tính năng độc quyền nổi tiếng của MobaXterm: Nút gạt **`⚡ Multi-Exec`** trên thanh công cụ.
+* Tính năng độc quyền nổi tiếng của RustyBox: Nút gạt **`⚡ Multi-Exec`** trên thanh công cụ.
 * Khi bật, mọi ký tự hoặc câu lệnh bạn gõ trên tab hiện tại sẽ được **tự động phát thanh (broadcast) đến tất cả các tab server đang mở cùng lúc**! Giúp quản trị viên cập nhật hoặc kiểm tra cấu hình hàng loạt máy chủ chỉ trong 1 thao tác.
 
 ### 3. Graphical SFTP Browser (Sidebar quản lý tệp đồ họa)
@@ -75,11 +70,11 @@ cd rust-remote-toolbox
 cargo run --release
 ```
 
-### 2. File thực thi Portable:
+### 2. File thực thi:
 Sau khi biên dịch release:
 * File thực thi tạo ra tại `target/release/rust-remote-toolbox` (trên Windows là `rust-remote-toolbox.exe`).
 * Dung lượng chỉ **~8.4 MB**.
-* Để dùng ở chế độ Portable (USB mang đi mọi nơi): Chỉ cần đặt file `sessions.json` bên cạnh file `.exe`, ứng dụng sẽ tự động lưu dữ liệu vào đó mà không ghi bất kỳ file rác nào vào hệ thống!
+* Để dùng ở chế độ Portable (USB mang đi mọi nơi): Chỉ cần đặt file `data/RustyBox.json` bên cạnh file `.exe`, ứng dụng sẽ tự động lưu dữ liệu vào đó mà không ghi bất kỳ file rác nào vào hệ thống!
 
 ---
 

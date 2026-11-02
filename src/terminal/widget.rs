@@ -1,7 +1,7 @@
 use super::pty_session::PtySession;
 use super::vt_screen::{vt_to_egui_color, TerminalTheme};
 use egui::{
-    pos2, vec2, Color32, Event, FontFamily, FontId, Key, Rect, Response, Sense, Ui,
+    pos2, vec2, Color32, Event, FontFamily, FontId, Key, Rect, Response, Sense, Stroke, Ui,
 };
 
 pub struct TerminalWidget<'a> {
@@ -24,7 +24,7 @@ impl<'a> TerminalWidget<'a> {
             session,
             font_size: 14.0,
             search_query: None,
-            theme: TerminalTheme::MobaDark,
+            theme: TerminalTheme::RustyBoxDark,
             tab_id: tab_id.to_string(),
         }
     }
@@ -78,11 +78,23 @@ impl<'a> TerminalWidget<'a> {
         // Terminal background with selected theme
         painter.rect_filled(rect, 0.0, self.theme.default_bg());
 
-        // Focus handling
-        if response.clicked() {
-            ui.memory_mut(|m| m.request_focus(response.id));
+        let term_id = egui::Id::new("terminal_focus").with(&self.tab_id);
+
+        // When no other interactive widget (like search/dialog) explicitly has focus,
+        // the active terminal tab ALWAYS owns focus!
+        let other_widget_focused = ui.memory(|m| {
+            if let Some(fid) = m.focused() {
+                fid != term_id && fid != response.id
+            } else {
+                false
+            }
+        });
+
+        if response.clicked() || !other_widget_focused {
+            ui.memory_mut(|m| m.request_focus(term_id));
         }
-        let has_focus = ui.memory(|m| m.has_focus(response.id));
+
+        let has_focus = !other_widget_focused;
 
         // Right-Click Context Menu (MobaXterm TFORMRIGHTCLICKMENU)
         response.context_menu(|ui| {
@@ -215,18 +227,26 @@ impl<'a> TerminalWidget<'a> {
                 }
             }
 
-            // Cursor drawing
-            if !cursor_hidden && has_focus {
+            // Cursor drawing: solid blinking when focused, hollow outline when unfocused
+            if !cursor_hidden {
                 let cur_x = rect.min.x + (cursor_col as f32) * char_width;
                 let cur_y = rect.min.y + (cursor_row as f32) * row_height;
                 let cur_rect =
                     Rect::from_min_size(pos2(cur_x, cur_y), vec2(char_width, row_height));
-                let blink = (ui.input(|i| i.time) * 2.0).fract() < 0.5;
-                if blink {
-                    painter.rect_filled(
+                if has_focus {
+                    let blink = (ui.input(|i| i.time) * 2.0).fract() < 0.5;
+                    if blink {
+                        painter.rect_filled(
+                            cur_rect,
+                            1.0,
+                            Color32::from_rgba_premultiplied(230, 230, 240, 160),
+                        );
+                    }
+                } else {
+                    painter.rect_stroke(
                         cur_rect,
                         1.0,
-                        Color32::from_rgba_premultiplied(230, 230, 240, 160),
+                        Stroke::new(1.0, Color32::from_rgba_premultiplied(180, 180, 200, 120)),
                     );
                 }
             }

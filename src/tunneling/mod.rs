@@ -110,4 +110,16 @@ impl TunnelManager {
             self.active_states[idx].store(false, Ordering::Relaxed);
         }
     }
+    pub fn add_tunnel(&mut self, config: TunnelConfig) {
+        self.tunnels.push(config);
+        self.active_states.push(Arc::new(AtomicBool::new(false)));
+    }
+
+    pub fn remove_tunnel(&mut self, idx: usize) {
+        if idx < self.tunnels.len() {
+            self.stop_tunnel(idx);
+            self.tunnels.remove(idx);
+            self.active_states.remove(idx);
+        }
+    }
 }

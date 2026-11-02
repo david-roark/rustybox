@@ -3,7 +3,7 @@ use vt100::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalTheme {
-    MobaDark,
+    RustyBoxDark,
     Dracula,
     SolarizedDark,
     SolarizedLight,
@@ -15,7 +15,7 @@ pub enum TerminalTheme {
 impl TerminalTheme {
     pub fn all() -> &'static [TerminalTheme] {
         &[
-            TerminalTheme::MobaDark,
+            TerminalTheme::RustyBoxDark,
             TerminalTheme::Dracula,
             TerminalTheme::SolarizedDark,
             TerminalTheme::SolarizedLight,
@@ -27,7 +27,7 @@ impl TerminalTheme {
 
     pub fn name(&self) -> &'static str {
         match self {
-            TerminalTheme::MobaDark => "Moba Dark (Default)",
+            TerminalTheme::RustyBoxDark => "RustyBox Dark (Default)",
             TerminalTheme::Dracula => "Dracula",
             TerminalTheme::SolarizedDark => "Solarized Dark",
             TerminalTheme::SolarizedLight => "Solarized Light",
@@ -39,7 +39,7 @@ impl TerminalTheme {
 
     pub fn default_bg(&self) -> Color32 {
         match self {
-            TerminalTheme::MobaDark => Color32::from_rgb(16, 18, 22),
+            TerminalTheme::RustyBoxDark => Color32::from_rgb(16, 18, 22),
             TerminalTheme::Dracula => Color32::from_rgb(40, 42, 54),
             TerminalTheme::SolarizedDark => Color32::from_rgb(0, 43, 54),
             TerminalTheme::SolarizedLight => Color32::from_rgb(253, 246, 227),
@@ -51,7 +51,7 @@ impl TerminalTheme {
 
     pub fn default_fg(&self) -> Color32 {
         match self {
-            TerminalTheme::MobaDark => Color32::from_rgb(220, 220, 225),
+            TerminalTheme::RustyBoxDark => Color32::from_rgb(220, 220, 225),
             TerminalTheme::Dracula => Color32::from_rgb(248, 248, 242),
             TerminalTheme::SolarizedDark => Color32::from_rgb(131, 148, 150),
             TerminalTheme::SolarizedLight => Color32::from_rgb(101, 123, 131),

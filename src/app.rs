@@ -128,7 +128,7 @@ impl RustyBoxApp {
             services_tab: 0,
             master_password: String::new(),
             vault_status: None,
-            theme: TerminalTheme::MobaDark,
+            theme: TerminalTheme::RustyBoxDark,
             font_size: 14.0,
             search_open: false,
             search_query: String::new(),
@@ -259,6 +259,19 @@ impl RustyBoxApp {
                 self.show_sftp_sidebar = true;
                 self.sidebar_tab = 1;
             }
+            SessionType::Wsl { ref distro, ref user, ref working_dir } => {
+                let mut cmd = if distro.is_empty() {
+                    "wsl".to_string()
+                } else {
+                    format!("wsl -d {}", distro)
+                };
+                if let Some(u) = user {
+                    if !u.is_empty() {
+                        cmd.push_str(&format!(" -u {}", u));
+                    }
+                }
+                self.spawn_local_terminal(&s.name, Some(&cmd), working_dir.as_deref());
+            }
         }
     }
 
@@ -318,7 +331,15 @@ impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_multi_exec_broadcast();
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        // Smart Repaint: Repaint immediately if terminal has new output, otherwise idle at low frequency
+        let has_pty_data = self.open_tabs.iter().any(|t| {
+            t.session.has_new_data.swap(false, std::sync::atomic::Ordering::Relaxed)
+        });
+        if has_pty_data || self.multi_exec_enabled {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
 
         // 1. TOP MENU BAR (MobaXterm Standard Menu Structure)
         TopBottomPanel::top("top_menu").show(ctx, |ui| {
@@ -336,14 +357,16 @@ impl eframe::App for RustyBoxApp {
                     ui.separator();
                     if ui.button("📤 Export Sessions (JSON)...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
-                            let _ = self.storage.export_to_file(&path, &self.sessions);
+                            let mut cfg = self.storage.load_config();
+                            cfg.sessions = self.sessions.clone();
+                            let _ = self.storage.export_to_file(&path, &cfg);
                         }
                         ui.close_menu();
                     }
                     if ui.button("📥 Import Sessions (JSON)...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
                             if let Ok(imported) = self.storage.import_from_file(&path) {
-                                self.sessions = imported;
+                                self.sessions = imported.sessions;
                                 let _ = self.storage.save_sessions(&self.sessions);
                             }
                         }
@@ -678,6 +701,7 @@ impl eframe::App for RustyBoxApp {
                                                 SessionType::Rdp { .. } => "🖥 ",
                                                 SessionType::Vnc { .. } => "👁 ",
                                                 SessionType::Ftp { .. } => "📁 ",
+                                                SessionType::Wsl { .. } => "🐧 ",
                                             };
                                             ui.horizontal(|ui| {
                                                 let btn = ui.selectable_label(false, format!("{}{}", icon, s.name));
@@ -968,7 +992,7 @@ impl eframe::App for RustyBoxApp {
             let mut close = false;
             let mut run_paste = false;
 
-            egui::Window::new("⚠ Multi-line Paste Warning (MobaXterm Style)")
+            egui::Window::new("⚠ Multi-line Paste Warning")
                 .default_size(Vec2::new(520.0, 320.0))
                 .collapsible(false)
                 .show(ctx, |ui| {
@@ -1154,7 +1178,7 @@ impl eframe::App for RustyBoxApp {
             let mut open = self.show_services_modal;
             let rt_handle = self.tokio_runtime.handle().clone();
 
-            egui::Window::new("🚀 Embedded Network Daemons (MobaXterm TFORMSERVICES)")
+            egui::Window::new("🚀 Embedded Network Daemons")
                 .open(&mut open)
                 .default_size(Vec2::new(600.0, 420.0))
                 .show(ctx, |ui| {
@@ -1361,7 +1385,7 @@ impl eframe::App for RustyBoxApp {
         if self.show_settings_dialog {
             let mut open = self.show_settings_dialog;
             let mut close_dialog = false;
-            egui::Window::new("⚙ Global Configuration & Preferences (MobaXterm Style)")
+            egui::Window::new("⚙ Global Configuration & Preferences")
                 .open(&mut open)
                 .default_size(Vec2::new(520.0, 360.0))
                 .show(ctx, |ui| {
@@ -1466,7 +1490,7 @@ impl eframe::App for RustyBoxApp {
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.heading("🚀 RustyBox");
-                        ui.label(RichText::new("Complete Portable MobaXterm Equivalent in Pure Rust").strong());
+                        ui.label(RichText::new("Complete Remote Toolbox & Terminal Suite in Pure Rust").strong());
                         ui.add_space(8.0);
                         ui.label("High-performance, zero-install, lightweight remote terminal toolbox.");
                         ui.label("Runs natively on Windows, macOS, and Linux.");
@@ -1475,7 +1499,7 @@ impl eframe::App for RustyBoxApp {
                         ui.label("• Multi-tab & Multi-Split Terminal (ConPTY / Unix PTY / VT100)");
                         ui.label("• Realtime Multi-Execution (Command Broadcasting)");
                         ui.label("• Multi-line Paste Safety Confirmation (Anti-accidental execution)");
-                        ui.label("• Terminal Themes (MobaDark, Dracula, Solarized, Monokai, Nord, Matrix)");
+                        ui.label("• Terminal Themes (RustyBox Dark, Dracula, Solarized, Monokai, Nord, Matrix)");
                         ui.label("• Interactive Quick Macros / Sysadmin Toolbar & Manager");
                         ui.label("• Embedded Services Hub (Micro HTTP Daemon, Syslog UDP Server)");
                         ui.label("• Graphical SFTP Explorer with Quick Code Editor");
