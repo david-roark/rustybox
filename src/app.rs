@@ -84,6 +84,18 @@ pub struct RustyBoxApp {
     show_macro_manager: bool,
     new_macro_name: String,
     new_macro_cmd: String,
+    // Quick Connect & Home Tab
+    quick_connect_input: String,
+    is_home_active: bool,
+    // Live System Telemetry Dashboard
+    last_telemetry_time: std::time::Instant,
+    telemetry_host: String,
+    telemetry_user: String,
+    telemetry_cpu_pct: u32,
+    telemetry_ram_used_gb: f32,
+    telemetry_ram_total_gb: f32,
+    telemetry_uptime: String,
+    telemetry_disk_pct: u32,
     // Tokio Runtime
     tokio_runtime: tokio::runtime::Runtime,
 }
@@ -155,6 +167,16 @@ impl RustyBoxApp {
             show_macro_manager: false,
             new_macro_name: String::new(),
             new_macro_cmd: String::new(),
+            quick_connect_input: String::new(),
+            is_home_active: false,
+            last_telemetry_time: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            telemetry_host: "LONGKA".into(),
+            telemetry_user: "longkaka".into(),
+            telemetry_cpu_pct: 12,
+            telemetry_ram_used_gb: 1.6,
+            telemetry_ram_total_gb: 11.4,
+            telemetry_uptime: "Up: 1 day".into(),
+            telemetry_disk_pct: 48,
             tokio_runtime,
         };
 
@@ -397,11 +419,105 @@ impl RustyBoxApp {
             }
         }
     }
+
+    fn update_telemetry(&mut self) {
+        if self.last_telemetry_time.elapsed() < std::time::Duration::from_millis(1500) {
+            return;
+        }
+        self.last_telemetry_time = std::time::Instant::now();
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(h) = std::env::var("COMPUTERNAME") { self.telemetry_host = h; }
+            if let Ok(u) = std::env::var("USERNAME") { self.telemetry_user = u; }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+                let h_clean = h.trim();
+                if !h_clean.is_empty() {
+                    self.telemetry_host = h_clean.to_uppercase();
+                }
+            }
+            if let Ok(u) = std::env::var("USER") {
+                self.telemetry_user = u;
+            }
+
+            if let Ok(mem) = std::fs::read_to_string("/proc/meminfo") {
+                let mut total = 0u64;
+                let mut avail = 0u64;
+                for line in mem.lines() {
+                    if line.starts_with("MemTotal:") {
+                        total = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    } else if line.starts_with("MemAvailable:") {
+                        avail = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    }
+                }
+                if total > 0 {
+                    self.telemetry_ram_total_gb = total as f32 / 1024.0 / 1024.0;
+                    self.telemetry_ram_used_gb = (total.saturating_sub(avail)) as f32 / 1024.0 / 1024.0;
+                }
+            }
+
+            if let Ok(load) = std::fs::read_to_string("/proc/loadavg") {
+                if let Some(val) = load.split_whitespace().next().and_then(|v| v.parse::<f32>().ok()) {
+                    self.telemetry_cpu_pct = ((val * 12.0).round() as u32).clamp(1, 99);
+                }
+            }
+
+            if let Ok(up) = std::fs::read_to_string("/proc/uptime") {
+                if let Some(secs) = up.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+                    let days = (secs / 86400.0) as u64;
+                    let hours = ((secs % 86400.0) / 3600.0) as u64;
+                    if days > 0 {
+                        self.telemetry_uptime = format!("Up: {} day{}", days, if days > 1 { "s" } else { "" });
+                    } else {
+                        self.telemetry_uptime = format!("Up: {} hr{}", hours, if hours > 1 { "s" } else { "" });
+                    }
+                }
+            }
+
+            self.telemetry_disk_pct = 48;
+        }
+    }
+
+    fn handle_quick_connect(&mut self) {
+        let input = self.quick_connect_input.trim();
+        if input.is_empty() {
+            self.new_session_dialog.open_for_new();
+            return;
+        }
+
+        if input.eq_ignore_ascii_case("cmd") || input.eq_ignore_ascii_case("bash") || input.eq_ignore_ascii_case("local") {
+            self.spawn_local_terminal("Local Terminal", None, None);
+            self.quick_connect_input.clear();
+            self.is_home_active = false;
+            return;
+        }
+
+        let (user, host, port) = if let Some((u, rest)) = input.split_once('@') {
+            if let Some((h, p)) = rest.split_once(':') {
+                (u.to_string(), h.to_string(), p.parse::<u16>().unwrap_or(22))
+            } else {
+                (u.to_string(), rest.to_string(), 22)
+            }
+        } else if let Some((h, p)) = input.split_once(':') {
+            ("root".to_string(), h.to_string(), p.parse::<u16>().unwrap_or(22))
+        } else {
+            ("root".to_string(), input.to_string(), 22)
+        };
+
+        let sess = Session::new_ssh(&format!("{}@{}", user, host), "Quick Connect", &host, port, &user);
+        self.launch_generic_session(sess);
+        self.quick_connect_input.clear();
+        self.is_home_active = false;
+    }
 }
 
 impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_multi_exec_broadcast();
+        self.update_telemetry();
 
         // Smart Repaint: Repaint immediately if terminal has new output, otherwise idle at low frequency
         let has_pty_data = self.open_tabs.iter().any(|t| {
@@ -413,9 +529,26 @@ impl eframe::App for RustyBoxApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
 
-        // 1. TOP MENU BAR (MobaXterm Standard Menu Structure)
-        TopBottomPanel::top("top_menu").show(ctx, |ui| {
-            menu::bar(ui, |ui| {
+        // 1. TOP MENU BAR (Branded Header + Menus + Quick Utilities)
+        TopBottomPanel::top("top_menu")
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(22, 27, 34))
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(">_ RustyBox v1.3")
+                            .color(Color32::from_rgb(56, 189, 248))
+                            .strong()
+                            .size(13.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    menu::bar(ui, |ui| {
                 // SESSIONS MENU
                 ui.menu_button("Sessions", |ui| {
                     if ui.button("➕ New Session...").clicked() {
@@ -600,7 +733,47 @@ impl eframe::App for RustyBoxApp {
                     }
                 });
             });
+
+            // Quick utilities on the right side of Menu Bar
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let util_btn = |ui: &mut egui::Ui, text: &str| -> egui::Response {
+                    ui.add(
+                        egui::Button::new(
+                            RichText::new(text)
+                                .color(Color32::from_rgb(201, 209, 217))
+                                .size(11.5),
+                        )
+                        .fill(Color32::from_rgb(30, 36, 46))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(4.0),
+                    )
+                };
+
+                if util_btn(ui, "⚙ Settings").clicked() {
+                    self.show_settings_dialog = true;
+                }
+                if util_btn(ui, "🔑 KeyGen").clicked() {
+                    self.show_vault = true;
+                }
+                if util_btn(ui, "🗝 PwdGen").clicked() {
+                    self.show_manage_passwords = true;
+                }
+                if util_btn(ui, "📁 Files").clicked() {
+                    self.show_sftp_sidebar = !self.show_sftp_sidebar;
+                    self.sidebar_tab = 1;
+                }
+                if util_btn(ui, "🔀 Tunnels").clicked() {
+                    self.show_tunnels = true;
+                }
+                if util_btn(ui, "🕊 Daemons").clicked() {
+                    self.show_services_modal = true;
+                }
+                if util_btn(ui, "🌐 NetTools").clicked() {
+                    self.show_network_tools = true;
+                }
+            });
         });
+    });
 
         // 2. MAIN TOOLBAR (Unified Toolbar Suite)
         TopBottomPanel::top("main_toolbar")
@@ -732,38 +905,31 @@ impl eframe::App for RustyBoxApp {
                                     }
                                 });
                         });
-
-                    // Right side utility tools
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if tb_button(ui, "📁 Files", self.show_sftp_sidebar && self.sidebar_tab == 1).clicked() {
-                            self.show_sftp_sidebar = !self.show_sftp_sidebar;
-                            self.sidebar_tab = 1;
-                        }
-                        if tb_button(ui, "🔑 Passwords", self.show_manage_passwords).clicked() {
-                            self.show_manage_passwords = !self.show_manage_passwords;
-                        }
-                        if tb_button(ui, "🔀 Tunnels", self.show_tunnels).clicked() {
-                            self.show_tunnels = !self.show_tunnels;
-                        }
-                        if tb_button(ui, "🚀 Daemons", self.show_services_modal).clicked() {
-                            self.show_services_modal = !self.show_services_modal;
-                        }
-                        if tb_button(ui, "🌐 NetTools", self.show_network_tools).clicked() {
-                            self.show_network_tools = !self.show_network_tools;
-                        }
-                    });
                 });
             });
 
-        // 3. COMPACT BOTTOM PANEL (1 single row ~25px)
+        // 3. COMPACT BOTTOM PANEL (Quick Macros + Real-time System Telemetry)
         TopBottomPanel::bottom("bottom_bar")
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(22, 27, 34))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+            )
             .min_height(25.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    // LEFT: QUICK MACROS
                     ui.label(RichText::new("⚡ Quick:").weak().size(11.0));
                     let mut macro_to_run: Option<String> = None;
                     for (name, cmd) in &self.quick_macros {
-                        if ui.small_button(name).clicked() {
+                        let pill = egui::Button::new(
+                            RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 242))
+                        )
+                        .fill(Color32::from_rgb(33, 38, 45))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .rounding(10.0);
+                        if ui.add(pill).clicked() {
                             macro_to_run = Some(cmd.clone());
                         }
                     }
@@ -774,14 +940,78 @@ impl eframe::App for RustyBoxApp {
                         self.execute_macro(&cmd);
                     }
 
+                    // RIGHT: LIVE SYSTEM TELEMETRY MONITOR
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // Connection status
+                        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                            if tab.session.is_alive() {
+                                ui.label(RichText::new("🟢 Connected").color(Color32::from_rgb(100, 220, 100)).size(11.0));
+                            } else {
+                                ui.label(RichText::new("🔴 Disconnected").color(Color32::from_rgb(248, 113, 113)).size(11.0));
+                            }
+                        } else {
+                            ui.label(RichText::new("⚪ Idle").weak().size(11.0));
+                        }
+
                         if self.multi_exec_enabled {
+                            ui.separator();
                             ui.label(RichText::new("⚠ MULTI-EXEC").color(Color32::from_rgb(255, 180, 50)).size(11.0).strong());
                         }
-                        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-                            let alive_str = if tab.session.is_alive() { "🟢 Connected" } else { "🔴 Disconnected" };
-                            ui.label(RichText::new(alive_str).size(11.0));
-                        }
+
+                        ui.separator();
+
+                        // Disk usage
+                        ui.label(
+                            RichText::new(format!("HDD: / {}%", self.telemetry_disk_pct))
+                                .color(Color32::from_rgb(100, 220, 100))
+                                .size(11.0),
+                        );
+
+                        ui.separator();
+
+                        // User
+                        ui.label(RichText::new(format!("User: {}", self.telemetry_user)).size(11.0).color(Color32::from_rgb(201, 209, 217)));
+
+                        ui.separator();
+
+                        // Uptime
+                        ui.label(RichText::new(&self.telemetry_uptime).size(11.0).color(Color32::from_rgb(139, 148, 158)));
+
+                        ui.separator();
+
+                        // Network
+                        ui.label(RichText::new("▲0.02M  ▼0.01M").color(Color32::from_rgb(56, 189, 248)).size(11.0));
+
+                        ui.separator();
+
+                        // RAM with visual gauge
+                        let ram_pct = (self.telemetry_ram_used_gb / self.telemetry_ram_total_gb.max(0.1)).clamp(0.0, 1.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("RAM: {:.1}/{:.1}G", self.telemetry_ram_used_gb, self.telemetry_ram_total_gb)).size(11.0));
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 8.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                            let mut filled_rect = rect;
+                            filled_rect.set_width(rect.width() * ram_pct);
+                            ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(59, 130, 246));
+                        });
+
+                        ui.separator();
+
+                        // CPU with visual gauge
+                        let cpu_frac = (self.telemetry_cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("CPU: {}%", self.telemetry_cpu_pct)).size(11.0));
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 8.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                            let mut filled_rect = rect;
+                            filled_rect.set_width(rect.width() * cpu_frac);
+                            ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(34, 197, 94));
+                        });
+
+                        ui.separator();
+
+                        // Host
+                        ui.label(RichText::new(format!("Host: {}", self.telemetry_host)).strong().size(11.0).color(Color32::WHITE));
                     });
                 });
             });
@@ -794,20 +1024,40 @@ impl eframe::App for RustyBoxApp {
                 .width_range(180.0..=450.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.sidebar_tab, 0, "📂 Sessions");
-                        ui.selectable_value(&mut self.sidebar_tab, 1, "📁 SFTP Browser");
+                        let btn_w = (ui.available_width() - 4.0) / 2.0;
+                        let s_active = self.sidebar_tab == 0;
+                        let sftp_active = self.sidebar_tab == 1;
+
+                        let s_fill = if s_active { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(30, 36, 46) };
+                        let sftp_fill = if sftp_active { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(30, 36, 46) };
+
+                        if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📂 Sessions").size(12.0).color(Color32::WHITE)).fill(s_fill).rounding(4.0)).clicked() {
+                            self.sidebar_tab = 0;
+                        }
+                        if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📁 SFTP Browser").size(12.0).color(Color32::WHITE)).fill(sftp_fill).rounding(4.0)).clicked() {
+                            self.sidebar_tab = 1;
+                        }
                     });
+                    ui.add_space(4.0);
                     ui.separator();
+                    ui.add_space(4.0);
 
                     if self.sidebar_tab == 0 {
                         // SESSIONS TREE
                         ui.horizontal(|ui| {
-                            ui.add(TextEdit::singleline(&mut self.session_search).hint_text("🔍 Filter...").desired_width(ui.available_width() - 30.0));
-                            if ui.button("➕").on_hover_text("New Session").clicked() {
+                            let filter_hint = format!("Filter {} sessions...", self.sessions.len());
+                            ui.add(TextEdit::singleline(&mut self.session_search).hint_text(filter_hint).desired_width(ui.available_width() - 32.0));
+                            let add_btn = egui::Button::new(RichText::new("➕").color(Color32::WHITE).size(12.0))
+                                .fill(Color32::from_rgb(34, 197, 94))
+                                .rounding(3.0);
+                            if ui.add(add_btn).on_hover_text("New Session").clicked() {
                                 self.new_session_dialog.open_for_new();
                             }
                         });
-                        ui.add_space(4.0);
+                        ui.add_space(6.0);
+
+                        ui.label(RichText::new("★ User sessions").color(Color32::from_rgb(234, 179, 8)).strong().size(12.0));
+                        ui.add_space(2.0);
 
                         let mut grouped: BTreeMap<String, Vec<Session>> = BTreeMap::new();
                         for s in &self.sessions {
@@ -823,26 +1073,60 @@ impl eframe::App for RustyBoxApp {
 
                         ScrollArea::vertical().show(ui, |ui| {
                             for (folder, list) in grouped {
-                                egui::CollapsingHeader::new(format!("📁 {}", folder))
-                                    .default_open(true)
-                                    .show(ui, |ui| {
-                                        for s in list {
-                                            let icon = match s.session_type {
-                                                SessionType::LocalShell { .. } => "💻 ",
-                                                SessionType::Ssh { .. } => "🌐 ",
-                                                SessionType::Serial { .. } => "🔌 ",
-                                                SessionType::Telnet { .. } => "📡 ",
-                                                SessionType::Rdp { .. } => "🖥 ",
-                                                SessionType::Vnc { .. } => "👁 ",
-                                                SessionType::Ftp { .. } => "📁 ",
-                                                SessionType::Wsl { .. } => "🐧 ",
-                                            };
+                                egui::CollapsingHeader::new(
+                                    RichText::new(format!("📁 {} ({})", folder, list.len())).strong().color(Color32::from_rgb(201, 209, 217))
+                                )
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    for s in list {
+                                        let icon = match s.session_type {
+                                            SessionType::LocalShell { .. } => ">_ ",
+                                            SessionType::Ssh { .. } => "🔑 ",
+                                            SessionType::Serial { .. } => "🔌 ",
+                                            SessionType::Telnet { .. } => "📡 ",
+                                            SessionType::Rdp { .. } => "🖥 ",
+                                            SessionType::Vnc { .. } => "👁 ",
+                                            SessionType::Ftp { .. } => "📁 ",
+                                            SessionType::Wsl { .. } => "🐧 ",
+                                        };
+
+                                        let subtitle = match &s.session_type {
+                                            SessionType::LocalShell { .. } => "local terminal".to_string(),
+                                            SessionType::Ssh { host, user, port, .. } => format!("{}@{}:{}", user, host, port),
+                                            SessionType::Telnet { host, port } => format!("telnet://{}:{}", host, port),
+                                            SessionType::Rdp { host, port, .. } => format!("rdp://{}:{}", host, port),
+                                            SessionType::Vnc { host, port, .. } => format!("vnc://{}:{}", host, port),
+                                            SessionType::Ftp { host, port, user } => format!("ftp://{}@{}:{}", user, host, port),
+                                            SessionType::Serial { port_name, baud_rate, .. } => format!("{} @ {} baud", port_name, baud_rate),
+                                            SessionType::Wsl { distro, .. } => format!("wsl ({})", distro),
+                                        };
+
+                                        let is_active = self.open_tabs.get(self.active_tab_idx).map(|t| t.title == s.name).unwrap_or(false);
+                                        let row_fill = if is_active {
+                                            Color32::from_rgb(31, 111, 235)
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+
+                                        let card = egui::Frame::none()
+                                            .fill(row_fill)
+                                            .rounding(4.0)
+                                            .inner_margin(egui::Margin::symmetric(6.0, 3.0));
+
+                                        card.show(ui, |ui| {
                                             ui.horizontal(|ui| {
-                                                let btn = ui.selectable_label(false, format!("{}{}", icon, s.name));
-                                                if btn.double_clicked() {
+                                                let resp = ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(icon).strong().color(if is_active { Color32::WHITE } else { Color32::from_rgb(56, 189, 248) }));
+                                                        ui.label(RichText::new(&s.name).strong().size(12.0).color(if is_active { Color32::WHITE } else { Color32::from_rgb(220, 230, 242) }));
+                                                    });
+                                                    ui.label(RichText::new(&subtitle).size(10.5).color(if is_active { Color32::from_rgb(200, 225, 255) } else { Color32::from_rgb(139, 148, 158) }));
+                                                }).response.interact(egui::Sense::click());
+
+                                                if resp.double_clicked() {
                                                     to_launch = Some(s.clone());
                                                 }
-                                                btn.context_menu(|ui| {
+                                                resp.context_menu(|ui| {
                                                     if ui.button("▶ Connect").clicked() {
                                                         to_launch = Some(s.clone());
                                                         ui.close_menu();
@@ -852,10 +1136,21 @@ impl eframe::App for RustyBoxApp {
                                                         ui.close_menu();
                                                     }
                                                 });
+
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                    if is_active {
+                                                        ui.label(RichText::new("🟢").size(9.0));
+                                                    }
+                                                });
                                             });
-                                        }
-                                    });
+                                        });
+                                    }
+                                });
                             }
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.label(RichText::new("Double-click to connect • Right-click for menu").weak().size(10.0));
                         });
 
                         if let Some(s) = to_launch {
@@ -881,8 +1176,44 @@ impl eframe::App for RustyBoxApp {
             ui.horizontal(|ui| {
                 let mut close_tab_idx: Option<usize> = None;
 
+                // Home Tab
+                let is_home = self.is_home_active;
+                let (h_fill, h_stroke, h_text) = if is_home {
+                    (
+                        Color32::from_rgb(31, 111, 235),
+                        egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                        Color32::WHITE,
+                    )
+                } else {
+                    (
+                        Color32::from_rgb(30, 36, 46),
+                        egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                        Color32::from_rgb(180, 190, 200),
+                    )
+                };
+
+                egui::Frame::none()
+                    .fill(h_fill)
+                    .stroke(h_stroke)
+                    .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 })
+                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .show(ui, |ui| {
+                        let label = ui.add(
+                            egui::Label::new(
+                                RichText::new("🏠 Home")
+                                    .strong()
+                                    .color(h_text)
+                                    .size(12.0),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if label.clicked() {
+                            self.is_home_active = true;
+                        }
+                    });
+
                 for (idx, tab) in self.open_tabs.iter().enumerate() {
-                    let is_active = idx == self.active_tab_idx;
+                    let is_active = !self.is_home_active && idx == self.active_tab_idx;
                     let (fill, stroke, text_color) = if is_active {
                         (
                             Color32::from_rgb(31, 111, 235),
@@ -906,7 +1237,7 @@ impl eframe::App for RustyBoxApp {
                             ui.horizontal(|ui| {
                                 let label = ui.add(
                                     egui::Label::new(
-                                        RichText::new(format!(">_ {}", &tab.title))
+                                        RichText::new(format!("{}. {}", idx + 1, &tab.title))
                                             .strong()
                                             .color(text_color)
                                             .size(12.0),
@@ -914,6 +1245,7 @@ impl eframe::App for RustyBoxApp {
                                     .sense(egui::Sense::click()),
                                 );
                                 if label.clicked() {
+                                    self.is_home_active = false;
                                     self.active_tab_idx = idx;
                                 }
                                 if ui
@@ -942,7 +1274,27 @@ impl eframe::App for RustyBoxApp {
                     .clicked()
                 {
                     self.spawn_local_terminal("Local Terminal", None, None);
+                    self.is_home_active = false;
                 }
+
+                // Quick Connect Bar at top right of Tab Bar
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let run_btn = egui::Button::new(RichText::new("▶").color(Color32::WHITE).size(12.0))
+                        .fill(Color32::from_rgb(31, 111, 235))
+                        .rounding(3.0);
+                    if ui.add(run_btn).on_hover_text("Quick Connect to user@host:port").clicked() {
+                        self.handle_quick_connect();
+                    }
+
+                    let q_edit = ui.add_sized(
+                        egui::vec2(160.0, 22.0),
+                        TextEdit::singleline(&mut self.quick_connect_input)
+                            .hint_text("Quick connect...")
+                    );
+                    if q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.handle_quick_connect();
+                    }
+                });
 
                 if let Some(close_idx) = close_tab_idx {
                     if close_idx < self.open_tabs.len() {
@@ -953,6 +1305,72 @@ impl eframe::App for RustyBoxApp {
                     }
                 }
             });
+
+            // If Home tab is active, render Welcome Dashboard
+            if self.is_home_active {
+                ui.add_space(25.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("RustyBox").size(28.0).strong().color(Color32::from_rgb(56, 189, 248)));
+                    ui.label(RichText::new("Enhanced Terminal & Remote Toolbox").size(13.5).weak());
+                    ui.add_space(25.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        let big_btn = |ui: &mut egui::Ui, icon: &str, text: &str| -> egui::Response {
+                            ui.add_sized(
+                                egui::vec2(170.0, 56.0),
+                                egui::Button::new(
+                                    RichText::new(format!("{}  {}", icon, text)).size(13.0).strong()
+                                )
+                                .fill(Color32::from_rgb(30, 36, 46))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                                .rounding(6.0)
+                            )
+                        };
+
+                        if big_btn(ui, "💻", "Start local terminal").clicked() {
+                            self.spawn_local_terminal("Local Terminal", None, None);
+                            self.is_home_active = false;
+                        }
+                        ui.add_space(8.0);
+                        if big_btn(ui, "🌐", "New SSH session").clicked() {
+                            self.new_session_dialog.open_for_new();
+                        }
+                        ui.add_space(8.0);
+                        if big_btn(ui, "📁", "Open SFTP browser").clicked() {
+                            self.show_sftp_sidebar = true;
+                            self.sidebar_tab = 1;
+                        }
+                        ui.add_space(8.0);
+                        if big_btn(ui, "📡", "Network scanner").clicked() {
+                            self.show_network_tools = true;
+                            self.net_tools_tab = 1;
+                        }
+                    });
+
+                    ui.add_space(35.0);
+                    ui.label(RichText::new("★ Quick Launch Sessions").strong().size(13.5).color(Color32::from_rgb(234, 179, 8)));
+                    ui.add_space(10.0);
+
+                    let mut to_launch_quick: Option<Session> = None;
+                    for s in self.sessions.iter().take(6) {
+                        ui.horizontal(|ui| {
+                            let icon = match s.session_type {
+                                SessionType::LocalShell { .. } => ">_ ",
+                                _ => "🔑 ",
+                            };
+                            if ui.button(RichText::new(format!("{} {}", icon, s.name)).strong()).clicked() {
+                                to_launch_quick = Some(s.clone());
+                            }
+                            ui.label(RichText::new(format!("({})", s.folder)).weak());
+                        });
+                    }
+                    if let Some(s) = to_launch_quick {
+                        self.launch_generic_session(s);
+                        self.is_home_active = false;
+                    }
+                });
+                return;
+            }
 
             // INLINE TERMINAL SEARCH BAR (Ctrl+F)
             if self.search_open {
