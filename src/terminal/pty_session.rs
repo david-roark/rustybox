@@ -385,6 +385,17 @@ impl PtySession {
     }
 
     pub fn is_alive(&self) -> bool {
+        if !self.running.load(Ordering::Relaxed) {
+            return false;
+        }
+        if let Some(mut guard) = self.child.try_lock() {
+            if let Some(child) = guard.as_mut() {
+                if let Ok(Some(_status)) = child.try_wait() {
+                    self.running.store(false, Ordering::Relaxed);
+                    return false;
+                }
+            }
+        }
         self.running.load(Ordering::Relaxed)
     }
 

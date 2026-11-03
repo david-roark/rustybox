@@ -421,7 +421,7 @@ impl<'a> TerminalWidget<'a> {
                             let ctrl = modifiers.ctrl || modifiers.command;
                             match key {
                                 Key::Enter => {
-                                    if !self.session.running.load(std::sync::atomic::Ordering::Relaxed) {
+                                    if !self.session.is_alive() {
                                         action = TerminalAction::RestartTab;
                                     } else {
                                         input_bytes.extend_from_slice(b"\r");
@@ -515,7 +515,7 @@ impl<'a> TerminalWidget<'a> {
                                 Key::L if ctrl => input_bytes.extend_from_slice(b"\x0c"), // Ctrl+L (Clear)
                                 Key::U if ctrl => input_bytes.extend_from_slice(b"\x15"), // Ctrl+U
                                 Key::W if ctrl => {
-                                    if !self.session.running.load(std::sync::atomic::Ordering::Relaxed) {
+                                    if modifiers.shift || !self.session.is_alive() {
                                         action = TerminalAction::CloseTab;
                                     } else {
                                         input_bytes.extend_from_slice(b"\x17");

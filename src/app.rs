@@ -335,6 +335,7 @@ pub struct RustyBoxApp {
     rename_session_target: Option<(String, String)>,
     rename_folder_target: Option<(String, String)>,
     rename_tab_target: Option<(usize, String)>,
+    tab_context_menu: Option<(usize, egui::Pos2)>,
     status_toast: Option<(String, std::time::Instant)>,
     // SSH Key Generator (RustyBox KeyGen)
     show_keygen: bool,
@@ -479,6 +480,7 @@ impl RustyBoxApp {
             rename_session_target: None,
             rename_folder_target: None,
             rename_tab_target: None,
+            tab_context_menu: None,
             status_toast: None,
             show_keygen: false,
             keygen_type: 0,
@@ -2347,9 +2349,8 @@ impl eframe::App for RustyBoxApp {
             let num_tabs = self.open_tabs.len().max(1);
             let dynamic_tab_w = ((avail_tabs_w - 32.0) / num_tabs as f32).clamp(80.0, 140.0);
 
-            // 1. TABS AREA (Home + Scrollable tab strip with 100% clip boundary)
+            // 1. TABS AREA (Home + Scrollable tab strip)
             let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect).layout(Layout::left_to_right(Align::Center)));
-            tabs_ui.set_clip_rect(tabs_rect);
             tabs_ui.horizontal(|ui| {
                 // Home Tab
                 let is_home = self.is_home_active;
@@ -2389,13 +2390,20 @@ impl eframe::App for RustyBoxApp {
                         ui.horizontal(|ui| {
                             for (idx, tab) in self.open_tabs.iter().enumerate() {
                                 let is_active = !self.is_home_active && idx == self.active_tab_idx;
-                                let tab_id = &tab.id;
+                                let _tab_id = &tab.id;
 
                                 let tab_w = dynamic_tab_w;
-                                let (tab_rect, tab_resp) = ui.allocate_exact_size(
-                                    vec2(tab_w, 26.0),
-                                    egui::Sense::hover(),
+                                let title_w = (tab_w - 22.0).max(40.0);
+                                let (title_rect, title_resp) = ui.allocate_exact_size(
+                                    vec2(title_w, 26.0),
+                                    egui::Sense::click_and_drag(),
                                 );
+                                let (close_rect, close_resp) = ui.allocate_exact_size(
+                                    vec2(22.0, 26.0),
+                                    egui::Sense::click(),
+                                );
+                                let tab_rect = egui::Rect::from_min_max(title_rect.min, close_rect.max);
+                                let tab_hovered = title_resp.hovered() || close_resp.hovered();
 
                                 let (fill, stroke, text_color) = if is_active {
                                     (
@@ -2403,7 +2411,7 @@ impl eframe::App for RustyBoxApp {
                                         egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
                                         Color32::WHITE,
                                     )
-                                } else if tab_resp.hovered() {
+                                } else if tab_hovered {
                                     (
                                         Color32::from_rgb(32, 40, 52),
                                         egui::Stroke::new(1.0, Color32::from_rgb(52, 60, 72)),
@@ -2457,8 +2465,15 @@ impl eframe::App for RustyBoxApp {
                                 // Title text with ellipsis truncation so it never overflows
                                 let full_title = format!("{}{}", icon, &tab.title);
                                 let clean_title = tab.title.trim_start_matches("SSH: ").trim();
-                                let display_title = if clean_title.chars().count() > 11 {
-                                    let s: String = clean_title.chars().take(10).collect();
+                                let max_chars = if tab_w < 95.0 {
+                                    5
+                                } else if tab_w < 115.0 {
+                                    8
+                                } else {
+                                    11
+                                };
+                                let display_title = if clean_title.chars().count() > max_chars {
+                                    let s: String = clean_title.chars().take(max_chars.saturating_sub(1)).collect();
                                     format!("{}{}\u{2026}", icon, s)
                                 } else {
                                     format!("{}{}", icon, clean_title)
@@ -2471,17 +2486,6 @@ impl eframe::App for RustyBoxApp {
                                     display_title,
                                     egui::FontId::proportional(11.0),
                                     text_color,
-                                );
-
-                                // Separate Close Button Hitbox (22px on right edge of tab)
-                                let close_rect = egui::Rect::from_min_max(
-                                    pos2(tab_rect.max.x - 22.0, tab_rect.min.y),
-                                    tab_rect.max,
-                                );
-                                let close_resp = ui.interact(
-                                    close_rect,
-                                    ui.make_persistent_id(("tab_cls", tab_id)),
-                                    egui::Sense::click(),
                                 );
 
                                 // Close icon rendering (crisp anti-aliased cross, no font tofu)
@@ -2502,24 +2506,8 @@ impl eframe::App for RustyBoxApp {
                                     ui.painter().line_segment([pos2(close_center.x - r_x, close_center.y + r_x), pos2(close_center.x + r_x, close_center.y - r_x)], stroke);
                                 }
 
-                                let mut close_this_tab = false;
-                                if close_resp.clicked() {
-                                    close_this_tab = true;
-                                }
-
-                                // Main Tab Click & Drag Hitbox (strictly excludes close button)
-                                let title_interact_rect = egui::Rect::from_min_max(
-                                    tab_rect.min,
-                                    pos2(tab_rect.max.x - 22.0, tab_rect.max.y),
-                                );
-                                let title_resp = ui.interact(
-                                    title_interact_rect,
-                                    ui.make_persistent_id(("tab_hdr", tab_id)),
-                                    egui::Sense::click_and_drag(),
-                                );
-
                                 let tab_middle_clicked = title_resp.middle_clicked() || close_resp.middle_clicked();
-                                if close_this_tab || tab_middle_clicked {
+                                if close_resp.clicked() || tab_middle_clicked {
                                     close_tab_idx = Some(idx);
                                 } else if title_resp.clicked() {
                                     self.is_home_active = false;
@@ -2527,37 +2515,14 @@ impl eframe::App for RustyBoxApp {
                                     self.selected_sidebar_session_id = tab.session_def.as_ref().map(|def| def.id.clone());
                                 }
 
-                                let tip = format!("{}\nStatus: {}\nClick to switch • Middle-click or ✕ to close", full_title, if is_alive { "Connected" } else { "Disconnected / Stopped" });
-                                let title_resp = title_resp.on_hover_text(tip);
+                                let right_clicked = title_resp.secondary_clicked() || (title_resp.hovered() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
+                                if right_clicked {
+                                    let p = ui.input(|i| i.pointer.interact_pos()).unwrap_or_else(|| pos2(title_rect.left(), title_rect.bottom() + 2.0));
+                                    self.tab_context_menu = Some((idx, p));
+                                }
 
-                                title_resp.context_menu(|ui| {
-                                    ui.set_min_width(180.0);
-                                    if ui.button("🔑 Duplicate Tab").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::Duplicate));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("🔄 Restart / Reconnect").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::Restart));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("✏ Rename Tab").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::Rename));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("× Close Tab").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::Close));
-                                        ui.close_menu();
-                                    }
-                                    ui.separator();
-                                    if ui.button("Close Other Tabs").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::CloseOthers));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Close Tabs to the Right").clicked() {
-                                        tab_menu_action = Some((idx, TabMenuAction::CloseRight));
-                                        ui.close_menu();
-                                    }
-                                });
+                                let tip = format!("{}\nStatus: {}\nClick to switch • Middle-click or ✕ to close • Right-click for menu", full_title, if is_alive { "Connected" } else { "Disconnected / Stopped" });
+                                title_resp.on_hover_text(tip);
                             }
 
                             // '+' Button right after tabs in scroll area
@@ -2578,7 +2543,6 @@ impl eframe::App for RustyBoxApp {
 
             // 2. QUICK CONNECT AREA (Completely separated on the right edge, zero overlap)
             let mut quick_ui = ui.new_child(egui::UiBuilder::new().max_rect(quick_rect).layout(Layout::right_to_left(Align::Center)));
-            quick_ui.set_clip_rect(quick_rect);
             let run_btn = egui::Button::new(RichText::new("▶ Connect").color(Color32::WHITE).size(11.5).strong())
                 .fill(Color32::from_rgb(31, 111, 235))
                 .rounding(4.0);
@@ -2605,6 +2569,61 @@ impl eframe::App for RustyBoxApp {
                         }
                     });
                 });
+
+            // Tab Right-Click Context Menu (Floating Foreground Area)
+            if let Some((menu_idx, pos)) = self.tab_context_menu {
+                let mut close_menu = false;
+                let menu_area = egui::Area::new(egui::Id::new("tab_context_menu_area"))
+                    .fixed_pos(pos)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        egui::Frame::menu(ui.style())
+                            .fill(Color32::from_rgb(26, 32, 42))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(52, 60, 72)))
+                            .rounding(6.0)
+                            .shadow(egui::epaint::Shadow {
+                                offset: vec2(0.0, 4.0),
+                                blur: 8.0,
+                                spread: 0.0,
+                                color: Color32::from_black_alpha(160),
+                            })
+                            .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+                            .show(ui, |ui| {
+                                ui.set_min_width(190.0);
+                                if ui.button(RichText::new("🔑 Duplicate Tab").size(12.0).color(Color32::WHITE)).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::Duplicate));
+                                    close_menu = true;
+                                }
+                                if ui.button(RichText::new("🔄 Restart / Reconnect").size(12.0).color(Color32::WHITE)).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::Restart));
+                                    close_menu = true;
+                                }
+                                if ui.button(RichText::new("✏ Rename Tab").size(12.0).color(Color32::WHITE)).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::Rename));
+                                    close_menu = true;
+                                }
+                                if ui.button(RichText::new("× Close Tab").size(12.0).color(Color32::from_rgb(248, 113, 113))).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::Close));
+                                    close_menu = true;
+                                }
+                                ui.separator();
+                                if ui.button(RichText::new("Close Other Tabs").size(12.0).color(Color32::from_rgb(210, 220, 230))).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::CloseOthers));
+                                    close_menu = true;
+                                }
+                                if ui.button(RichText::new("Close Tabs to the Right").size(12.0).color(Color32::from_rgb(210, 220, 230))).clicked() {
+                                    tab_menu_action = Some((menu_idx, TabMenuAction::CloseRight));
+                                    close_menu = true;
+                                }
+                            });
+                    });
+
+                let clicked_outside = ctx.input(|i| i.pointer.primary_clicked() && !menu_area.response.rect.contains(i.pointer.interact_pos().unwrap_or(pos2(-100.0, -100.0))));
+                let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+                if close_menu || clicked_outside || esc_pressed {
+                    self.tab_context_menu = None;
+                }
+            }
 
                 if let Some((idx, action)) = tab_menu_action {
                     match action {
