@@ -390,20 +390,28 @@ impl PtySession {
 
     pub fn kill(&mut self) {
         self.running.store(false, Ordering::Relaxed);
-        if let Some(ref mut c) = *self.child.lock() {
+        if let Some(mut c) = self.child.lock().take() {
             let _ = c.kill();
         }
-        #[cfg(not(target_os = "windows"))]
-        if let Some(pid) = self.child_pid {
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
-        }
-        #[cfg(target_os = "windows")]
-        if let Some(pid) = self.child_pid {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .output();
+        if let Some(pid) = self.child_pid.take() {
+            std::thread::spawn(move || {
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            });
         }
     }
 }
