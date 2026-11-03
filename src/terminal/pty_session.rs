@@ -67,7 +67,7 @@ impl PtySession {
         }
 
         let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title, None)?;
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title, None, false)?;
         {
             let shell_name = if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" };
             let banner = format!(
@@ -141,7 +141,7 @@ impl PtySession {
         cmd.arg(target);
 
         let default_title = format!("SSH: {}@{}", user, host);
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title, password.map(|p| p.to_string()))?;
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title, password.map(|p| p.to_string()), true)?;
         {
             let banner = format!(
                 "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
@@ -166,6 +166,7 @@ impl PtySession {
         cols: u16,
         initial_title: &str,
         auto_password: Option<String>,
+        is_ssh: bool,
     ) -> Result<Self, String> {
         let child = pair
             .slave
@@ -274,14 +275,15 @@ impl PtySession {
                                 }
                             }
 
-                            // If we are at a password prompt or in middle of password auto-injection,
-                            // NEVER send terminal/cursor queries into stdin because OpenSSH will treat
-                            // them as password characters!
-                            let queries_blocked = at_pwd_prompt || suppress_terminal_queries_clone.load(Ordering::SeqCst);
+                            // If this is an SSH session, NEVER send terminal query auto-replies (CPR, DA, DSR)
+                            // into stdin, because OpenSSH / remote shell (bash/zsh) will treat them as raw
+                            // user keystrokes, printing "^[[6;1R" and leaving ";1R" at the command prompt!
+                            // Also block queries during password auto-injection.
+                            let queries_blocked = is_ssh || at_pwd_prompt || suppress_terminal_queries_clone.load(Ordering::SeqCst);
 
                             if !queries_blocked {
                                 // 1. DSR Cursor Position Query (\x1b[6n or \x1b[?6n)
-                                if combined.windows(4).any(|w| w == b"\x1b[6n") {
+                                if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[6n") {
                                     let (r, c) = {
                                         let p = parser_clone.lock();
                                         p.screen().cursor_position()
@@ -290,7 +292,8 @@ impl PtySession {
                                     let mut w = writer_reply.lock();
                                     let _ = w.write_all(resp.as_bytes());
                                     let _ = w.flush();
-                                } else if combined.windows(5).any(|w| w == b"\x1b[?6n") {
+                                    combined[pos..pos + 4].fill(0);
+                                } else if let Some(pos) = combined.windows(5).position(|w| w == b"\x1b[?6n") {
                                     let (r, c) = {
                                         let p = parser_clone.lock();
                                         p.screen().cursor_position()
@@ -299,26 +302,36 @@ impl PtySession {
                                     let mut w = writer_reply.lock();
                                     let _ = w.write_all(resp.as_bytes());
                                     let _ = w.flush();
+                                    combined[pos..pos + 5].fill(0);
                                 }
 
                                 // 2. Primary Device Attributes (\x1b[c or \x1b[0c)
-                                if combined.windows(3).any(|w| w == b"\x1b[c")
-                                    || combined.windows(4).any(|w| w == b"\x1b[0c")
-                                {
+                                if let Some(pos) = combined.windows(3).position(|w| w == b"\x1b[c") {
                                     let mut w = writer_reply.lock();
                                     let _ = w.write_all(b"\x1b[?1;2c");
                                     let _ = w.flush();
+                                    combined[pos..pos + 3].fill(0);
+                                } else if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[0c") {
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(b"\x1b[?1;2c");
+                                    let _ = w.flush();
+                                    combined[pos..pos + 4].fill(0);
                                 }
 
                                 // 3. Status Report Query (\x1b[5n)
-                                if combined.windows(4).any(|w| w == b"\x1b[5n") {
+                                if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[5n") {
                                     let mut w = writer_reply.lock();
                                     let _ = w.write_all(b"\x1b[0n");
                                     let _ = w.flush();
+                                    combined[pos..pos + 4].fill(0);
                                 }
                             }
 
-                            let tail_len = combined.len().min(256);
+                            let tail_len = if pending_password.is_some() {
+                                combined.len().min(256)
+                            } else {
+                                combined.len().min(8)
+                            };
                             prev_tail = combined[combined.len() - tail_len..].to_vec();
 
                             let mut p = parser_clone.lock();
