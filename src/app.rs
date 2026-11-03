@@ -1117,6 +1117,20 @@ impl eframe::App for RustyBoxApp {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::I) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
             self.show_import_dialog = true;
         }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::W) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            if !self.open_tabs.is_empty() && !self.is_home_active {
+                let active = self.active_tab_idx;
+                if active < self.open_tabs.len() {
+                    let mut closed = self.open_tabs.remove(active);
+                    closed.session.kill();
+                    if self.open_tabs.is_empty() {
+                        self.is_home_active = true;
+                    } else if self.active_tab_idx >= self.open_tabs.len() {
+                        self.active_tab_idx = self.open_tabs.len() - 1;
+                    }
+                }
+            }
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::T) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::T)) {
             self.spawn_local_terminal("Local Terminal", None, None);
         }
@@ -2093,11 +2107,15 @@ impl eframe::App for RustyBoxApp {
                         )
                     };
 
+                    let mut tab_select_clicked = false;
+                    let mut tab_middle_clicked = false;
+                    let mut close_this_tab = false;
+
                     let frame_res = egui::Frame::none()
                         .fill(fill)
                         .stroke(stroke)
                         .rounding(egui::Rounding { nw: 5.0, ne: 5.0, sw: 0.0, se: 0.0 })
-                        .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 // Status dot (Green = Alive, Red = Exited)
@@ -2119,22 +2137,31 @@ impl eframe::App for RustyBoxApp {
                                     ">_ "
                                 };
 
-                                ui.label(
-                                    RichText::new(format!("{}{}", icon, &tab.title))
-                                        .strong()
-                                        .color(text_color)
-                                        .size(12.0),
+                                let title_text = format!("{}{}", icon, &tab.title);
+                                let _title_label = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title_text)
+                                            .strong()
+                                            .color(text_color)
+                                            .size(12.0),
+                                    )
+                                    .sense(egui::Sense::hover()),
                                 );
 
-                                if ui
-                                    .add(
-                                        egui::Button::new(RichText::new("×").size(11.5).color(text_color))
-                                            .frame(false),
+                                ui.add_space(4.0);
+
+                                let close_resp = ui.add(
+                                    egui::Button::new(
+                                        RichText::new("✕")
+                                            .size(11.0)
+                                            .strong()
+                                            .color(if is_active { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(156, 163, 175) }),
                                     )
-                                    .on_hover_text("Close Tab (or Middle Click)")
-                                    .clicked()
-                                {
-                                    close_tab_idx = Some(idx);
+                                    .frame(false)
+                                    .min_size(vec2(16.0, 16.0)),
+                                );
+                                if close_resp.on_hover_text("Close Tab (Ctrl+W or Middle Click)").clicked() {
+                                    close_this_tab = true;
                                 }
                             });
                         });
@@ -2148,16 +2175,32 @@ impl eframe::App for RustyBoxApp {
                         );
                     }
 
-                    let tab_resp = ui.interact(r, ui.make_persistent_id(format!("tab_hdr_{}", idx)), egui::Sense::click());
-                    if tab_resp.clicked() {
+                    // Clickable area for tab selection & context menu (strictly excludes the close button)
+                    let title_interact_rect = egui::Rect::from_min_max(
+                        r.min,
+                        egui::pos2((r.max.x - 22.0).max(r.min.x), r.max.y),
+                    );
+                    let tab_title_resp = ui.interact(
+                        title_interact_rect,
+                        ui.make_persistent_id(format!("tab_hdr_{}", idx)),
+                        egui::Sense::click_and_drag(),
+                    );
+                    if tab_title_resp.clicked() {
+                        tab_select_clicked = true;
+                    }
+                    if tab_title_resp.middle_clicked() {
+                        tab_middle_clicked = true;
+                    }
+
+                    if close_this_tab || tab_middle_clicked {
+                        close_tab_idx = Some(idx);
+                    } else if tab_select_clicked {
                         self.is_home_active = false;
                         self.active_tab_idx = idx;
                         self.selected_sidebar_session_id = self.open_tabs.get(idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id.clone());
                     }
-                    if tab_resp.middle_clicked() {
-                        close_tab_idx = Some(idx);
-                    }
-                    tab_resp.context_menu(|ui| {
+
+                    tab_title_resp.context_menu(|ui| {
                         ui.set_min_width(180.0);
                         if ui.button("🔑 Duplicate Tab").clicked() {
                             tab_menu_action = Some((idx, TabMenuAction::Duplicate));
@@ -2290,8 +2333,11 @@ impl eframe::App for RustyBoxApp {
 
                 if let Some(close_idx) = close_tab_idx {
                     if close_idx < self.open_tabs.len() {
-                        self.open_tabs.remove(close_idx);
-                        if self.active_tab_idx >= self.open_tabs.len() && !self.open_tabs.is_empty() {
+                        let mut closed = self.open_tabs.remove(close_idx);
+                        closed.session.kill();
+                        if self.open_tabs.is_empty() {
+                            self.is_home_active = true;
+                        } else if self.active_tab_idx >= self.open_tabs.len() {
                             self.active_tab_idx = self.open_tabs.len() - 1;
                         }
                     }
@@ -2725,8 +2771,11 @@ impl eframe::App for RustyBoxApp {
                 if !self.open_tabs.is_empty() {
                     let active = self.active_tab_idx;
                     if active < self.open_tabs.len() {
-                        self.open_tabs.remove(active);
-                        if self.active_tab_idx >= self.open_tabs.len() && !self.open_tabs.is_empty() {
+                        let mut closed = self.open_tabs.remove(active);
+                        closed.session.kill();
+                        if self.open_tabs.is_empty() {
+                            self.is_home_active = true;
+                        } else if self.active_tab_idx >= self.open_tabs.len() {
                             self.active_tab_idx = self.open_tabs.len() - 1;
                         }
                     }

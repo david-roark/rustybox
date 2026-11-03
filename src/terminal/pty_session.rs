@@ -16,6 +16,7 @@ pub struct PtySession {
     pub title: Arc<parking_lot::Mutex<String>>,
     pub child_pid: Option<u32>,
     pub has_new_data: Arc<AtomicBool>,
+    pub child: Arc<parking_lot::Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
 }
 
 impl PtySession {
@@ -290,6 +291,8 @@ impl PtySession {
             })
             .map_err(|e| format!("Failed to spawn reader thread: {}", e))?;
 
+        let child_holder = Arc::new(parking_lot::Mutex::new(Some(child)));
+
         Ok(Self {
             parser,
             writer,
@@ -298,6 +301,7 @@ impl PtySession {
             title,
             child_pid: pid,
             has_new_data,
+            child: child_holder,
         })
     }
 
@@ -330,6 +334,31 @@ impl PtySession {
 
     pub fn is_alive(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn kill(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(ref mut c) = *self.child.lock() {
+            let _ = c.kill();
+        }
+        #[cfg(not(target_os = "windows"))]
+        if let Some(pid) = self.child_pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(pid) = self.child_pid {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        }
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
