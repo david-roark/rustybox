@@ -184,6 +184,8 @@ impl PtySession {
         let running_clone = Arc::clone(&running);
         let has_new_data = Arc::new(AtomicBool::new(true));
         let has_new_data_clone = Arc::clone(&has_new_data);
+        let suppress_terminal_queries = Arc::new(AtomicBool::new(false));
+        let suppress_terminal_queries_clone = Arc::clone(&suppress_terminal_queries);
 
         thread::Builder::new()
             .name("pty-reader".into())
@@ -219,64 +221,85 @@ impl PtySession {
                             let mut combined = prev_tail.clone();
                             combined.extend_from_slice(chunk);
 
+                            let at_pwd_prompt = is_ssh_password_prompt(&combined);
+
                             // Auto-fill SSH password if prompted
-                            if pending_password.is_some() && is_ssh_password_prompt(&combined) {
+                            if pending_password.is_some() && at_pwd_prompt {
                                 if let Some(pwd) = pending_password.take() {
                                     let writer_for_pwd = Arc::clone(&writer_reply);
                                     let parser_for_notify = Arc::clone(&parser_clone);
                                     let has_new_data_for_notify = Arc::clone(&has_new_data_clone);
+                                    let suppress_for_pwd = Arc::clone(&suppress_terminal_queries_clone);
+                                    suppress_for_pwd.store(true, Ordering::SeqCst);
+
                                     thread::spawn(move || {
-                                        // Small pause for OpenSSH to configure terminal into no-echo mode
-                                        thread::sleep(Duration::from_millis(150));
+                                        // 250ms pause for OpenSSH readpassphrase & FlushConsoleInputBuffer to settle
+                                        thread::sleep(Duration::from_millis(250));
                                         {
                                             let mut p = parser_for_notify.lock();
                                             p.process(b"\r\n\x1b[1;32m[RustyBox] \xe2\x9c\x94 Auto-submitting saved password...\x1b[0m\r\n");
                                         }
                                         has_new_data_for_notify.store(true, Ordering::Relaxed);
 
+                                        thread::sleep(Duration::from_millis(50));
+                                        let clean_pwd = pwd.trim();
                                         let mut w = writer_for_pwd.lock();
-                                        let _ = w.write_all(pwd.as_bytes());
+                                        let _ = w.write_all(clean_pwd.as_bytes());
+                                        let _ = w.flush();
+
+                                        thread::sleep(Duration::from_millis(50));
                                         let _ = w.write_all(b"\r");
                                         let _ = w.flush();
+
+                                        // Keep queries suppressed for another 500ms while SSH server authenticates
+                                        thread::sleep(Duration::from_millis(500));
+                                        suppress_for_pwd.store(false, Ordering::SeqCst);
                                     });
                                 }
                             }
 
-                            // 1. DSR Cursor Position Query (\x1b[6n or \x1b[?6n)
-                            if combined.windows(4).any(|w| w == b"\x1b[6n") {
-                                let (r, c) = {
-                                    let p = parser_clone.lock();
-                                    p.screen().cursor_position()
-                                };
-                                let resp = format!("\x1b[{};{}R", r + 1, c + 1);
-                                let mut w = writer_reply.lock();
-                                let _ = w.write_all(resp.as_bytes());
-                                let _ = w.flush();
-                            } else if combined.windows(5).any(|w| w == b"\x1b[?6n") {
-                                let (r, c) = {
-                                    let p = parser_clone.lock();
-                                    p.screen().cursor_position()
-                                };
-                                let resp = format!("\x1b[?{};{}R", r + 1, c + 1);
-                                let mut w = writer_reply.lock();
-                                let _ = w.write_all(resp.as_bytes());
-                                let _ = w.flush();
-                            }
+                            // If we are at a password prompt or in middle of password auto-injection,
+                            // NEVER send terminal/cursor queries into stdin because OpenSSH will treat
+                            // them as password characters!
+                            let queries_blocked = at_pwd_prompt || suppress_terminal_queries_clone.load(Ordering::SeqCst);
 
-                            // 2. Primary Device Attributes (\x1b[c or \x1b[0c)
-                            if combined.windows(3).any(|w| w == b"\x1b[c")
-                                || combined.windows(4).any(|w| w == b"\x1b[0c")
-                            {
-                                let mut w = writer_reply.lock();
-                                let _ = w.write_all(b"\x1b[?1;2c");
-                                let _ = w.flush();
-                            }
+                            if !queries_blocked {
+                                // 1. DSR Cursor Position Query (\x1b[6n or \x1b[?6n)
+                                if combined.windows(4).any(|w| w == b"\x1b[6n") {
+                                    let (r, c) = {
+                                        let p = parser_clone.lock();
+                                        p.screen().cursor_position()
+                                    };
+                                    let resp = format!("\x1b[{};{}R", r + 1, c + 1);
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(resp.as_bytes());
+                                    let _ = w.flush();
+                                } else if combined.windows(5).any(|w| w == b"\x1b[?6n") {
+                                    let (r, c) = {
+                                        let p = parser_clone.lock();
+                                        p.screen().cursor_position()
+                                    };
+                                    let resp = format!("\x1b[?{};{}R", r + 1, c + 1);
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(resp.as_bytes());
+                                    let _ = w.flush();
+                                }
 
-                            // 3. Status Report Query (\x1b[5n)
-                            if combined.windows(4).any(|w| w == b"\x1b[5n") {
-                                let mut w = writer_reply.lock();
-                                let _ = w.write_all(b"\x1b[0n");
-                                let _ = w.flush();
+                                // 2. Primary Device Attributes (\x1b[c or \x1b[0c)
+                                if combined.windows(3).any(|w| w == b"\x1b[c")
+                                    || combined.windows(4).any(|w| w == b"\x1b[0c")
+                                {
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(b"\x1b[?1;2c");
+                                    let _ = w.flush();
+                                }
+
+                                // 3. Status Report Query (\x1b[5n)
+                                if combined.windows(4).any(|w| w == b"\x1b[5n") {
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(b"\x1b[0n");
+                                    let _ = w.flush();
+                                }
                             }
 
                             let tail_len = combined.len().min(256);

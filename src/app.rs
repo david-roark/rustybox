@@ -520,15 +520,28 @@ impl RustyBoxApp {
                         .filter(|p| !p.trim().is_empty())
                 });
 
+            let mut decrypted_pw_buf: Option<String> = None;
             if let Some(pw) = effective_password {
                 if is_encrypted(pw) {
-                    if !self.storage.is_vault_unlocked() {
+                    if self.storage.is_vault_unlocked() {
+                        if let Some(key) = self.storage.vault_key() {
+                            if let Ok(dec) = decrypt_str(&key, pw) {
+                                decrypted_pw_buf = Some(dec);
+                            }
+                        }
+                    } else {
                         self.show_vault = true;
                         self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
                         effective_password = None;
                     }
                 }
             }
+
+            let final_password = if let Some(ref dec) = decrypted_pw_buf {
+                Some(dec.as_str())
+            } else {
+                effective_password
+            };
 
             match PtySession::spawn_ssh(
                 24,
@@ -538,7 +551,7 @@ impl RustyBoxApp {
                 user,
                 key_path.as_deref(),
                 jump_host.as_deref(),
-                effective_password,
+                final_password,
             ) {
                 Ok(session) => {
                     let telemetry = TabTelemetry::new_remote(&s);
@@ -593,15 +606,28 @@ impl RustyBoxApp {
                                 .filter(|p| !p.trim().is_empty())
                         });
 
+                    let mut decrypted_pw_buf: Option<String> = None;
                     if let Some(pw) = effective_password {
                         if is_encrypted(pw) {
-                            if !self.storage.is_vault_unlocked() {
+                            if self.storage.is_vault_unlocked() {
+                                if let Some(key) = self.storage.vault_key() {
+                                    if let Ok(dec) = decrypt_str(&key, pw) {
+                                        decrypted_pw_buf = Some(dec);
+                                    }
+                                }
+                            } else {
                                 self.show_vault = true;
                                 self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
                                 effective_password = None;
                             }
                         }
                     }
+
+                    let final_password = if let Some(ref dec) = decrypted_pw_buf {
+                        Some(dec.as_str())
+                    } else {
+                        effective_password
+                    };
 
                     if let Ok(session) = PtySession::spawn_ssh(
                         24,
@@ -611,7 +637,7 @@ impl RustyBoxApp {
                         user,
                         key_path.as_deref(),
                         jump_host.as_deref(),
-                        effective_password,
+                        final_password,
                     ) {
                         tab.session = session;
                         tab.telemetry.is_connected = true;
