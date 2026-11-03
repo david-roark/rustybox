@@ -501,6 +501,21 @@ impl RustyBoxApp {
             ..
         } = s.session_type
         {
+            let effective_password = s
+                .password
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+                .or_else(|| {
+                    self.credentials
+                        .iter()
+                        .find(|c| {
+                            (!c.username.is_empty() && c.username == *user)
+                                || (!c.name.is_empty() && c.name == s.name)
+                        })
+                        .map(|c| c.password.as_str())
+                        .filter(|p| !p.trim().is_empty())
+                });
+
             match PtySession::spawn_ssh(
                 24,
                 80,
@@ -509,6 +524,7 @@ impl RustyBoxApp {
                 user,
                 key_path.as_deref(),
                 jump_host.as_deref(),
+                effective_password,
             ) {
                 Ok(session) => {
                     let telemetry = TabTelemetry::new_remote(&s);
@@ -548,6 +564,21 @@ impl RustyBoxApp {
                     ..
                 } = s.session_type
                 {
+                    let effective_password = s
+                        .password
+                        .as_deref()
+                        .filter(|p| !p.trim().is_empty())
+                        .or_else(|| {
+                            self.credentials
+                                .iter()
+                                .find(|c| {
+                                    (!c.username.is_empty() && c.username == *user)
+                                        || (!c.name.is_empty() && c.name == s.name)
+                                })
+                                .map(|c| c.password.as_str())
+                                .filter(|p| !p.trim().is_empty())
+                        });
+
                     if let Ok(session) = PtySession::spawn_ssh(
                         24,
                         80,
@@ -556,6 +587,7 @@ impl RustyBoxApp {
                         user,
                         key_path.as_deref(),
                         jump_host.as_deref(),
+                        effective_password,
                     ) {
                         tab.session = session;
                         tab.telemetry.is_connected = true;

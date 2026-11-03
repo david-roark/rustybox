@@ -461,7 +461,7 @@ impl NewSessionDialog {
             session_type,
             auto_sftp: self.ssh_auto_sftp,
             created_at: chrono::Local::now().to_rfc3339(),
-            password: if self.save_password && !self.password.trim().is_empty() {
+            password: if !self.password.trim().is_empty() {
                 Some(self.password.clone())
             } else {
                 None
@@ -751,12 +751,12 @@ pub fn render_new_session_dialog(
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_size(Vec2::new(740.0, 520.0))
+        .default_size(Vec2::new(820.0, 530.0))
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            ui.set_min_width(716.0);
-            ui.set_max_width(716.0);
+            ui.set_min_width(796.0);
+            ui.set_max_width(796.0);
 
             // 1. RUSTYBOX TOP PROTOCOL SELECTOR STRIP (9 Protocols with Vector Icons)
             egui::Frame::none()
@@ -864,6 +864,7 @@ pub fn render_new_session_dialog(
                                 );
                             });
                             ui.add_space(5.0);
+                            // Row 1: Target host, Port, Session name & Folder
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 ui.label("Remote host *");
@@ -873,48 +874,85 @@ pub fn render_new_session_dialog(
                                         .margin(Margin::symmetric(7.0, 4.0))
                                         .hint_text("51.79.157.8"),
                                 );
-                                ui.add_space(6.0);
-                                rusty_checkbox(ui, &mut dialog.specify_username, "Specify username");
-                                ui.add_enabled(
-                                    dialog.specify_username,
-                                    TextEdit::singleline(&mut dialog.ssh_user)
-                                        .desired_width(105.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
-                                        .hint_text("ruby / root"),
-                                );
-                                // RustyBox Credentials / User+Key button right next to username
-                                if ui.add(egui::Button::new(RichText::new("👤🔑").size(12.0)))
-                                    .on_hover_text("Manage credentials & add new user profile")
-                                    .clicked()
-                                {
-                                    dialog.request_open_passwords = true;
-                                }
-
-                                if !dialog.available_credentials.is_empty() {
-                                    egui::ComboBox::from_id_source("ssh_cred_picker")
-                                        .selected_text(if dialog.ssh_user.is_empty() { "Saved users..." } else { &dialog.ssh_user })
-                                        .width(95.0)
-                                        .show_ui(ui, |ui| {
-                                            for cred in &dialog.available_credentials {
-                                                let label = format!("{} ({})", cred.name, cred.username);
-                                                if ui.selectable_label(dialog.ssh_user == cred.username, label).clicked() {
-                                                    dialog.ssh_user = cred.username.clone();
-                                                    if !cred.password.is_empty() {
-                                                        dialog.password = cred.password.clone();
-                                                        dialog.save_password = true;
-                                                    }
-                                                }
-                                            }
-                                        });
-                                }
-
-                                ui.add_space(6.0);
+                                ui.add_space(4.0);
                                 ui.label("Port");
                                 ui.add(
                                     egui::DragValue::new(&mut dialog.ssh_port)
                                         .range(1..=65535)
                                         .speed(1),
                                 );
+                                ui.add_space(6.0);
+                                ui.label("Session name:");
+                                ui.add(
+                                    TextEdit::singleline(&mut dialog.session_name)
+                                        .desired_width(170.0)
+                                        .margin(Margin::symmetric(7.0, 4.0))
+                                        .hint_text("e.g. dev-vn"),
+                                );
+                                ui.add_space(4.0);
+                                ui.label("Folder:");
+                                ui.add(
+                                    TextEdit::singleline(&mut dialog.folder_name)
+                                        .desired_width(130.0)
+                                        .margin(Margin::symmetric(7.0, 4.0))
+                                        .hint_text("Servers"),
+                                );
+                            });
+
+                            ui.add_space(6.0);
+
+                            // Row 2: Credentials (Username, Password, Saved Users, Save Checkbox)
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                rusty_checkbox(ui, &mut dialog.specify_username, "Username:");
+                                ui.add_enabled(
+                                    dialog.specify_username,
+                                    TextEdit::singleline(&mut dialog.ssh_user)
+                                        .desired_width(100.0)
+                                        .margin(Margin::symmetric(7.0, 4.0))
+                                        .hint_text("ruby / root"),
+                                );
+
+                                ui.add_space(4.0);
+                                ui.label("Password:");
+                                ui.add(
+                                    TextEdit::singleline(&mut dialog.password)
+                                        .password(true)
+                                        .desired_width(140.0)
+                                        .margin(Margin::symmetric(7.0, 4.0))
+                                        .hint_text("SSH password"),
+                                );
+
+                                rusty_checkbox(ui, &mut dialog.save_password, "Save password");
+
+                                // RustyBox Credentials / User+Key button right next to credentials
+                                if ui.add(egui::Button::new(RichText::new("👤🔑 Manage").size(11.5)))
+                                    .on_hover_text("Manage credentials & add new user profile")
+                                    .clicked()
+                                {
+                                    dialog.request_open_passwords = true;
+                                }
+
+                                egui::ComboBox::from_id_salt("ssh_cred_picker_main")
+                                    .selected_text(if dialog.ssh_user.is_empty() { "Saved users..." } else { &dialog.ssh_user })
+                                    .width(120.0)
+                                    .show_ui(ui, |ui| {
+                                        if dialog.available_credentials.is_empty() {
+                                            ui.label(RichText::new("No saved credentials").italics().color(Color32::GRAY));
+                                        } else {
+                                            for cred in &dialog.available_credentials {
+                                                let label = format!("{} ({})", cred.name, cred.username);
+                                                if ui.selectable_label(dialog.ssh_user == cred.username, label).clicked() {
+                                                    dialog.ssh_user = cred.username.clone();
+                                                    dialog.specify_username = true;
+                                                    if !cred.password.is_empty() {
+                                                        dialog.password = cred.password.clone();
+                                                        dialog.save_password = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
                             });
                         });
 
@@ -1096,48 +1134,16 @@ pub fn render_new_session_dialog(
 
                                     ui.add_space(10.0);
 
-                                    // Row 4: Password (AES-256 Vault) + Save in AES-256 Vault + Expert SSH settings
+                                    // Row 4: Advanced SSH tools
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 8.0;
-                                        ui.label("Password (Vault):");
-                                        ui.add(
-                                            TextEdit::singleline(&mut dialog.password)
-                                                .password(true)
-                                                .desired_width(210.0)
-                                                .margin(Margin::symmetric(7.0, 4.0))
-                                                .hint_text("Optional SSH password"),
-                                        );
-                                        rusty_checkbox(
-                                            ui,
-                                            &mut dialog.save_password,
-                                            "Save in AES-256 Vault",
-                                        );
                                         if ui.button("⚙ Expert SSH settings").clicked() {
                                             dialog.show_expert_ssh = true;
                                         }
-                                    });
-
-                                    ui.add_space(10.0);
-                                    ui.separator();
-                                    ui.add_space(6.0);
-
-                                    // Row 5: Bookmark summary (Session name & Folder)
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        ui.label("Session name:");
-                                        ui.add(
-                                            TextEdit::singleline(&mut dialog.session_name)
-                                                .desired_width(210.0)
-                                                .margin(Margin::symmetric(7.0, 4.0))
-                                                .hint_text("e.g. dev-vn"),
-                                        );
-                                        ui.add_space(10.0);
-                                        ui.label("Folder / Group:");
-                                        ui.add(
-                                            TextEdit::singleline(&mut dialog.folder_name)
-                                                .desired_width(195.0)
-                                                .margin(Margin::symmetric(7.0, 4.0))
-                                                .hint_text("e.g. dev.track-asia.com"),
+                                        ui.label(
+                                            RichText::new("ℹ Password and Credentials are now conveniently configured in Basic SSH settings above.")
+                                                .size(11.0)
+                                                .color(Color32::from_rgb(148, 163, 184)),
                                         );
                                     });
                                 }

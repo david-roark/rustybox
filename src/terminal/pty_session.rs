@@ -6,6 +6,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
+use std::time::Duration;
 
 pub struct PtySession {
     pub parser: Arc<parking_lot::Mutex<vt100::Parser>>,
@@ -65,7 +66,7 @@ impl PtySession {
         }
 
         let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title)?;
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title, None)?;
         {
             let shell_name = if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" };
             let banner = format!(
@@ -89,6 +90,7 @@ impl PtySession {
         user: &str,
         key_path: Option<&str>,
         jump_host: Option<&str>,
+        password: Option<&str>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -126,7 +128,7 @@ impl PtySession {
         cmd.arg(target);
 
         let default_title = format!("SSH: {}@{}", user, host);
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title)?;
+        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title, password.map(|p| p.to_string()))?;
         {
             let banner = format!(
                 "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
@@ -150,6 +152,7 @@ impl PtySession {
         rows: u16,
         cols: u16,
         initial_title: &str,
+        auto_password: Option<String>,
     ) -> Result<Self, String> {
         let child = pair
             .slave
@@ -186,6 +189,7 @@ impl PtySession {
             .spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut prev_tail: Vec<u8> = Vec::new();
+                let mut pending_password = auto_password;
                 while running_clone.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
                         Ok(0) => {
@@ -213,6 +217,29 @@ impl PtySession {
                             // ConPTY on Windows blocks startup and resize waiting for CPR (\x1b[6n)
                             let mut combined = prev_tail.clone();
                             combined.extend_from_slice(chunk);
+
+                            // Auto-fill SSH password if prompted
+                            if pending_password.is_some() && is_ssh_password_prompt(&combined) {
+                                if let Some(pwd) = pending_password.take() {
+                                    let writer_for_pwd = Arc::clone(&writer_reply);
+                                    let parser_for_notify = Arc::clone(&parser_clone);
+                                    let has_new_data_for_notify = Arc::clone(&has_new_data_clone);
+                                    thread::spawn(move || {
+                                        // Small pause for OpenSSH to configure terminal into no-echo mode
+                                        thread::sleep(Duration::from_millis(150));
+                                        {
+                                            let mut p = parser_for_notify.lock();
+                                            p.process(b"\r\n\x1b[1;32m[RustyBox] \xe2\x9c\x94 Auto-submitting saved password...\x1b[0m\r\n");
+                                        }
+                                        has_new_data_for_notify.store(true, Ordering::Relaxed);
+
+                                        let mut w = writer_for_pwd.lock();
+                                        let _ = w.write_all(pwd.as_bytes());
+                                        let _ = w.write_all(b"\r");
+                                        let _ = w.flush();
+                                    });
+                                }
+                            }
 
                             // 1. DSR Cursor Position Query (\x1b[6n or \x1b[?6n)
                             if combined.windows(4).any(|w| w == b"\x1b[6n") {
@@ -251,7 +278,7 @@ impl PtySession {
                                 let _ = w.flush();
                             }
 
-                            let tail_len = combined.len().min(8);
+                            let tail_len = combined.len().min(256);
                             prev_tail = combined[combined.len() - tail_len..].to_vec();
 
                             let mut p = parser_clone.lock();
@@ -303,5 +330,47 @@ impl PtySession {
 
     pub fn is_alive(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+}
+
+pub fn is_ssh_password_prompt(bytes: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(bytes);
+    let mut clean = String::with_capacity(s.len());
+    let mut in_esc = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_esc = true;
+        } else if in_esc {
+            if c.is_ascii_alphabetic() || c == 'm' || c == 'K' || c == 'H' || c == 'J' {
+                in_esc = false;
+            }
+        } else {
+            clean.push(c);
+        }
+    }
+    let lower = clean.to_lowercase();
+    let trimmed = lower.trim_end();
+    (trimmed.ends_with(':') || trimmed.ends_with(": "))
+        && (trimmed.contains("password") || trimmed.contains("passphrase") || trimmed.contains("mật khẩu"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ssh_password_prompt_detection() {
+        assert!(is_ssh_password_prompt(b"root@45.76.150.226's password: "));
+        assert!(is_ssh_password_prompt(b"Password: "));
+        assert!(is_ssh_password_prompt(b"password:"));
+        assert!(is_ssh_password_prompt(b"ruby@51.79.157.8's password: "));
+        assert!(is_ssh_password_prompt(b"Enter passphrase for key '/home/user/.ssh/id_rsa': "));
+        assert!(is_ssh_password_prompt(b"\x1b[1;33mroot@vps's password: \x1b[0m"));
+        assert!(is_ssh_password_prompt("Vui lòng nhập mật khẩu: ".as_bytes()));
+
+        // Negative cases
+        assert!(!is_ssh_password_prompt(b"root@ubuntu:~# "));
+        assert!(!is_ssh_password_prompt(b"Last login: Sun Nov  1 10:00:00 2026\n"));
+        assert!(!is_ssh_password_prompt(b"Please enter your choice [1-5]: "));
     }
 }
