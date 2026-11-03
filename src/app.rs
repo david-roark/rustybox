@@ -1,5 +1,7 @@
 use crate::network_tools::NetworkTools;
-use crate::session::storage::{Credential, StorageManager};
+use crate::session::storage::{
+    create_vault, decrypt_str, is_encrypted, unlock_vault, Credential, StorageManager,
+};
 use crate::session::ui::{render_new_session_dialog, NewSessionDialog};
 use crate::session::{Session, SessionType};
 use crate::sftp::ui::render_sftp_sidebar;
@@ -161,7 +163,8 @@ pub struct RustyBoxApp {
     services_tab: usize, // 0: HTTP, 1: Syslog
     // Master Password Vault
     master_password: String,
-    vault_status: Option<String>,
+    master_password_confirm: String,
+    vault_status: Option<(String, bool)>,
     // Terminal Customization, Theme & Search
     theme: TerminalTheme,
     font_size: f32,
@@ -313,6 +316,7 @@ impl RustyBoxApp {
             show_services_modal: false,
             services_tab: 0,
             master_password: String::new(),
+            master_password_confirm: String::new(),
             vault_status: None,
             theme: TerminalTheme::RustyBoxDark,
             font_size: 14.0,
@@ -501,7 +505,7 @@ impl RustyBoxApp {
             ..
         } = s.session_type
         {
-            let effective_password = s
+            let mut effective_password = s
                 .password
                 .as_deref()
                 .filter(|p| !p.trim().is_empty())
@@ -515,6 +519,16 @@ impl RustyBoxApp {
                         .map(|c| c.password.as_str())
                         .filter(|p| !p.trim().is_empty())
                 });
+
+            if let Some(pw) = effective_password {
+                if is_encrypted(pw) {
+                    if !self.storage.is_vault_unlocked() {
+                        self.show_vault = true;
+                        self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
+                        effective_password = None;
+                    }
+                }
+            }
 
             match PtySession::spawn_ssh(
                 24,
@@ -564,7 +578,7 @@ impl RustyBoxApp {
                     ..
                 } = s.session_type
                 {
-                    let effective_password = s
+                    let mut effective_password = s
                         .password
                         .as_deref()
                         .filter(|p| !p.trim().is_empty())
@@ -578,6 +592,16 @@ impl RustyBoxApp {
                                 .map(|c| c.password.as_str())
                                 .filter(|p| !p.trim().is_empty())
                         });
+
+                    if let Some(pw) = effective_password {
+                        if is_encrypted(pw) {
+                            if !self.storage.is_vault_unlocked() {
+                                self.show_vault = true;
+                                self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
+                                effective_password = None;
+                            }
+                        }
+                    }
 
                     if let Ok(session) = PtySession::spawn_ssh(
                         24,
@@ -1588,6 +1612,31 @@ impl eframe::App for RustyBoxApp {
                                     }
                                 });
                         });
+
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // Master Password Vault status indicator
+                    let cfg_check = self.storage.load_config();
+                    let is_vault_configured = cfg_check.vault.is_some();
+                    let is_unlocked = self.storage.is_vault_unlocked();
+                    let (v_icon, v_txt, v_col) = if !is_vault_configured {
+                        ("🔑", "Master Key: Off", Color32::from_rgb(148, 163, 184))
+                    } else if is_unlocked {
+                        ("🔓", "Vault: Unlocked", Color32::from_rgb(34, 197, 94))
+                    } else {
+                        ("🔒", "Vault: Locked", Color32::from_rgb(251, 191, 36))
+                    };
+                    if ui.add(
+                        egui::Button::new(RichText::new(format!("{} {}", v_icon, v_txt)).size(11.0).color(v_col).strong())
+                            .fill(Color32::from_rgb(30, 36, 46))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .rounding(4.0)
+                            .min_size(egui::vec2(0.0, toolbar_h))
+                    ).on_hover_text("Manage Master Password & AES-256-GCM Vault").clicked() {
+                        self.show_vault = true;
+                    }
                 });
             });
 
@@ -3632,33 +3681,173 @@ impl eframe::App for RustyBoxApp {
         // Master Password Vault Modal
         if self.show_vault {
             let mut open = self.show_vault;
-            egui::Window::new("🔒 Master Password & Vault")
+            let mut close_vault = false;
+            let cfg = self.storage.load_config();
+            let is_vault_configured = cfg.vault.is_some();
+            let is_unlocked = self.storage.is_vault_unlocked();
+
+            egui::Window::new("🔒 Master Password & AES-256 Vault")
                 .open(&mut open)
-                .default_size(Vec2::new(400.0, 220.0))
+                .collapsible(false)
+                .resizable(false)
+                .default_size(Vec2::new(480.0, 320.0))
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label("Encrypt all session credentials with AES-256-GCM:");
+                    ui.heading(RichText::new("RustyBox Credentials Vault").color(Color32::from_rgb(56, 189, 248)));
+                    ui.label("Military-grade AES-256-GCM encryption with Argon2id key derivation.");
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Master Password:");
-                        ui.add(TextEdit::singleline(&mut self.master_password).password(true));
-                    });
 
-                    ui.horizontal(|ui| {
-                        if ui.button("🔐 Encrypt & Lock Vault").clicked() {
-                            if !self.master_password.is_empty() {
-                                self.vault_status = Some("Vault successfully encrypted with AES-256-GCM!".into());
+                    if !is_vault_configured {
+                        // Case A: No Master Password set yet
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Status: Unencrypted (Plaintext)").color(Color32::from_rgb(248, 113, 113)).strong());
+                            ui.label("Set a master password to encrypt all session and credential passwords in data/RustyBox.json.");
+                            ui.add_space(8.0);
+
+                            ui.horizontal(|ui| {
+                                ui.label("New Master Password:   ");
+                                ui.add(TextEdit::singleline(&mut self.master_password).password(true).desired_width(180.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Confirm Master Password:");
+                                ui.add(TextEdit::singleline(&mut self.master_password_confirm).password(true).desired_width(180.0));
+                            });
+
+                            ui.add_space(10.0);
+                            if ui.add(
+                                egui::Button::new(RichText::new("🔐 Enable Master Password & Encrypt Data").strong().color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(34, 197, 94))
+                            ).clicked()
+                            {
+                                if self.master_password.is_empty() {
+                                    self.vault_status = Some(("❌ Master password cannot be empty!".into(), true));
+                                } else if self.master_password != self.master_password_confirm {
+                                    self.vault_status = Some(("❌ Passwords do not match! Please re-type.".into(), true));
+                                } else {
+                                    match create_vault(&self.master_password) {
+                                        Ok((meta, key)) => {
+                                            self.storage.set_vault_key(Some(key));
+                                            let mut new_cfg = self.storage.load_config();
+                                            new_cfg.vault = Some(meta);
+                                            new_cfg.sessions = self.sessions.clone();
+                                            new_cfg.credentials = self.credentials.clone();
+                                            match self.storage.save_config(&new_cfg) {
+                                                Ok(_) => {
+                                                    self.master_password.clear();
+                                                    self.master_password_confirm.clear();
+                                                    self.vault_status = Some(("✅ Master Password enabled! All credentials in data/RustyBox.json are now encrypted with AES-256-GCM.".into(), false));
+                                                }
+                                                Err(e) => {
+                                                    self.vault_status = Some((format!("❌ Failed to save encrypted configuration: {}", e), true));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            self.vault_status = Some((format!("❌ Key derivation error: {}", e), true));
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        if ui.button("🔓 Unlock Vault").clicked() {
-                            self.vault_status = Some("Vault unlocked.".into());
+                        });
+                    } else if !is_unlocked {
+                        // Case B: Vault is configured on disk, but currently LOCKED
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Status: 🔒 LOCKED (AES-256-GCM Encrypted on disk)").color(Color32::from_rgb(251, 191, 36)).strong());
+                            ui.label("Enter your master password to unlock credentials for session use and management.");
+                            ui.add_space(8.0);
+
+                            let mut trigger_unlock = false;
+                            ui.horizontal(|ui| {
+                                ui.label("Master Password:");
+                                let pass_edit = ui.add(TextEdit::singleline(&mut self.master_password).password(true).desired_width(180.0));
+                                if pass_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    trigger_unlock = true;
+                                }
+                            });
+
+                            ui.add_space(10.0);
+                            if ui.add(
+                                egui::Button::new(RichText::new("🔓 Unlock Vault").strong().color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(56, 189, 248))
+                            ).clicked()
+                                || trigger_unlock
+                            {
+                                if let Some(ref meta) = cfg.vault {
+                                    match unlock_vault(meta, &self.master_password) {
+                                        Ok(key) => {
+                                            self.storage.set_vault_key(Some(key));
+                                            // Decrypt in memory
+                                            for s in &mut self.sessions {
+                                                if let Some(ref p) = s.password {
+                                                    if is_encrypted(p) {
+                                                        if let Ok(dec) = decrypt_str(&key, p) {
+                                                            s.password = Some(dec);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            for c in &mut self.credentials {
+                                                if is_encrypted(&c.password) {
+                                                    if let Ok(dec) = decrypt_str(&key, &c.password) {
+                                                        c.password = dec;
+                                                    }
+                                                }
+                                            }
+                                            self.master_password.clear();
+                                            self.vault_status = Some(("✅ Vault successfully unlocked! Credentials decrypted in memory.".into(), false));
+                                        }
+                                        Err(_) => {
+                                            self.vault_status = Some(("❌ Incorrect master password!".into(), true));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    } else {
+                        // Case C: Vault is configured and currently UNLOCKED
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Status: 🔓 UNLOCKED (Active in memory, AES-256-GCM on disk)").color(Color32::from_rgb(34, 197, 94)).strong());
+                            ui.label("Credentials in data/RustyBox.json remain securely encrypted with AES-256-GCM.");
+                            ui.add_space(12.0);
+
+                            ui.horizontal(|ui| {
+                                if ui.button(RichText::new("🔒 Lock Vault Now").strong()).clicked() {
+                                    self.storage.set_vault_key(None);
+                                    // Reload encrypted sessions from disk into memory so memory is masked
+                                    self.sessions = self.storage.load_sessions();
+                                    self.credentials = self.storage.load_credentials();
+                                    self.vault_status = Some(("🔒 Vault locked. Passwords masked in memory.".into(), false));
+                                }
+
+                                if ui.button(RichText::new("🔓 Remove Master Password (Store Plaintext)").color(Color32::from_rgb(239, 68, 68))).clicked() {
+                                    let mut new_cfg = self.storage.load_config();
+                                    new_cfg.vault = None;
+                                    self.storage.set_vault_key(None);
+                                    new_cfg.sessions = self.sessions.clone();
+                                    new_cfg.credentials = self.credentials.clone();
+                                    let _ = self.storage.save_config(&new_cfg);
+                                    self.vault_status = Some(("ℹ Master password removed. Passwords stored in standard format.".into(), false));
+                                }
+                            });
+                        });
+                    }
+
+                    if let Some((ref st, is_err)) = self.vault_status {
+                        ui.add_space(8.0);
+                        let color = if is_err { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(34, 197, 94) };
+                        ui.label(RichText::new(st).color(color).strong());
+                    }
+
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close_vault = true;
                         }
                     });
-
-                    if let Some(ref st) = self.vault_status {
-                        ui.add_space(5.0);
-                        ui.label(RichText::new(st).color(Color32::from_rgb(100, 220, 100)));
-                    }
                 });
+            if close_vault {
+                open = false;
+            }
             self.show_vault = open;
         }
 
@@ -3674,6 +3863,30 @@ impl eframe::App for RustyBoxApp {
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     // 1. Radio: Save sessions passwords
+                    let cfg_pwd = self.storage.load_config();
+                    let is_vault_configured = cfg_pwd.vault.is_some();
+                    let is_vault_unlocked = self.storage.is_vault_unlocked();
+
+                    if is_vault_configured && !is_vault_unlocked {
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(38, 28, 12))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
+                            .rounding(4.0)
+                            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("🔒 Credentials Vault is LOCKED. Passwords on disk are encrypted with AES-256-GCM.").color(Color32::from_rgb(251, 191, 36)).strong());
+                                    if ui.add(
+                                        egui::Button::new(RichText::new("🔓 Unlock Vault...").strong().color(Color32::WHITE))
+                                            .fill(Color32::from_rgb(217, 119, 6))
+                                    ).clicked() {
+                                        self.show_vault = true;
+                                    }
+                                });
+                            });
+                        ui.add_space(4.0);
+                    }
+
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Save sessions passwords:").strong());
                         ui.radio_value(&mut self.manage_passwords_save_mode, 0, "Always");
@@ -3762,22 +3975,31 @@ impl eframe::App for RustyBoxApp {
                                                     ui.label(&host);
 
                                                     // Password Show/Hide
+                                                    let is_pw_enc = is_encrypted(pw);
                                                     let is_unmasked = self.manage_passwords_show_all
                                                         || self.manage_passwords_unmasked_ids.contains(&sess.id);
-                                                    let pw_display = if is_unmasked {
-                                                        pw.clone()
+                                                    let (pw_display, pw_col) = if is_pw_enc && !is_vault_unlocked {
+                                                        ("[🔒 AES-256 Encrypted]".to_string(), Color32::from_rgb(251, 191, 36))
+                                                    } else if is_unmasked {
+                                                        (pw.clone(), Color32::from_rgb(226, 232, 240))
                                                     } else {
-                                                        "••••••••••••".to_string()
+                                                        ("••••••••••••".to_string(), Color32::from_rgb(148, 163, 184))
                                                     };
 
                                                     ui.horizontal(|ui| {
-                                                        ui.label(RichText::new(pw_display).family(egui::FontFamily::Monospace));
-                                                        let eye_icon = if is_unmasked { "🔒" } else { "👁" };
-                                                        if ui.small_button(eye_icon).on_hover_text("Toggle password visibility for this row").clicked() {
-                                                            if let Some(pos) = self.manage_passwords_unmasked_ids.iter().position(|id| id == &sess.id) {
-                                                                self.manage_passwords_unmasked_ids.remove(pos);
-                                                            } else {
-                                                                self.manage_passwords_unmasked_ids.push(sess.id.clone());
+                                                        ui.label(RichText::new(pw_display).family(egui::FontFamily::Monospace).color(pw_col));
+                                                        if !(is_pw_enc && !is_vault_unlocked) {
+                                                            let eye_icon = if is_unmasked { "🔒" } else { "👁" };
+                                                            if ui.small_button(eye_icon).on_hover_text("Toggle password visibility for this row").clicked() {
+                                                                if let Some(pos) = self.manage_passwords_unmasked_ids.iter().position(|id| id == &sess.id) {
+                                                                    self.manage_passwords_unmasked_ids.remove(pos);
+                                                                } else {
+                                                                    self.manage_passwords_unmasked_ids.push(sess.id.clone());
+                                                                }
+                                                            }
+                                                        } else {
+                                                            if ui.small_button("🔓").on_hover_text("Unlock Vault to view decrypted password").clicked() {
+                                                                self.show_vault = true;
                                                             }
                                                         }
                                                     });
@@ -3856,7 +4078,34 @@ impl eframe::App for RustyBoxApp {
                                             for (c_idx, cred) in self.credentials.iter().enumerate() {
                                                 ui.label(&cred.name);
                                                 ui.label(&cred.username);
-                                                ui.label("••••••••••••");
+                                                let is_cred_enc = is_encrypted(&cred.password);
+                                                let cred_unmasked = self.manage_passwords_show_all
+                                                    || self.manage_passwords_unmasked_ids.contains(&format!("cred_{}", c_idx));
+                                                let (c_display, c_col) = if is_cred_enc && !is_vault_unlocked {
+                                                    ("[🔒 AES-256 Encrypted]".to_string(), Color32::from_rgb(251, 191, 36))
+                                                } else if cred_unmasked {
+                                                    (cred.password.clone(), Color32::from_rgb(226, 232, 240))
+                                                } else {
+                                                    ("••••••••••••".to_string(), Color32::from_rgb(148, 163, 184))
+                                                };
+                                                ui.horizontal(|ui| {
+                                                    ui.label(RichText::new(c_display).family(egui::FontFamily::Monospace).color(c_col));
+                                                    if !(is_cred_enc && !is_vault_unlocked) {
+                                                        let eye = if cred_unmasked { "🔒" } else { "👁" };
+                                                        if ui.small_button(eye).on_hover_text("Toggle password visibility").clicked() {
+                                                            let key = format!("cred_{}", c_idx);
+                                                            if let Some(pos) = self.manage_passwords_unmasked_ids.iter().position(|id| id == &key) {
+                                                                self.manage_passwords_unmasked_ids.remove(pos);
+                                                            } else {
+                                                                self.manage_passwords_unmasked_ids.push(key);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        if ui.small_button("🔓").on_hover_text("Unlock Vault to view decrypted password").clicked() {
+                                                            self.show_vault = true;
+                                                        }
+                                                    }
+                                                });
                                                 if ui.small_button("🗑").on_hover_text("Delete credential").clicked() {
                                                     to_delete_cred_idx = Some(c_idx);
                                                 }
@@ -3884,8 +4133,15 @@ impl eframe::App for RustyBoxApp {
                     ui.horizontal(|ui| {
                         ui.label("Where passwords are saved:");
                         ui.label(RichText::new("Configuration file (data/RustyBox.json)").strong().color(Color32::from_rgb(100, 220, 100)));
+                        let (vault_txt, vault_col) = if !is_vault_configured {
+                            ("🔒 Set Master Password...", Color32::from_rgb(56, 189, 248))
+                        } else if is_vault_unlocked {
+                            ("🔓 Master Password (Unlocked)", Color32::from_rgb(34, 197, 94))
+                        } else {
+                            ("🔒 Master Password (Locked)", Color32::from_rgb(251, 191, 36))
+                        };
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("🔒 Master Password settings").clicked() {
+                            if ui.button(RichText::new(vault_txt).color(vault_col).strong()).clicked() {
                                 self.show_vault = true;
                             }
                         });
@@ -3899,6 +4155,7 @@ impl eframe::App for RustyBoxApp {
                             }
                             if ui.button("✔ OK").clicked() {
                                 let _ = self.storage.save_sessions(&self.sessions);
+                                let _ = self.storage.save_credentials(&self.credentials);
                                 close_dialog = true;
                             }
                         });

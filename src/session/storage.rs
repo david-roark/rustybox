@@ -207,6 +207,14 @@ impl StorageManager {
         self.vault_key = key;
     }
 
+    pub fn is_vault_unlocked(&self) -> bool {
+        self.vault_key.is_some()
+    }
+
+    pub fn vault_key(&self) -> Option<[u8; 32]> {
+        self.vault_key
+    }
+
     /// True if the config holds any plaintext (not yet encrypted) password.
     pub fn has_plaintext_passwords(config: &RustyBoxConfig) -> bool {
         config.sessions.iter().any(|s| s.password.as_deref().map_or(false, |p| !p.is_empty() && !is_encrypted(p)))
@@ -223,7 +231,17 @@ impl StorageManager {
     pub fn prepare_for_disk(&self, config: &RustyBoxConfig) -> Result<RustyBoxConfig, String> {
         let mut out = config.clone();
         let conv = |p: &str| -> Result<Option<String>, String> {
-            if p.is_empty() || is_encrypted(p) {
+            if p.is_empty() {
+                return Ok(Some(String::new()));
+            }
+            if is_encrypted(p) {
+                if out.vault.is_none() {
+                    if let Some(k) = &self.vault_key {
+                        if let Ok(dec) = decrypt_str(k, p) {
+                            return Ok(Some(dec));
+                        }
+                    }
+                }
                 return Ok(Some(p.to_string()));
             }
             match &self.vault_key {
@@ -578,6 +596,78 @@ mod tests {
         locked.save_config(&loaded).unwrap();
         let again = locked.load_config();
         assert_eq!(again.sessions[1].password.as_deref(), Some(enc.as_str()));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_master_vault_credentials_and_sessions_disk_flow() {
+        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+            .join(format!("master_vault_flow_{}", uuid::Uuid::new_v4()));
+        let mut storage = StorageManager::with_data_dir(base.join("data"));
+        let mut cfg = storage.load_config();
+
+        // 1. Setup plaintext credentials & sessions
+        cfg.credentials.push(Credential {
+            name: "Vultr Trial".into(),
+            username: "root".into(),
+            password: "mR@6x?U(P$,hQ8RA".into(),
+        });
+        cfg.sessions[0].password = Some("MySuperSecret123!".into());
+        cfg.sessions[0].save_password = true;
+
+        // Plaintext save: both passwords visible in JSON on disk
+        storage.save_config(&cfg).unwrap();
+        let json_plain = fs::read_to_string(storage.file_path()).unwrap();
+        assert!(json_plain.contains("mR@6x?U(P$,hQ8RA"));
+        assert!(json_plain.contains("MySuperSecret123!"));
+        assert!(json_plain.contains("\"vault\": null"));
+
+        // 2. Enable Master Password Vault
+        let (meta, key) = create_vault("LongSecretKey2026!").unwrap();
+        cfg.vault = Some(meta);
+        storage.set_vault_key(Some(key));
+        storage.save_config(&cfg).unwrap();
+
+        // 3. Verify JSON on disk is 100% encrypted
+        let json_enc = fs::read_to_string(storage.file_path()).unwrap();
+        assert!(!json_enc.contains("mR@6x?U(P$,hQ8RA"), "Plaintext credential leaked to disk!");
+        assert!(!json_enc.contains("MySuperSecret123!"), "Plaintext session password leaked to disk!");
+        assert!(json_enc.contains("enc:v1:"));
+        assert!(json_enc.contains("\"salt\":"));
+        assert!(json_enc.contains("\"check\":"));
+
+        // 4. Simulate app restart (locked state)
+        let mut restarted_storage = StorageManager::with_data_dir(base.join("data"));
+        assert!(!restarted_storage.is_vault_unlocked());
+        let loaded_locked = restarted_storage.load_config();
+        assert!(loaded_locked.vault.is_some());
+        assert!(is_encrypted(&loaded_locked.credentials[0].password));
+        assert!(is_encrypted(loaded_locked.sessions[0].password.as_ref().unwrap()));
+
+        // 5. Unlock vault with correct master password
+        let unlocked_key = unlock_vault(loaded_locked.vault.as_ref().unwrap(), "LongSecretKey2026!").unwrap();
+        restarted_storage.set_vault_key(Some(unlocked_key));
+        assert!(restarted_storage.is_vault_unlocked());
+
+        // Decrypt in memory
+        let cred_dec = decrypt_str(&unlocked_key, &loaded_locked.credentials[0].password).unwrap();
+        let sess_dec = decrypt_str(&unlocked_key, loaded_locked.sessions[0].password.as_ref().unwrap()).unwrap();
+        assert_eq!(cred_dec, "mR@6x?U(P$,hQ8RA");
+        assert_eq!(sess_dec, "MySuperSecret123!");
+
+        // 6. Disable/Remove Master Password (store plaintext)
+        let mut unlocked_cfg = loaded_locked.clone();
+        unlocked_cfg.vault = None;
+        unlocked_cfg.credentials[0].password = cred_dec;
+        unlocked_cfg.sessions[0].password = Some(sess_dec);
+        restarted_storage.set_vault_key(None);
+        restarted_storage.save_config(&unlocked_cfg).unwrap();
+
+        let json_reverted = fs::read_to_string(restarted_storage.file_path()).unwrap();
+        assert!(json_reverted.contains("mR@6x?U(P$,hQ8RA"));
+        assert!(json_reverted.contains("MySuperSecret123!"));
+        assert!(json_reverted.contains("\"vault\": null"));
 
         let _ = fs::remove_dir_all(&base);
     }
