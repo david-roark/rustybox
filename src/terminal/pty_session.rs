@@ -109,6 +109,18 @@ impl PtySession {
         cmd.args(["-p", &port.to_string()]);
         cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
 
+        if let Some(pwd) = password {
+            let clean = pwd.trim();
+            if !clean.is_empty() {
+                if let Ok(current_exe) = std::env::current_exe() {
+                    cmd.env("SSH_ASKPASS", current_exe.to_string_lossy().to_string());
+                    cmd.env("SSH_ASKPASS_REQUIRE", "force");
+                    cmd.env("DISPLAY", "1");
+                    cmd.env("RUSTYBOX_SSH_PASS", clean);
+                }
+            }
+        }
+
         if let Some(key) = key_path {
             if !key.trim().is_empty() {
                 cmd.args(["-i", key.trim()]);
@@ -233,26 +245,30 @@ impl PtySession {
                                     suppress_for_pwd.store(true, Ordering::SeqCst);
 
                                     thread::spawn(move || {
-                                        // 250ms pause for OpenSSH readpassphrase & FlushConsoleInputBuffer to settle
-                                        thread::sleep(Duration::from_millis(250));
+                                        // 300ms pause for OpenSSH readpassphrase & FlushConsoleInputBuffer to settle
+                                        thread::sleep(Duration::from_millis(300));
                                         {
                                             let mut p = parser_for_notify.lock();
                                             p.process(b"\r\n\x1b[1;32m[RustyBox] \xe2\x9c\x94 Auto-submitting saved password...\x1b[0m\r\n");
                                         }
                                         has_new_data_for_notify.store(true, Ordering::Relaxed);
 
-                                        thread::sleep(Duration::from_millis(50));
+                                        thread::sleep(Duration::from_millis(100));
                                         let clean_pwd = pwd.trim();
                                         let mut w = writer_for_pwd.lock();
-                                        let _ = w.write_all(clean_pwd.as_bytes());
-                                        let _ = w.flush();
+                                        // Write keystrokes with slight pacing so Windows ConPTY input buffer never drops bytes
+                                        for b in clean_pwd.as_bytes() {
+                                            let _ = w.write_all(&[*b]);
+                                            let _ = w.flush();
+                                            thread::sleep(Duration::from_millis(10));
+                                        }
 
-                                        thread::sleep(Duration::from_millis(50));
+                                        thread::sleep(Duration::from_millis(100));
                                         let _ = w.write_all(b"\r");
                                         let _ = w.flush();
 
-                                        // Keep queries suppressed for another 500ms while SSH server authenticates
-                                        thread::sleep(Duration::from_millis(500));
+                                        // Keep queries suppressed for another 800ms while SSH server authenticates
+                                        thread::sleep(Duration::from_millis(800));
                                         suppress_for_pwd.store(false, Ordering::SeqCst);
                                     });
                                 }
