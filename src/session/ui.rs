@@ -193,6 +193,7 @@ impl NewSessionDialog {
     pub fn open_for_new(&mut self) {
         self.is_open = true;
         self.editing_session_id = None;
+        self.protocol_tab = 0; // Default to SSH protocol tab
         self.session_name.clear();
         self.password.clear();
         self.save_password = true;
