@@ -161,7 +161,8 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
             let jump_host = blk
                 .proxy_jump
                 .clone()
-                .or_else(|| global_defaults.proxy_jump.clone());
+                .or_else(|| global_defaults.proxy_jump.clone())
+                .filter(|jh| !jh.trim().is_empty() && !jh.trim().eq_ignore_ascii_case("none"));
             let tunnel_x11 = blk
                 .forward_x11
                 .or(global_defaults.forward_x11)
@@ -175,7 +176,20 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
             sess.ssh_compression = ssh_compression;
             if let Some(ref jh) = jump_host {
                 sess.use_ssh_gateway = true;
-                sess.gateway_host = jh.clone();
+                let first_hop = jh.split(',').next().unwrap_or(jh).trim();
+                let (gw_user, host_port) = if let Some((u, rest)) = first_hop.split_once('@') {
+                    (u.trim().to_string(), rest.trim())
+                } else {
+                    (String::new(), first_hop)
+                };
+                let (gw_host, gw_port) = if let Some((h, p)) = host_port.rsplit_once(':') {
+                    (h.trim().to_string(), p.trim().parse::<u16>().unwrap_or(22))
+                } else {
+                    (host_port.to_string(), 22)
+                };
+                sess.gateway_user = gw_user;
+                sess.gateway_host = gw_host;
+                sess.gateway_port = gw_port;
             }
             sess.session_type = SessionType::Ssh {
                 host,
@@ -604,5 +618,100 @@ Host *.internal
         } else {
             panic!("Expected SSH session for db-primary");
         }
+    }
+
+    #[test]
+    fn test_parse_openssh_config_equals_quotes_comments_and_proxyjump() {
+        let ssh_cfg = r#"
+Host = web-edge # Primary edge node
+    HostName = "198.51.100.88" # inline IP comment
+    User = "devops"
+    Port = 22022
+    IdentityFile = "~/.ssh/my edge key.pem"
+    ProxyJump = "bastion_user@198.51.100.1:2222"
+    ForwardX11Trusted = yes
+    Compression = no
+
+Host direct-node *.corp.local !excluded
+    HostName 192.0.2.55
+    ProxyJump none
+
+# Fallback wildcard at bottom of file
+Host *
+    User fallback_admin
+    Port 2200
+    ProxyJump jump.corp.local:22
+"#;
+        let parsed = parse_sessions_from_text(ssh_cfg, "");
+        assert_eq!(parsed.len(), 2);
+
+        // 1. web-edge
+        assert_eq!(parsed[0].name, "web-edge");
+        assert_eq!(parsed[0].folder, "OpenSSH Config");
+        assert!(!parsed[0].ssh_compression);
+        assert!(parsed[0].use_ssh_gateway);
+        assert_eq!(parsed[0].gateway_user, "bastion_user");
+        assert_eq!(parsed[0].gateway_host, "198.51.100.1");
+        assert_eq!(parsed[0].gateway_port, 2222);
+        if let SessionType::Ssh {
+            ref host,
+            port,
+            ref user,
+            ref auth_method,
+            ref key_path,
+            ref jump_host,
+            tunnel_x11,
+        } = parsed[0].session_type
+        {
+            assert_eq!(host, "198.51.100.88");
+            assert_eq!(port, 22022);
+            assert_eq!(user, "devops");
+            assert_eq!(*auth_method, AuthMethod::PrivateKey);
+            assert!(key_path.as_deref().unwrap_or("").ends_with("my edge key.pem"));
+            assert_eq!(jump_host.as_deref(), Some("bastion_user@198.51.100.1:2222"));
+            assert!(tunnel_x11);
+        } else {
+            panic!("Expected SSH session for web-edge");
+        }
+
+        // 2. direct-node inherits bottom `Host *` User/Port, and `ProxyJump none` disables jump host
+        assert_eq!(parsed[1].name, "direct-node");
+        assert!(!parsed[1].use_ssh_gateway);
+        if let SessionType::Ssh {
+            ref host,
+            port,
+            ref user,
+            ref auth_method,
+            ref jump_host,
+            ..
+        } = parsed[1].session_type
+        {
+            assert_eq!(host, "192.0.2.55");
+            assert_eq!(port, 2200);
+            assert_eq!(user, "fallback_admin");
+            assert_eq!(*auth_method, AuthMethod::Password);
+            assert!(jump_host.is_none());
+        } else {
+            panic!("Expected SSH session for direct-node");
+        }
+    }
+
+    #[test]
+    fn test_looks_like_openssh_config_detection_and_dedup() {
+        assert!(looks_like_openssh_config("Host my-server\n  HostName 1.2.3.4"));
+        assert!(looks_like_openssh_config("  Host = prod-db\n  User = postgres"));
+        assert!(!looks_like_openssh_config("root@1.2.3.4 = secret"));
+        assert!(!looks_like_openssh_config("Server1=#109#0%1.2.3.4%22%root"));
+
+        let cfg = "Host s1\n  HostName 10.0.0.9\n  User root\nHost s1-alias\n  HostName 10.0.0.9\n  User root\n";
+        let imported = parse_sessions_from_text(cfg, "OpenSSH");
+        assert_eq!(imported.len(), 2);
+
+        // Merging two aliases pointing to the exact same (host, port, user) deduplicates the second one
+        let mut existing = Vec::new();
+        let summary = merge_imported_sessions(&mut existing, imported);
+        assert_eq!(summary.total_parsed, 2);
+        assert_eq!(summary.new_imported, 1);
+        assert_eq!(summary.duplicates_skipped, 1);
     }
 }
