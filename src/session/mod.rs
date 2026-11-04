@@ -150,6 +150,10 @@ pub struct Session {
     pub tab_color: String,
     #[serde(default)]
     pub comments: String,
+    #[serde(default)]
+    pub last_connected_at: Option<String>,
+    #[serde(default)]
+    pub connect_count: u32,
 }
 
 impl Session {
@@ -184,6 +188,8 @@ impl Session {
             ssh_keepalive: true,
             tab_color: String::new(),
             comments: String::new(),
+            last_connected_at: None,
+            connect_count: 0,
         }
     }
 
@@ -223,7 +229,82 @@ impl Session {
             ssh_keepalive: true,
             tab_color: String::new(),
             comments: String::new(),
+            last_connected_at: None,
+            connect_count: 0,
         }
+    }
+
+    /// Marks the session as connected right now and increments its connection count.
+    pub fn mark_connected(&mut self) {
+        self.last_connected_at = Some(chrono::Local::now().to_rfc3339());
+        self.connect_count = self.connect_count.saturating_add(1);
+    }
+
+    /// Returns a concise human-readable connection endpoint subtitle (e.g. `root@10.0.0.5:22`).
+    pub fn connection_subtitle(&self) -> String {
+        match &self.session_type {
+            SessionType::Ssh {
+                host, port, user, ..
+            } => {
+                let u = if user.trim().is_empty() {
+                    "root"
+                } else {
+                    user.trim()
+                };
+                format!("{}@{}:{}", u, host.trim(), port)
+            }
+            SessionType::Rdp { host, port, user } => {
+                format!("rdp://{}@{}:{}", user.trim(), host.trim(), port)
+            }
+            SessionType::Ftp { host, port, user } => {
+                format!("sftp://{}@{}:{}", user.trim(), host.trim(), port)
+            }
+            SessionType::Telnet { host, port } => {
+                format!("telnet://{}:{}", host.trim(), port)
+            }
+            SessionType::Vnc { host, port } => {
+                format!("vnc://{}:{}", host.trim(), port)
+            }
+            SessionType::Serial {
+                port_name,
+                baud_rate,
+            } => {
+                format!("{} @ {} baud", port_name.trim(), baud_rate)
+            }
+            SessionType::Wsl { distro, user, .. } => {
+                if let Some(u) = user.as_ref().filter(|s| !s.trim().is_empty()) {
+                    format!("WSL: {} ({})", distro.trim(), u.trim())
+                } else {
+                    format!("WSL: {}", distro.trim())
+                }
+            }
+            SessionType::LocalShell { custom_shell, .. } => custom_shell
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "Local Shell".into()),
+        }
+    }
+
+    /// Returns a formatted `YYYY-MM-DD HH:MM` string for `last_connected_at`, if present.
+    pub fn last_connected_display(&self) -> Option<String> {
+        let raw = self.last_connected_at.as_ref()?;
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+            Some(dt.format("%Y-%m-%d %H:%M").to_string())
+        } else {
+            Some(raw.clone())
+        }
+    }
+
+    /// Checks whether the session matches a case-insensitive search query on name, host, user, or folder.
+    pub fn matches_filter(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        self.name.to_lowercase().contains(&q)
+            || self.folder.to_lowercase().contains(&q)
+            || self.connection_subtitle().to_lowercase().contains(&q)
     }
 
     /// Formats the session label in RustyBox style: `51.79.157.8 (ruby) - dev-vn`
@@ -267,5 +348,28 @@ impl Session {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_mark_connected_and_subtitle() {
+        let mut s = Session::new_ssh("Prod API", "Production", "10.0.1.25", 2222, "deploy");
+        assert!(s.last_connected_at.is_none());
+        assert_eq!(s.connect_count, 0);
+        assert_eq!(s.connection_subtitle(), "deploy@10.0.1.25:2222");
+
+        s.mark_connected();
+        assert!(s.last_connected_at.is_some());
+        assert_eq!(s.connect_count, 1);
+        assert!(s.last_connected_display().is_some());
+
+        assert!(s.matches_filter("prod"));
+        assert!(s.matches_filter("10.0.1.25"));
+        assert!(s.matches_filter("deploy"));
+        assert!(!s.matches_filter("staging"));
     }
 }

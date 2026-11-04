@@ -326,6 +326,7 @@ pub struct RustyBoxApp {
     new_macro_cmd: String,
     // Quick Connect & Home Tab
     quick_connect_input: String,
+    home_session_filter: String,
     is_home_active: bool,
     // Live System Telemetry Dashboard
     last_telemetry_time: std::time::Instant,
@@ -510,6 +511,7 @@ impl RustyBoxApp {
             new_macro_name: String::new(),
             new_macro_cmd: String::new(),
             quick_connect_input: String::new(),
+            home_session_filter: String::new(),
             is_home_active: false,
             last_telemetry_time: std::time::Instant::now() - std::time::Duration::from_secs(10),
             local_telemetry: TabTelemetry::new_local(),
@@ -674,8 +676,46 @@ impl RustyBoxApp {
         }
     }
 
-    pub fn spawn_ssh_terminal(&mut self, s: Session) {
+    pub fn record_session_connected(&mut self, s: &mut Session) {
+        s.mark_connected();
+        if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == s.id) {
+            existing.last_connected_at = s.last_connected_at.clone();
+            existing.connect_count = existing.connect_count.saturating_add(1);
+            s.connect_count = existing.connect_count;
+        } else if let SessionType::Ssh {
+            ref host,
+            port,
+            ref user,
+            ..
+        } = s.session_type
+        {
+            if let Some(existing) = self.sessions.iter_mut().find(|item| {
+                matches!(
+                    &item.session_type,
+                    SessionType::Ssh {
+                        host: eh,
+                        port: ep,
+                        user: eu,
+                        ..
+                    } if eh == host && *ep == port && eu == user
+                )
+            }) {
+                existing.last_connected_at = s.last_connected_at.clone();
+                existing.connect_count = existing.connect_count.saturating_add(1);
+                s.id = existing.id.clone();
+                s.connect_count = existing.connect_count;
+            } else {
+                self.sessions.push(s.clone());
+            }
+        } else {
+            self.sessions.push(s.clone());
+        }
+        let _ = self.storage.save_sessions(&self.sessions);
+    }
+
+    pub fn spawn_ssh_terminal(&mut self, mut s: Session) {
         self.is_home_active = false;
+        self.record_session_connected(&mut s);
         self.selected_sidebar_session_id = Some(s.id.clone());
         if let SessionType::Ssh {
             ref host,
@@ -907,8 +947,11 @@ impl RustyBoxApp {
         }
     }
 
-    pub fn launch_generic_session(&mut self, s: Session) {
+    pub fn launch_generic_session(&mut self, mut s: Session) {
         self.is_home_active = false;
+        if !matches!(s.session_type, SessionType::Ssh { .. }) {
+            self.record_session_connected(&mut s);
+        }
         self.selected_sidebar_session_id = Some(s.id.clone());
         match s.session_type {
             SessionType::LocalShell { ref custom_shell, ref working_dir } => {
@@ -3070,6 +3113,10 @@ impl eframe::App for RustyBoxApp {
 
             // If Home tab is active, render Modern Welcome Dashboard
             if self.is_home_active {
+                ScrollArea::vertical()
+                    .id_salt("home_dashboard_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("⚡ RustyBox").size(30.0).strong().color(Color32::from_rgb(56, 189, 248)));
@@ -3230,51 +3277,215 @@ impl eframe::App for RustyBoxApp {
                         }
                     });
 
-                    ui.add_space(26.0);
-                    ui.label(RichText::new("★ Quick Launch Sessions").strong().size(13.5).color(Color32::from_rgb(234, 179, 8)));
-                    ui.add_space(10.0);
+                    ui.add_space(22.0);
+
+                    // Search / Filter bar for Recent & Saved connections
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🔍 Filter Connections:").strong().size(12.0).color(Color32::from_rgb(148, 163, 184)));
+                        ui.add(
+                            TextEdit::singleline(&mut self.home_session_filter)
+                                .hint_text("Search by name, host, user, or folder...")
+                                .desired_width(280.0),
+                        );
+                        if !self.home_session_filter.is_empty() && ui.small_button("✖ Clear").clicked() {
+                            self.home_session_filter.clear();
+                        }
+                    });
+
+                    ui.add_space(16.0);
 
                     let mut to_launch_quick: Option<Session> = None;
-                    let top_sessions: Vec<Session> = self.sessions.iter().take(6).cloned().collect();
-                    for chunk in top_sessions.chunks(3) {
-                        ui.horizontal(|ui| {
-                            for (i, s) in chunk.iter().enumerate() {
-                                if i > 0 {
-                                    ui.add_space(card_spacing);
-                                }
-                                let icon = match s.session_type {
-                                    SessionType::LocalShell { .. } => "💻",
-                                    SessionType::Wsl { .. } => "🐧",
-                                    _ => "🔑",
-                                };
-                                let (q_rect, q_resp) = ui.allocate_exact_size(vec2(card_w, 36.0), egui::Sense::click());
-                                let is_h = q_resp.hovered();
-                                let bg = if is_h { Color32::from_rgb(26, 36, 54) } else { Color32::from_rgb(18, 23, 33) };
-                                let border = if is_h { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)) };
-                                ui.painter().rect(q_rect, 6.0, bg, border);
+                    let mut to_edit_session: Option<Session> = None;
+                    let mut to_clear_recent_id: Option<String> = None;
+                    let mut to_delete_id: Option<String> = None;
 
-                                ui.allocate_new_ui(
-                                    egui::UiBuilder::new()
-                                        .max_rect(q_rect.shrink(6.0))
-                                        .layout(Layout::left_to_right(Align::Center)),
-                                    |c_ui| {
-                                        c_ui.label(RichText::new(icon).size(13.0));
-                                        c_ui.add_space(4.0);
+                    let render_session_card = |ui: &mut egui::Ui, s: &Session, show_time: bool| -> egui::Response {
+                        let icon = match s.session_type {
+                            SessionType::LocalShell { .. } => "💻",
+                            SessionType::Wsl { .. } => "🐧",
+                            SessionType::Rdp { .. } => "🖥",
+                            SessionType::Ftp { .. } => "📁",
+                            _ => "🔑",
+                        };
+                        let (q_rect, q_resp) = ui.allocate_exact_size(vec2(card_w, 56.0), egui::Sense::click());
+                        let is_h = q_resp.hovered();
+                        let bg = if is_h { Color32::from_rgb(26, 36, 54) } else { Color32::from_rgb(18, 23, 33) };
+                        let border = if is_h {
+                            egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
+                        } else {
+                            egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
+                        };
+                        ui.painter().rect(q_rect, 6.0, bg, border);
+
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new()
+                                .max_rect(q_rect.shrink(7.0))
+                                .layout(Layout::left_to_right(Align::Center)),
+                            |c_ui| {
+                                c_ui.label(RichText::new(icon).size(16.0));
+                                c_ui.add_space(6.0);
+                                c_ui.vertical(|v_ui| {
+                                    v_ui.horizontal(|h_ui| {
                                         let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
-                                        c_ui.label(RichText::new(&s.name).strong().size(11.5).color(title_col));
-                                    },
-                                );
-                                if q_resp.clicked() {
-                                    to_launch_quick = Some(s.clone());
+                                        h_ui.label(RichText::new(&s.name).strong().size(11.5).color(title_col));
+                                        if !s.folder.is_empty() {
+                                            h_ui.label(
+                                                RichText::new(format!("[{}]", s.folder))
+                                                    .size(9.5)
+                                                    .color(Color32::from_rgb(100, 116, 139)),
+                                            );
+                                        }
+                                    });
+                                    v_ui.label(
+                                        RichText::new(s.connection_subtitle())
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                    if show_time {
+                                        if let Some(ts) = s.last_connected_display() {
+                                            v_ui.label(
+                                                RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
+                                                    .size(9.5)
+                                                    .color(Color32::from_rgb(52, 211, 153)),
+                                            );
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                        q_resp
+                    };
+
+                    // Section 1: Recent Connections (Đã từng kết nối)
+                    let mut recent_sessions: Vec<Session> = self
+                        .sessions
+                        .iter()
+                        .filter(|s| s.last_connected_at.is_some() && s.matches_filter(&self.home_session_filter))
+                        .cloned()
+                        .collect();
+                    recent_sessions.sort_by(|a, b| b.last_connected_at.cmp(&a.last_connected_at));
+
+                    ui.label(
+                        RichText::new(format!("🕒 Recent Connections ({})", recent_sessions.len()))
+                            .strong()
+                            .size(13.5)
+                            .color(Color32::from_rgb(52, 211, 153)),
+                    );
+                    ui.add_space(8.0);
+
+                    if recent_sessions.is_empty() {
+                        ui.label(
+                            RichText::new("No recent connections yet. Connect to any session or use Quick Connect above.")
+                                .size(11.5)
+                                .color(Color32::from_rgb(100, 116, 139)),
+                        );
+                    } else {
+                        for chunk in recent_sessions.iter().take(9).collect::<Vec<_>>().chunks(3) {
+                            ui.horizontal(|ui| {
+                                for (i, s) in chunk.iter().enumerate() {
+                                    if i > 0 {
+                                        ui.add_space(card_spacing);
+                                    }
+                                    let q_resp = render_session_card(ui, s, true);
+                                    if q_resp.clicked() {
+                                        to_launch_quick = Some((*s).clone());
+                                    }
+                                    q_resp.context_menu(|menu_ui| {
+                                        if menu_ui.button("▶ Connect").clicked() {
+                                            to_launch_quick = Some((*s).clone());
+                                            menu_ui.close_menu();
+                                        }
+                                        if menu_ui.button("✏ Edit Session").clicked() {
+                                            to_edit_session = Some((*s).clone());
+                                            menu_ui.close_menu();
+                                        }
+                                        if menu_ui.button("🧹 Clear from Recent").clicked() {
+                                            to_clear_recent_id = Some(s.id.clone());
+                                            menu_ui.close_menu();
+                                        }
+                                    });
                                 }
-                            }
-                        });
-                        ui.add_space(8.0);
+                            });
+                            ui.add_space(8.0);
+                        }
+                    }
+
+                    ui.add_space(18.0);
+
+                    // Section 2: Saved Sessions (Danh bạ đã lưu)
+                    let saved_sessions: Vec<Session> = self
+                        .sessions
+                        .iter()
+                        .filter(|s| s.matches_filter(&self.home_session_filter))
+                        .cloned()
+                        .collect();
+
+                    ui.label(
+                        RichText::new(format!("📂 Saved Sessions ({})", saved_sessions.len()))
+                            .strong()
+                            .size(13.5)
+                            .color(Color32::from_rgb(234, 179, 8)),
+                    );
+                    ui.add_space(8.0);
+
+                    if saved_sessions.is_empty() {
+                        ui.label(
+                            RichText::new("No saved sessions match your filter.")
+                                .size(11.5)
+                                .color(Color32::from_rgb(100, 116, 139)),
+                        );
+                    } else {
+                        for chunk in saved_sessions.chunks(3) {
+                            ui.horizontal(|ui| {
+                                for (i, s) in chunk.iter().enumerate() {
+                                    if i > 0 {
+                                        ui.add_space(card_spacing);
+                                    }
+                                    let q_resp = render_session_card(ui, s, false);
+                                    if q_resp.clicked() {
+                                        to_launch_quick = Some(s.clone());
+                                    }
+                                    q_resp.context_menu(|menu_ui| {
+                                        if menu_ui.button("▶ Connect").clicked() {
+                                            to_launch_quick = Some(s.clone());
+                                            menu_ui.close_menu();
+                                        }
+                                        if menu_ui.button("✏ Edit Session").clicked() {
+                                            to_edit_session = Some(s.clone());
+                                            menu_ui.close_menu();
+                                        }
+                                        if menu_ui.button(RichText::new("🗑 Delete Session").color(Color32::from_rgb(248, 113, 113))).clicked() {
+                                            to_delete_id = Some(s.id.clone());
+                                            menu_ui.close_menu();
+                                        }
+                                    });
+                                }
+                            });
+                            ui.add_space(8.0);
+                        }
+                    }
+
+                    if let Some(edit_s) = to_edit_session {
+                        self.new_session_dialog.open_for_edit(&edit_s);
+                    }
+                    if let Some(clear_id) = to_clear_recent_id {
+                        if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == clear_id) {
+                            existing.last_connected_at = None;
+                            existing.connect_count = 0;
+                            let _ = self.storage.save_sessions(&self.sessions);
+                        }
+                    }
+                    if let Some(del_id) = to_delete_id {
+                        self.sessions.retain(|item| item.id != del_id);
+                        let _ = self.storage.save_sessions(&self.sessions);
                     }
                     if let Some(s) = to_launch_quick {
                         self.launch_generic_session(s);
                         self.is_home_active = false;
                     }
+                    ui.add_space(24.0);
+                });
                 });
                 return;
             }
@@ -3613,9 +3824,11 @@ impl eframe::App for RustyBoxApp {
 
         // New Session Dialog
         self.new_session_dialog.available_credentials = self.credentials.clone();
-        if let Some(new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
+        if let Some(mut new_session) = render_new_session_dialog(ctx, &mut self.new_session_dialog) {
             if let Some(idx) = self.sessions.iter().position(|s| s.id == new_session.id) {
-                // Editing existing session: update in-place
+                // Editing existing session: preserve connection history metadata
+                new_session.last_connected_at = self.sessions[idx].last_connected_at.clone();
+                new_session.connect_count = self.sessions[idx].connect_count;
                 self.sessions[idx] = new_session.clone();
             } else {
                 // Brand new session: append to list

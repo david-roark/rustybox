@@ -492,6 +492,8 @@ impl NewSessionDialog {
             ssh_keepalive: self.ssh_keepalive,
             tab_color: self.tab_color.clone(),
             comments: self.comments.clone(),
+            last_connected_at: None,
+            connect_count: 0,
         }
     }
 }
