@@ -2402,9 +2402,7 @@ impl eframe::App for RustyBoxApp {
 
                         let mut grouped: BTreeMap<String, Vec<Session>> = BTreeMap::new();
                         for s in &self.sessions {
-                            if self.session_search.is_empty()
-                                || s.name.to_lowercase().contains(&self.session_search.to_lowercase())
-                            {
+                            if s.matches_filter(&self.session_search) {
                                 grouped.entry(s.folder.clone()).or_default().push(s.clone());
                             }
                         }
@@ -3290,39 +3288,55 @@ impl eframe::App for RustyBoxApp {
                                 .max_rect(q_rect.shrink(7.0))
                                 .layout(Layout::left_to_right(Align::Center)),
                             |c_ui| {
+                                c_ui.set_clip_rect(q_rect.shrink(4.0));
                                 c_ui.label(RichText::new(icon).size(16.0));
                                 c_ui.add_space(6.0);
                                 c_ui.vertical(|v_ui| {
+                                    v_ui.set_max_width((q_rect.width() - 38.0).max(80.0));
                                     v_ui.horizontal(|h_ui| {
                                         let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
-                                        h_ui.label(RichText::new(&s.name).strong().size(11.5).color(title_col));
+                                        h_ui.add(egui::Label::new(RichText::new(&s.name).strong().size(11.5).color(title_col)).truncate());
                                         if !s.folder.is_empty() {
-                                            h_ui.label(
-                                                RichText::new(format!("[{}]", s.folder))
-                                                    .size(9.5)
-                                                    .color(Color32::from_rgb(100, 116, 139)),
+                                            h_ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!("[{}]", s.folder))
+                                                        .size(9.5)
+                                                        .color(Color32::from_rgb(100, 116, 139)),
+                                                )
+                                                .truncate(),
                                             );
                                         }
                                     });
-                                    v_ui.label(
-                                        RichText::new(s.connection_subtitle())
-                                            .monospace()
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    v_ui.add(
+                                        egui::Label::new(
+                                            RichText::new(s.connection_subtitle())
+                                                .monospace()
+                                                .size(10.0)
+                                                .color(Color32::from_rgb(148, 163, 184)),
+                                        )
+                                        .truncate(),
                                     );
                                     if show_time {
                                         if let Some(ts) = s.last_connected_display() {
-                                            v_ui.label(
-                                                RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
-                                                    .size(9.5)
-                                                    .color(Color32::from_rgb(52, 211, 153)),
+                                            v_ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
+                                                        .size(9.5)
+                                                        .color(Color32::from_rgb(52, 211, 153)),
+                                                )
+                                                .truncate(),
                                             );
                                         }
                                     }
                                 });
                             },
                         );
-                        q_resp
+                        q_resp.on_hover_text(format!(
+                            "{}\n{}\nFolder: {}",
+                            s.name,
+                            s.connection_subtitle(),
+                            s.folder
+                        ))
                     };
 
                     // Section 1: Recent Connections (Đã từng kết nối)
