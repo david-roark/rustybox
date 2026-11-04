@@ -640,6 +640,67 @@ impl RustyBoxApp {
         self.spawn_local_terminal_ext(title, shell, workdir, None);
     }
 
+    fn resolve_session_log_path(s: &Session) -> Option<std::path::PathBuf> {
+        if !s.log_terminal_output {
+            return None;
+        }
+        let dir = if s.log_directory.trim().is_empty() {
+            std::path::PathBuf::from("./logs")
+        } else {
+            std::path::PathBuf::from(s.log_directory.trim())
+        };
+        let safe_name: String = s
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let filename = format!(
+            "{}_{}.log",
+            if safe_name.is_empty() { "session" } else { &safe_name },
+            chrono::Local::now().format("%Y%m%d_%H%M%S")
+        );
+        Some(dir.join(filename))
+    }
+
+    fn build_ssh_spawn_config(s: &Session, tunnel_x11: bool) -> (Option<String>, crate::terminal::pty_session::SshSpawnConfig) {
+        let effective_jump = if let SessionType::Ssh { ref jump_host, .. } = s.session_type {
+            jump_host.clone().filter(|j| !j.trim().is_empty())
+        } else {
+            None
+        }
+        .or_else(|| {
+            if s.use_ssh_gateway && !s.gateway_host.trim().is_empty() {
+                let port = if s.gateway_port == 0 { 22 } else { s.gateway_port };
+                if s.gateway_user.trim().is_empty() {
+                    Some(format!("{}:{}", s.gateway_host.trim(), port))
+                } else {
+                    Some(format!("{}@{}:{}", s.gateway_user.trim(), s.gateway_host.trim(), port))
+                }
+            } else {
+                None
+            }
+        });
+
+        let cfg = crate::terminal::pty_session::SshSpawnConfig {
+            compression: s.ssh_compression,
+            keepalive: s.ssh_keepalive,
+            tunnel_x11,
+            remote_command: if s.remote_command.trim().is_empty() {
+                None
+            } else {
+                Some(s.remote_command.trim().to_string())
+            },
+            do_not_exit_after_cmd: s.do_not_exit_after_cmd,
+            gateway_key: if s.use_ssh_gateway && !s.gateway_key.trim().is_empty() {
+                Some(s.gateway_key.trim().to_string())
+            } else {
+                None
+            },
+            log_file_path: Self::resolve_session_log_path(s),
+        };
+        (effective_jump, cfg)
+    }
+
     pub fn spawn_local_terminal_ext(
         &mut self,
         title: &str,
@@ -648,7 +709,8 @@ impl RustyBoxApp {
         session_def: Option<Session>,
     ) {
         self.is_home_active = false;
-        match PtySession::spawn_local(24, 80, shell, workdir) {
+        let log_path = session_def.as_ref().and_then(Self::resolve_session_log_path);
+        match PtySession::spawn_local_with_log(24, 80, shell, workdir, log_path) {
             Ok(session) => {
                 let telemetry = match &session_def {
                     Some(s) if s.session_type.is_remote() => TabTelemetry::new_remote(s),
@@ -680,7 +742,7 @@ impl RustyBoxApp {
             port,
             ref user,
             ref key_path,
-            ref jump_host,
+            tunnel_x11,
             ..
         } = s.session_type
         {
@@ -722,15 +784,18 @@ impl RustyBoxApp {
                 effective_password
             };
 
-            match PtySession::spawn_ssh(
+            let (effective_jump, ssh_cfg) = Self::build_ssh_spawn_config(&s, tunnel_x11);
+
+            match PtySession::spawn_ssh_with_config(
                 24,
                 80,
                 host,
                 port,
                 user,
                 key_path.as_deref(),
-                jump_host.as_deref(),
+                effective_jump.as_deref(),
                 final_password,
+                &ssh_cfg,
             ) {
                 Ok(session) => {
                     let telemetry = TabTelemetry::new_remote(&s);
@@ -833,7 +898,7 @@ impl RustyBoxApp {
                     port,
                     ref user,
                     ref key_path,
-                    ref jump_host,
+                    tunnel_x11,
                     ..
                 } = s.session_type
                 {
@@ -875,15 +940,18 @@ impl RustyBoxApp {
                         effective_password
                     };
 
-                    if let Ok(session) = PtySession::spawn_ssh(
+                    let (effective_jump, ssh_cfg) = Self::build_ssh_spawn_config(s, tunnel_x11);
+
+                    if let Ok(session) = PtySession::spawn_ssh_with_config(
                         24,
                         80,
                         host,
                         port,
                         user,
                         key_path.as_deref(),
-                        jump_host.as_deref(),
+                        effective_jump.as_deref(),
                         final_password,
+                        &ssh_cfg,
                     ) {
                         tab.session = session;
                         tab.telemetry.is_connected = true;
@@ -891,11 +959,13 @@ impl RustyBoxApp {
                     }
                 }
             } else {
-                if let Ok(session) = PtySession::spawn_local(
+                let log_path = tab.session_def.as_ref().and_then(Self::resolve_session_log_path);
+                if let Ok(session) = PtySession::spawn_local_with_log(
                     24,
                     80,
                     tab.custom_cmd.as_deref(),
                     tab.workdir.as_deref(),
+                    log_path,
                 ) {
                     tab.session = session;
                     tab.telemetry.is_connected = true;
@@ -995,20 +1065,9 @@ impl RustyBoxApp {
 
     pub fn save_active_terminal_buffer(&self) {
         if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-            let parser = tab.session.parser.lock();
-            let screen = parser.screen();
-            let (rows, cols) = screen.size();
-            let mut text = String::new();
-            for r in 0..rows.get() {
-                for c in 0..cols.get() {
-                    if let Some(cell) = screen.cell(r, c) {
-                        text.push_str(cell.contents());
-                    } else {
-                        text.push(' ');
-                    }
-                }
-                text.push('\n');
-            }
+            let mut parser = tab.session.parser.lock();
+            let text = crate::terminal::widget::extract_all_terminal_text(parser.screen_mut());
+            drop(parser);
 
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("Log file", &["log", "txt"])
@@ -3239,39 +3298,74 @@ impl eframe::App for RustyBoxApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("🔍 Find:").strong().color(Color32::from_rgb(255, 200, 80)));
                     let text_resp = ui.add(TextEdit::singleline(&mut self.search_query)
-                        .hint_text("Search & highlight in terminal...")
-                        .desired_width(260.0));
+                        .hint_text("Search across scrollback & screen...")
+                        .desired_width(240.0));
                     if self.focus_search {
                         text_resp.request_focus();
                         self.focus_search = false;
                     }
 
-                    // Count occurrences on screen if active tab exists
+                    // Search across all 2,000 scrollback lines + visible screen if active tab exists
                     if !self.search_query.is_empty() {
-                        let query_lower = self.search_query.trim().to_lowercase();
-                        let mut match_count = 0;
+                        let nav_idx_id = egui::Id::new("term_search_match_idx").with(self.active_tab_idx);
+                        let mut matches = Vec::new();
                         if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-                            let parser = tab.session.parser.lock();
-                            let screen = parser.screen();
-                            let (rows_nz, cols_nz) = screen.size();
-                            for r in 0..rows_nz.get() {
-                                let mut line = String::new();
-                                for c in 0..cols_nz.get() {
-                                    if let Some(cell) = screen.cell(r, c) {
-                                        line.push_str(cell.contents());
+                            let mut parser = tab.session.parser.lock();
+                            matches = crate::terminal::widget::search_terminal_buffer(
+                                parser.screen_mut(),
+                                &self.search_query,
+                            );
+                        }
+                        let match_count = matches.len();
+                        let mut cur_match_idx: usize = ui
+                            .data(|d| d.get_temp(nav_idx_id))
+                            .unwrap_or_else(|| match_count.saturating_sub(1));
+                        if match_count > 0 && cur_match_idx >= match_count {
+                            cur_match_idx = match_count - 1;
+                        }
+
+                        if match_count > 0 {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} / {} match{}",
+                                    cur_match_idx + 1,
+                                    match_count,
+                                    if match_count > 1 { "es" } else { "" }
+                                ))
+                                .color(Color32::from_rgb(100, 220, 100))
+                                .strong(),
+                            );
+
+                            let enter_pressed = text_resp.has_focus()
+                                && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                            let shift_held = ctx.input(|i| i.modifiers.shift);
+                            let mut jump_to: Option<usize> = None;
+
+                            if ui.small_button("▲ Prev").clicked() || (enter_pressed && shift_held) {
+                                cur_match_idx = if cur_match_idx == 0 {
+                                    match_count - 1
+                                } else {
+                                    cur_match_idx - 1
+                                };
+                                jump_to = Some(cur_match_idx);
+                            }
+                            if ui.small_button("▼ Next").clicked() || (enter_pressed && !shift_held) {
+                                cur_match_idx = (cur_match_idx + 1) % match_count;
+                                jump_to = Some(cur_match_idx);
+                            }
+
+                            if let Some(target_idx) = jump_to {
+                                ui.data_mut(|d| d.insert_temp(nav_idx_id, target_idx));
+                                if let Some((abs_row, _, _)) = matches.get(target_idx) {
+                                    if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                                        let mut parser = tab.session.parser.lock();
+                                        crate::terminal::widget::scroll_to_abs_row(
+                                            parser.screen_mut(),
+                                            *abs_row,
+                                        );
                                     }
                                 }
-                                let line_lower = line.to_lowercase();
-                                let mut start = 0;
-                                while let Some(pos) = line_lower[start..].find(&query_lower) {
-                                    match_count += 1;
-                                    start += pos + query_lower.len();
-                                }
                             }
-                        }
-                        if match_count > 0 {
-                            ui.label(RichText::new(format!("{} match{}", match_count, if match_count > 1 { "es" } else { "" }))
-                                .color(Color32::from_rgb(100, 220, 100)).strong());
                         } else {
                             ui.label(RichText::new("0 matches").color(Color32::from_rgb(200, 100, 100)));
                         }
@@ -3312,20 +3406,49 @@ impl eframe::App for RustyBoxApp {
             };
             let font_sz = self.font_size;
             let current_theme = self.theme;
+            let current_active_idx = self.active_tab_idx.min(num_tabs - 1);
+            let mut newly_focused_tab_idx: Option<usize> = None;
+
+            let render_pane = |ui: &mut egui::Ui,
+                               pane_idx: usize,
+                               tab: &mut OpenTab,
+                               is_active: bool|
+             -> (egui::Response, TerminalAction) {
+                let eff_theme = tab
+                    .session_def
+                    .as_ref()
+                    .and_then(|s| TerminalTheme::from_name(&s.terminal_color_scheme))
+                    .unwrap_or(current_theme);
+                let eff_font = tab
+                    .session_def
+                    .as_ref()
+                    .map(|s| s.terminal_font_size as f32)
+                    .filter(|&sz| sz >= 9.0 && (font_sz - 14.0).abs() < 0.1)
+                    .unwrap_or(font_sz);
+                let bs_ctrl_h = tab
+                    .session_def
+                    .as_ref()
+                    .map(|s| s.backspace_sends_ctrl_h)
+                    .unwrap_or(false);
+
+                let widget = TerminalWidget::new(&tab.id, &mut tab.session)
+                    .with_font_size(eff_font)
+                    .with_theme(eff_theme)
+                    .with_search(search_ref)
+                    .with_active_pane(is_active)
+                    .with_backspace_ctrl_h(bs_ctrl_h);
+                let _ = pane_idx;
+                widget.ui(ui, broadcast_tx)
+            };
 
             match self.split_mode {
                 SplitMode::Single => {
-                    let active_idx = self.active_tab_idx.min(num_tabs - 1);
-                    let tab = &mut self.open_tabs[active_idx];
-                    let widget = TerminalWidget::new(&tab.id, &mut tab.session)
-                        .with_font_size(font_sz)
-                        .with_theme(current_theme)
-                        .with_search(search_ref);
-                    let (_, act) = widget.ui(ui, broadcast_tx);
+                    let tab = &mut self.open_tabs[current_active_idx];
+                    let (_, act) = render_pane(ui, current_active_idx, tab, true);
                     triggered_action = act;
                 }
                 SplitMode::Horizontal => {
-                    let tab_a_idx = self.active_tab_idx.min(num_tabs - 1);
+                    let tab_a_idx = current_active_idx;
                     let tab_b_idx = if num_tabs > 1 {
                         if tab_a_idx == 0 { 1 } else { 0 }
                     } else {
@@ -3333,25 +3456,31 @@ impl eframe::App for RustyBoxApp {
                     };
 
                     ui.columns(2, |columns| {
-                        let tab_a = &mut self.open_tabs[tab_a_idx];
-                        let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
-                            .with_font_size(font_sz)
-                            .with_theme(current_theme)
-                            .with_search(search_ref);
-                        let (_, act) = widget_a.ui(&mut columns[0], broadcast_tx);
-                        if let TerminalAction::None = triggered_action {
-                            triggered_action = act;
+                        let (resp_a, act_a) = {
+                            let tab_a = &mut self.open_tabs[tab_a_idx];
+                            render_pane(&mut columns[0], tab_a_idx, tab_a, true)
+                        };
+                        if resp_a.clicked() || resp_a.drag_started() || resp_a.secondary_clicked() {
+                            newly_focused_tab_idx = Some(tab_a_idx);
+                        }
+                        if !matches!(act_a, TerminalAction::None) {
+                            newly_focused_tab_idx = Some(tab_a_idx);
+                            triggered_action = act_a;
                         }
 
                         if tab_a_idx != tab_b_idx {
-                            let tab_b = &mut self.open_tabs[tab_b_idx];
-                            let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
-                                .with_font_size(font_sz)
-                                .with_theme(current_theme)
-                                .with_search(search_ref);
-                            let (_, act_b) = widget_b.ui(&mut columns[1], broadcast_tx);
-                            if let TerminalAction::None = triggered_action {
-                                triggered_action = act_b;
+                            let (resp_b, act_b) = {
+                                let tab_b = &mut self.open_tabs[tab_b_idx];
+                                render_pane(&mut columns[1], tab_b_idx, tab_b, false)
+                            };
+                            if resp_b.clicked() || resp_b.drag_started() || resp_b.secondary_clicked() {
+                                newly_focused_tab_idx = Some(tab_b_idx);
+                            }
+                            if !matches!(act_b, TerminalAction::None) {
+                                newly_focused_tab_idx = Some(tab_b_idx);
+                                if matches!(triggered_action, TerminalAction::None) {
+                                    triggered_action = act_b;
+                                }
                             }
                         } else {
                             columns[1].centered_and_justified(|ui| {
@@ -3361,7 +3490,7 @@ impl eframe::App for RustyBoxApp {
                     });
                 }
                 SplitMode::Vertical => {
-                    let tab_a_idx = self.active_tab_idx.min(num_tabs - 1);
+                    let tab_a_idx = current_active_idx;
                     let tab_b_idx = if num_tabs > 1 {
                         if tab_a_idx == 0 { 1 } else { 0 }
                     } else {
@@ -3376,12 +3505,14 @@ impl eframe::App for RustyBoxApp {
                             Layout::top_down(Align::Min),
                             |ui| {
                                 let tab_a = &mut self.open_tabs[tab_a_idx];
-                                let widget_a = TerminalWidget::new(&tab_a.id, &mut tab_a.session)
-                                    .with_font_size(font_sz)
-                                    .with_theme(current_theme)
-                                    .with_search(search_ref);
-                                let (_, act) = widget_a.ui(ui, broadcast_tx);
-                                triggered_action = act;
+                                let (resp_a, act_a) = render_pane(ui, tab_a_idx, tab_a, true);
+                                if resp_a.clicked() || resp_a.drag_started() || resp_a.secondary_clicked() {
+                                    newly_focused_tab_idx = Some(tab_a_idx);
+                                }
+                                if !matches!(act_a, TerminalAction::None) {
+                                    newly_focused_tab_idx = Some(tab_a_idx);
+                                    triggered_action = act_a;
+                                }
                             },
                         );
 
@@ -3393,13 +3524,15 @@ impl eframe::App for RustyBoxApp {
                             |ui| {
                                 if tab_a_idx != tab_b_idx {
                                     let tab_b = &mut self.open_tabs[tab_b_idx];
-                                    let widget_b = TerminalWidget::new(&tab_b.id, &mut tab_b.session)
-                                        .with_font_size(font_sz)
-                                        .with_theme(current_theme)
-                                        .with_search(search_ref);
-                                    let (_, act_b) = widget_b.ui(ui, broadcast_tx);
-                                    if let TerminalAction::None = triggered_action {
-                                        triggered_action = act_b;
+                                    let (resp_b, act_b) = render_pane(ui, tab_b_idx, tab_b, false);
+                                    if resp_b.clicked() || resp_b.drag_started() || resp_b.secondary_clicked() {
+                                        newly_focused_tab_idx = Some(tab_b_idx);
+                                    }
+                                    if !matches!(act_b, TerminalAction::None) {
+                                        newly_focused_tab_idx = Some(tab_b_idx);
+                                        if matches!(triggered_action, TerminalAction::None) {
+                                            triggered_action = act_b;
+                                        }
                                     }
                                 } else {
                                     ui.centered_and_justified(|ui| {
@@ -3421,20 +3554,29 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 0 {
                                     let tab0 = &mut self.open_tabs[0];
-                                    let (_, act) = TerminalWidget::new(&tab0.id, &mut tab0.session)
-                                        .with_font_size(font_sz)
-                                        .with_theme(current_theme)
-                                        .with_search(search_ref)
-                                        .ui(&mut cols[0], broadcast_tx);
-                                    triggered_action = act;
+                                    let (resp0, act0) =
+                                        render_pane(&mut cols[0], 0, tab0, current_active_idx == 0);
+                                    if resp0.clicked() || resp0.drag_started() || resp0.secondary_clicked() {
+                                        newly_focused_tab_idx = Some(0);
+                                    }
+                                    if !matches!(act0, TerminalAction::None) {
+                                        newly_focused_tab_idx = Some(0);
+                                        triggered_action = act0;
+                                    }
                                 }
                                 if num_tabs > 1 {
                                     let tab1 = &mut self.open_tabs[1];
-                                    let _ = TerminalWidget::new(&tab1.id, &mut tab1.session)
-                                        .with_font_size(font_sz)
-                                        .with_theme(current_theme)
-                                        .with_search(search_ref)
-                                        .ui(&mut cols[1], broadcast_tx);
+                                    let (resp1, act1) =
+                                        render_pane(&mut cols[1], 1, tab1, current_active_idx == 1);
+                                    if resp1.clicked() || resp1.drag_started() || resp1.secondary_clicked() {
+                                        newly_focused_tab_idx = Some(1);
+                                    }
+                                    if !matches!(act1, TerminalAction::None) {
+                                        newly_focused_tab_idx = Some(1);
+                                        if matches!(triggered_action, TerminalAction::None) {
+                                            triggered_action = act1;
+                                        }
+                                    }
                                 }
                             });
                         },
@@ -3449,24 +3591,40 @@ impl eframe::App for RustyBoxApp {
                             ui.columns(2, |cols| {
                                 if num_tabs > 2 {
                                     let tab2 = &mut self.open_tabs[2];
-                                    let _ = TerminalWidget::new(&tab2.id, &mut tab2.session)
-                                        .with_font_size(font_sz)
-                                        .with_theme(current_theme)
-                                        .with_search(search_ref)
-                                        .ui(&mut cols[0], broadcast_tx);
+                                    let (resp2, act2) =
+                                        render_pane(&mut cols[0], 2, tab2, current_active_idx == 2);
+                                    if resp2.clicked() || resp2.drag_started() || resp2.secondary_clicked() {
+                                        newly_focused_tab_idx = Some(2);
+                                    }
+                                    if !matches!(act2, TerminalAction::None) {
+                                        newly_focused_tab_idx = Some(2);
+                                        if matches!(triggered_action, TerminalAction::None) {
+                                            triggered_action = act2;
+                                        }
+                                    }
                                 }
                                 if num_tabs > 3 {
                                     let tab3 = &mut self.open_tabs[3];
-                                    let _ = TerminalWidget::new(&tab3.id, &mut tab3.session)
-                                        .with_font_size(font_sz)
-                                        .with_theme(current_theme)
-                                        .with_search(search_ref)
-                                        .ui(&mut cols[1], broadcast_tx);
+                                    let (resp3, act3) =
+                                        render_pane(&mut cols[1], 3, tab3, current_active_idx == 3);
+                                    if resp3.clicked() || resp3.drag_started() || resp3.secondary_clicked() {
+                                        newly_focused_tab_idx = Some(3);
+                                    }
+                                    if !matches!(act3, TerminalAction::None) {
+                                        newly_focused_tab_idx = Some(3);
+                                        if matches!(triggered_action, TerminalAction::None) {
+                                            triggered_action = act3;
+                                        }
+                                    }
                                 }
                             });
                         },
                     );
                 }
+            }
+
+            if let Some(new_idx) = newly_focused_tab_idx {
+                self.active_tab_idx = new_idx;
             }
         });
 
@@ -3476,7 +3634,11 @@ impl eframe::App for RustyBoxApp {
                 if self.paste_protection_enabled {
                     self.pending_paste_text = Some(text);
                 } else if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                    let _ = tab.session.write_str(&text);
+                    if let Ok(bytes) = tab.session.paste_text(&text) {
+                        if self.multi_exec_enabled {
+                            let _ = self.broadcast_tx.send(bytes);
+                        }
+                    }
                 }
             }
             TerminalAction::SaveBufferToFile => {
@@ -3553,11 +3715,11 @@ impl eframe::App for RustyBoxApp {
 
             if run_paste {
                 if let Some(text) = self.pending_paste_text.take() {
-                    let bytes = text.as_bytes().to_vec();
                     if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                        let _ = tab.session.write_bytes(&bytes);
-                        if self.multi_exec_enabled {
-                            let _ = self.broadcast_tx.send(bytes);
+                        if let Ok(bytes) = tab.session.paste_text(&text) {
+                            if self.multi_exec_enabled {
+                                let _ = self.broadcast_tx.send(bytes);
+                            }
                         }
                     }
                 }
