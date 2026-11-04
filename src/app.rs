@@ -1449,7 +1449,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-46")
+                                RichText::new("v1.3-47")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -2431,69 +2431,70 @@ impl eframe::App for RustyBoxApp {
 
             // 1. TABS AREA (Home + Scrollable tab strip)
             let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect).layout(Layout::left_to_right(Align::Center)));
-            tabs_ui.horizontal(|ui| {
-                // Home Tab (Engineered as a first-class tab matching exact height, baseline and rounding)
-                let is_home = self.is_home_active;
-                let (home_rect, home_resp) = ui.allocate_exact_size(vec2(76.0, 26.0), egui::Sense::click());
-                let home_hovered = home_resp.hovered();
+            ScrollArea::horizontal()
+                .id_salt("tabs_scroll_area")
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut tabs_ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Home Tab (Engineered inside the exact same row as all other tabs)
+                        let is_home = self.is_home_active;
+                        let (home_rect, home_resp) = ui.allocate_exact_size(vec2(76.0, 26.0), egui::Sense::click());
+                        let home_hovered = home_resp.hovered();
 
-                let (h_fill, h_stroke, h_text) = if is_home {
-                    (
-                        Color32::from_rgb(26, 36, 56),
-                        egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
-                        Color32::WHITE,
-                    )
-                } else if home_hovered {
-                    (
-                        Color32::from_rgb(28, 36, 48),
-                        egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
-                        Color32::from_rgb(215, 225, 238),
-                    )
-                } else {
-                    (
-                        Color32::from_rgb(20, 26, 36),
-                        egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
-                        Color32::from_rgb(160, 172, 188),
-                    )
-                };
+                        let (h_fill, h_stroke, h_text) = if is_home {
+                            (
+                                Color32::from_rgb(26, 36, 56),
+                                egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                Color32::WHITE,
+                            )
+                        } else if home_hovered {
+                            (
+                                Color32::from_rgb(28, 36, 48),
+                                egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
+                                Color32::from_rgb(215, 225, 238),
+                            )
+                        } else {
+                            (
+                                Color32::from_rgb(20, 26, 36),
+                                egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
+                                Color32::from_rgb(160, 172, 188),
+                            )
+                        };
 
-                // Background tab frame
-                ui.painter().rect(
-                    home_rect,
-                    egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 },
-                    h_fill,
-                    h_stroke,
-                );
+                        // Background tab frame
+                        ui.painter().rect(
+                            home_rect,
+                            egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 },
+                            h_fill,
+                            h_stroke,
+                        );
 
-                // Electric cyan top line for active Home tab
-                if is_home {
-                    ui.painter().line_segment(
-                        [pos2(home_rect.left() + 2.0, home_rect.top() + 1.0), pos2(home_rect.right() - 2.0, home_rect.top() + 1.0)],
-                        egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
-                    );
-                }
+                        // Electric cyan top line for active Home tab
+                        if is_home {
+                            ui.painter().line_segment(
+                                [pos2(home_rect.left() + 2.0, home_rect.top() + 1.0), pos2(home_rect.right() - 2.0, home_rect.top() + 1.0)],
+                                egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                            );
+                        }
 
-                // Centered icon and title
-                ui.painter().text(
-                    home_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "🏠 Home",
-                    egui::FontId::proportional(11.5),
-                    h_text,
-                );
+                        // Centered icon and title
+                        ui.painter().text(
+                            home_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "🏠 Home",
+                            egui::FontId::proportional(11.5),
+                            h_text,
+                        );
 
-                if home_resp.clicked() {
-                    self.is_home_active = true;
-                    self.selected_sidebar_session_id = None;
-                }
+                        if home_resp.clicked() {
+                            self.is_home_active = true;
+                            self.selected_sidebar_session_id = None;
+                        }
 
-                ScrollArea::horizontal()
-                    .id_salt("tabs_scroll_area")
-                    .auto_shrink([false, false])
-                    .enable_scrolling(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for (idx, tab) in self.open_tabs.iter().enumerate() {
+                        ui.add_space(2.0);
+
+                        for (idx, tab) in self.open_tabs.iter().enumerate() {
                                 let is_active = !self.is_home_active && idx == self.active_tab_idx;
                                 let _tab_id = &tab.id;
 
@@ -2644,7 +2645,6 @@ impl eframe::App for RustyBoxApp {
                             }
                         });
                     });
-            });
 
             // 2. QUICK CONNECT AREA (Visible on terminal tabs, hidden on Home Dashboard to avoid duplicate)
             let mut quick_ui = ui.new_child(egui::UiBuilder::new().max_rect(quick_rect).layout(Layout::right_to_left(Align::Center)));
