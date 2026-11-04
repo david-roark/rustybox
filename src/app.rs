@@ -581,6 +581,11 @@ impl RustyBoxApp {
         app.spawn_local_terminal("Local Terminal", None, None);
         app.is_home_active = true;
 
+        // Auto-prompt Master Password Vault on startup if vault is configured and locked
+        if app.storage.is_vault_configured() && !app.storage.is_vault_unlocked() {
+            app.show_vault = true;
+        }
+
         if std::env::var("RUSTYBOX_QA_TERMINAL_ACTIVE").is_ok() {
             app.is_home_active = false;
             app.active_tab_idx = 0;
@@ -1578,7 +1583,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-52")
+                                RichText::new("v1.3-54")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -4444,6 +4449,7 @@ impl eframe::App for RustyBoxApp {
                                             }
                                             self.master_password.clear();
                                             self.vault_status = Some(("✅ Vault successfully unlocked! Credentials decrypted in memory.".into(), false));
+                                            close_vault = true;
                                         }
                                         Err(_) => {
                                             self.vault_status = Some(("❌ Incorrect master password!".into(), true));

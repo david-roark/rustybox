@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-54] - 2026-11-04
+### Added
+- **Auto-Prompt Master Password Vault on Startup**:
+  - Tự động hiển thị hộp thoại mở khóa Vault ngay khi vừa khởi chạy ứng dụng nếu Vault đã được thiết lập và đang khóa.
+  - Tự động đóng modal ngay sau khi mở khóa thành công, tránh việc đang kết nối SSH/SFTP mới bị popup chặn gây nghẽn luồng dữ liệu.
+
+## [v1.3-53] - 2026-11-04
+### Fixed
+- **Windows ConPTY Handshake & SSH Login Hang**:
+  - Xử lý phản hồi handshake con trỏ ban đầu (`\x1b[6n`) cho ConPTY trên Windows để ngăn chặn việc `ssh.exe` bị treo lúc khởi động.
+  - Khắc phục lỗi không thể đăng nhập SSH và cải thiện luồng tự động điền mật khẩu phiên an toàn.
+
 ## [v1.3-52] - 2026-11-04
 ### Added
 - **Real SFTP Remote File Explorer for VPS (`ssh2`)**: 

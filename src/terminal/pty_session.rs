@@ -206,10 +206,11 @@ impl PtySession {
                 let mut buf = [0u8; 8192];
                 let mut prev_tail: Vec<u8> = Vec::new();
                 let mut pending_password = auto_password;
+                let mut conpty_init_cpr_replied = false;
                 let session_start_time = std::time::Instant::now();
                 while running_clone.load(Ordering::Relaxed) {
-                    // Security guard: discard pending password after 10s or if login prompt passed
-                    if pending_password.is_some() && session_start_time.elapsed() > Duration::from_secs(10) {
+                    // Security guard: discard pending password after 15s
+                    if pending_password.is_some() && session_start_time.elapsed() > Duration::from_secs(15) {
                         pending_password = None;
                     }
                     match reader.read(&mut buf) {
@@ -239,14 +240,13 @@ impl PtySession {
                             let mut combined = prev_tail.clone();
                             combined.extend_from_slice(chunk);
 
-                            // Clear pending password if shell prompt or welcome banner is seen
+                            // Clear pending password once authenticated shell prompt or post-auth login banner is seen
                             if pending_password.is_some() {
                                 let check_str = String::from_utf8_lossy(&combined);
                                 if check_str.ends_with("$ ")
                                     || check_str.ends_with("# ")
                                     || check_str.ends_with("% ")
                                     || check_str.contains("Last login:")
-                                    || check_str.contains("Welcome to")
                                 {
                                     pending_password = None;
                                 }
@@ -293,7 +293,27 @@ impl PtySession {
                                 }
                             }
 
-                            // If this is an SSH session, NEVER send terminal query auto-replies (CPR, DA, DSR)
+                            // On Windows, ConPTY (conhost.exe --headless --inheritcursor) emits \x1b[6n
+                            // immediately upon pseudo-console creation and blocks the child process (ssh.exe)
+                            // from starting until it receives a Cursor Position Report (\x1b[r;cR).
+                            // Reply to this initial ConPTY handshake once so ssh.exe can start, then block
+                            // subsequent terminal queries on SSH sessions so remote shells never see ^[[6;1R.
+                            if is_ssh && !conpty_init_cpr_replied {
+                                if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[6n") {
+                                    conpty_init_cpr_replied = true;
+                                    let (r, c) = {
+                                        let p = parser_clone.lock();
+                                        p.screen().cursor_position()
+                                    };
+                                    let resp = format!("\x1b[{};{}R", r + 1, c + 1);
+                                    let mut w = writer_reply.lock();
+                                    let _ = w.write_all(resp.as_bytes());
+                                    let _ = w.flush();
+                                    combined[pos..pos + 4].fill(0);
+                                }
+                            }
+
+                            // If this is an SSH session, NEVER send subsequent terminal query auto-replies (CPR, DA, DSR)
                             // into stdin, because OpenSSH / remote shell (bash/zsh) will treat them as raw
                             // user keystrokes, printing "^[[6;1R" and leaving ";1R" at the command prompt!
                             // Also block queries during password auto-injection.
