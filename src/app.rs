@@ -1470,7 +1470,23 @@ impl eframe::App for RustyBoxApp {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::I) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
             self.show_import_dialog = true;
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::W) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+        let active_tab_dead = !self.is_home_active
+            && self
+                .open_tabs
+                .get(self.active_tab_idx)
+                .map(|t| !t.session.is_alive())
+                .unwrap_or(false);
+        let close_tab_shortcut = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::W)
+                || i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::W,
+                )
+                || (active_tab_dead
+                    && (i.consume_key(egui::Modifiers::CTRL, egui::Key::W)
+                        || i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)))
+        });
+        if close_tab_shortcut {
             if !self.open_tabs.is_empty() && !self.is_home_active {
                 let active = self.active_tab_idx;
                 if active < self.open_tabs.len() {
@@ -2842,6 +2858,11 @@ impl eframe::App for RustyBoxApp {
                 self.active_tab_idx = idx;
                 self.selected_sidebar_session_id = self.open_tabs.get(idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id.clone());
                 self.sync_active_tab_sftp();
+                ctx.memory_mut(|m| {
+                    if let Some(fid) = m.focused() {
+                        m.surrender_focus(fid);
+                    }
+                });
             }
 
             // 2. QUICK CONNECT AREA (Visible on terminal tabs, hidden on Home Dashboard to avoid duplicate)

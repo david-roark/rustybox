@@ -17,6 +17,8 @@ pub struct PtySession {
     pub child_pid: Option<u32>,
     pub has_new_data: Arc<AtomicBool>,
     pub child: Arc<parking_lot::Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
+    #[allow(dead_code)]
+    pub is_ssh: bool,
 }
 
 impl PtySession {
@@ -106,6 +108,7 @@ impl PtySession {
         let mut cmd = CommandBuilder::new("ssh");
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        cmd.arg("-t");
         cmd.args(["-p", &port.to_string()]);
         cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
 
@@ -392,6 +395,7 @@ impl PtySession {
             child_pid: pid,
             has_new_data,
             child: child_holder,
+            is_ssh,
         })
     }
 
@@ -407,21 +411,9 @@ impl PtySession {
         w.flush()
     }
 
-    /// Send SIGINT (Ctrl+C) to child process group
+    /// Send SIGINT (Ctrl+C) to the foreground process group via PTY master (\x03)
     pub fn send_sigint(&mut self) -> std::io::Result<()> {
-        // 1. Send \x03 to PTY master
-        let _ = self.write_bytes(b"\x03");
-
-        // 2. On Unix/Linux, also send SIGINT to child PID via kill command to guarantee interruption
-        #[cfg(not(target_os = "windows"))]
-        if let Some(pid) = self.child_pid {
-            let _ = std::process::Command::new("kill")
-                .args(["-2", &pid.to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        Ok(())
+        self.write_bytes(b"\x03")
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -527,5 +519,89 @@ mod tests {
         assert!(!is_ssh_password_prompt(b"root@ubuntu:~# "));
         assert!(!is_ssh_password_prompt(b"Last login: Sun Nov  1 10:00:00 2026\n"));
         assert!(!is_ssh_password_prompt(b"Please enter your choice [1-5]: "));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_send_sigint_interrupts_foreground_process() {
+        let mut sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+            .expect("Failed to spawn local PTY session");
+        std::thread::sleep(Duration::from_millis(120));
+
+        // Start a foreground loop simulating `docker logs -f` that traps SIGINT or exits on Ctrl+C,
+        // then run an echo command after Ctrl+C to prove the shell recovered control.
+        sess.write_str("sh -c 'trap \"echo SIGINT_CAUGHT; exit 0\" INT; echo STREAM_READY; while :; do sleep 1; done'\n")
+            .expect("Failed to write command");
+
+        let mut ready = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("STREAM_READY") {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "Foreground streaming process did not start");
+
+        // Send Ctrl+C (SIGINT)
+        sess.send_sigint().expect("Failed to send SIGINT");
+
+        let mut interrupted = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("SIGINT_CAUGHT") {
+                interrupted = true;
+                break;
+            }
+        }
+        assert!(
+            interrupted,
+            "Foreground process was not interrupted by Ctrl+C (send_sigint)"
+        );
+        assert!(
+            sess.is_alive(),
+            "Parent shell should remain alive after interrupting foreground command"
+        );
+        sess.kill();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_pty_ctrl_c_cancels_partial_input_and_resize_updates_screen() {
+        let mut sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+            .expect("Failed to spawn local PTY session");
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Resize terminal to 40x120 and verify parser size updates
+        sess.resize(40, 120);
+        {
+            let p = sess.parser.lock();
+            let (r, c) = p.screen().size();
+            assert_eq!(r.get(), 40);
+            assert_eq!(c.get(), 120);
+        }
+
+        // Write a partial command WITHOUT newline, then send Ctrl+C to cancel it, then run echo
+        sess.write_str("echo SHOULD_NOT_RUN_")
+            .expect("Failed to write partial command");
+        std::thread::sleep(Duration::from_millis(50));
+        sess.send_sigint().expect("Failed to send SIGINT");
+        std::thread::sleep(Duration::from_millis(50));
+        sess.write_str("echo AFTER_SIGINT_OK\n")
+            .expect("Failed to write post-sigint command");
+
+        let mut found_after = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("AFTER_SIGINT_OK") {
+                found_after = true;
+                break;
+            }
+        }
+        assert!(found_after, "Command after Ctrl+C did not execute");
+        sess.kill();
     }
 }

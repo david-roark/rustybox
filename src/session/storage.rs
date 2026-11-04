@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_backup_before_update_max_3_and_corrupt_recovery() {
-        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+        let base = std::env::temp_dir()
             .join(format!("storage_unit_test_{}", uuid::Uuid::new_v4()));
         let data_dir = base.join("data");
         let storage = StorageManager::with_data_dir(data_dir.clone());
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_credentials_load_save() {
-        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+        let base = std::env::temp_dir()
             .join(format!("cred_unit_test_{}", uuid::Uuid::new_v4()));
         let storage = StorageManager::with_data_dir(base.clone());
         let creds = vec![
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_vault_encrypts_passwords_on_disk() {
-        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+        let base = std::env::temp_dir()
             .join(format!("vault_unit_test_{}", uuid::Uuid::new_v4()));
         let mut storage = StorageManager::with_data_dir(base.join("data"));
         let mut cfg = storage.load_config();
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_master_vault_credentials_and_sessions_disk_flow() {
-        let base = PathBuf::from("/home/longkaka/.hermes/profiles/agent12/cache/scratch")
+        let base = std::env::temp_dir()
             .join(format!("master_vault_flow_{}", uuid::Uuid::new_v4()));
         let mut storage = StorageManager::with_data_dir(base.join("data"));
         let mut cfg = storage.load_config();
