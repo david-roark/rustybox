@@ -1320,8 +1320,12 @@ impl RustyBoxApp {
             return;
         }
 
-        // Auto-preload file if path exists and text is empty
-        if self.import_raw_text.is_empty() && std::path::Path::new(&self.import_file_path).exists() {
+        // Auto-preload file on initial open if path exists, text is empty, and user hasn't cleared/interacted yet
+        if self.import_raw_text.is_empty()
+            && self.import_status_msg.is_none()
+            && !self.import_file_path.is_empty()
+            && std::path::Path::new(&self.import_file_path).exists()
+        {
             if let Ok(content) = std::fs::read_to_string(&self.import_file_path) {
                 let len = content.len();
                 self.import_raw_text = content;
@@ -1389,7 +1393,18 @@ impl RustyBoxApp {
                                 .add_filter("All Files", &["*"])
                                 .pick_file()
                             {
-                                self.import_file_path = path.to_string_lossy().to_string();
+                                let p_str = path.to_string_lossy().to_string();
+                                self.import_file_path = p_str.clone();
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        let len = content.len();
+                                        self.import_raw_text = content;
+                                        self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, p_str), false));
+                                    }
+                                    Err(e) => {
+                                        self.import_status_msg = Some((format!("Failed to read file '{}': {}", p_str, e), true));
+                                    }
+                                }
                             }
                         }
                         if ui.button(RichText::new("📥 Read File").strong()).clicked() {
@@ -1460,7 +1475,7 @@ impl RustyBoxApp {
 
                     if ui.button(RichText::new("Clear Text").color(Color32::LIGHT_GRAY)).clicked() {
                         self.import_raw_text.clear();
-                        self.import_status_msg = None;
+                        self.import_status_msg = Some(("Cleared text input. Paste config or load a file above.".into(), false));
                     }
 
                     if ui.button("✖ Close").clicked() {

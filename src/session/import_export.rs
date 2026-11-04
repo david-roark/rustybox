@@ -69,12 +69,12 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
 
     let flush_block = |blk: SshHostBlock, blocks: &mut Vec<SshHostBlock>, global: &mut SshHostBlock| {
         if blk.aliases.iter().all(|a| a == "*") {
-            if blk.user.is_some() { global.user = blk.user; }
-            if blk.port.is_some() { global.port = blk.port; }
-            if blk.identity_file.is_some() { global.identity_file = blk.identity_file; }
-            if blk.proxy_jump.is_some() { global.proxy_jump = blk.proxy_jump; }
-            if blk.forward_x11.is_some() { global.forward_x11 = blk.forward_x11; }
-            if blk.compression.is_some() { global.compression = blk.compression; }
+            if global.user.is_none() { global.user = blk.user; }
+            if global.port.is_none() { global.port = blk.port; }
+            if global.identity_file.is_none() { global.identity_file = blk.identity_file; }
+            if global.proxy_jump.is_none() { global.proxy_jump = blk.proxy_jump; }
+            if global.forward_x11.is_none() { global.forward_x11 = blk.forward_x11; }
+            if global.compression.is_none() { global.compression = blk.compression; }
         } else {
             blocks.push(blk);
         }
@@ -115,21 +115,35 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
         });
 
         if key.eq_ignore_ascii_case("HostName") {
-            target.hostname = Some(val.trim_matches('"').to_string());
+            if target.hostname.is_none() {
+                target.hostname = Some(val.trim_matches('"').to_string());
+            }
         } else if key.eq_ignore_ascii_case("User") {
-            target.user = Some(val.trim_matches('"').to_string());
+            if target.user.is_none() {
+                target.user = Some(val.trim_matches('"').to_string());
+            }
         } else if key.eq_ignore_ascii_case("Port") {
-            if let Ok(p) = val.parse::<u16>() {
-                target.port = Some(p);
+            if target.port.is_none() {
+                if let Ok(p) = val.parse::<u16>() {
+                    target.port = Some(p);
+                }
             }
         } else if key.eq_ignore_ascii_case("IdentityFile") {
-            target.identity_file = Some(expand_tilde_path(val));
+            if target.identity_file.is_none() {
+                target.identity_file = Some(expand_tilde_path(val));
+            }
         } else if key.eq_ignore_ascii_case("ProxyJump") {
-            target.proxy_jump = Some(val.trim_matches('"').to_string());
+            if target.proxy_jump.is_none() {
+                target.proxy_jump = Some(val.trim_matches('"').to_string());
+            }
         } else if key.eq_ignore_ascii_case("ForwardX11") || key.eq_ignore_ascii_case("ForwardX11Trusted") {
-            target.forward_x11 = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+            if target.forward_x11.is_none() {
+                target.forward_x11 = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+            }
         } else if key.eq_ignore_ascii_case("Compression") {
-            target.compression = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+            if target.compression.is_none() {
+                target.compression = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+            }
         }
     }
 
@@ -144,7 +158,11 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
             if alias.contains('*') || alias.contains('?') || alias.starts_with('!') {
                 continue;
             }
-            let host = blk.hostname.clone().unwrap_or_else(|| alias.clone());
+            let host = blk
+                .hostname
+                .as_ref()
+                .map(|h| h.replace("%h", alias))
+                .unwrap_or_else(|| alias.clone());
             if host.is_empty() {
                 continue;
             }
@@ -633,7 +651,9 @@ Host = web-edge # Primary edge node
     Compression = no
 
 Host direct-node *.corp.local !excluded
-    HostName 192.0.2.55
+    HostName %h.corp.local
+    IdentityFile ~/.ssh/first_key
+    IdentityFile ~/.ssh/second_key_ignored
     ProxyJump none
 
 # Fallback wildcard at bottom of file
@@ -674,7 +694,7 @@ Host *
             panic!("Expected SSH session for web-edge");
         }
 
-        // 2. direct-node inherits bottom `Host *` User/Port, and `ProxyJump none` disables jump host
+        // 2. direct-node expands `%h`, keeps first IdentityFile, inherits bottom `Host *` User/Port, and `ProxyJump none` disables jump host
         assert_eq!(parsed[1].name, "direct-node");
         assert!(!parsed[1].use_ssh_gateway);
         if let SessionType::Ssh {
@@ -682,14 +702,16 @@ Host *
             port,
             ref user,
             ref auth_method,
+            ref key_path,
             ref jump_host,
             ..
         } = parsed[1].session_type
         {
-            assert_eq!(host, "192.0.2.55");
+            assert_eq!(host, "direct-node.corp.local");
             assert_eq!(port, 2200);
             assert_eq!(user, "fallback_admin");
-            assert_eq!(*auth_method, AuthMethod::Password);
+            assert_eq!(*auth_method, AuthMethod::PrivateKey);
+            assert!(key_path.as_deref().unwrap_or("").ends_with("first_key"));
             assert!(jump_host.is_none());
         } else {
             panic!("Expected SSH session for direct-node");
