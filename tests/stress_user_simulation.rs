@@ -97,6 +97,8 @@ fn test_stress_session_crud_100_cycles() {
             ssh_keepalive: true,
             tab_color: String::new(),
             comments: format!("Created in test cycle {}", i),
+            last_connected_at: None,
+            connect_count: 0,
         };
         sessions.push(sess);
     }
