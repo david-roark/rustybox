@@ -1449,7 +1449,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-45")
+                                RichText::new("v1.3-46")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -2070,28 +2070,30 @@ impl eframe::App for RustyBoxApp {
                         .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(2.0, 2.0))
                         .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            let btn_w = (ui.available_width() - 2.0) / 2.0;
-                            let s_active = self.sidebar_tab == 0;
-                            let sftp_active = self.sidebar_tab == 1;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                let btn_w = (ui.available_width() - 2.0) / 2.0;
+                                let s_active = self.sidebar_tab == 0;
+                                let sftp_active = self.sidebar_tab == 1;
 
-                            let (s_fill, s_stroke, s_text) = if s_active {
-                                (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
-                            } else {
-                                (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
-                            };
-                            let (sftp_fill, sftp_stroke, sftp_text) = if sftp_active {
-                                (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
-                            } else {
-                                (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
-                            };
+                                let (s_fill, s_stroke, s_text) = if s_active {
+                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                                } else {
+                                    (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
+                                };
+                                let (sftp_fill, sftp_stroke, sftp_text) = if sftp_active {
+                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                                } else {
+                                    (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
+                                };
 
-                            if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📂 Sessions").size(11.5).strong().color(s_text)).fill(s_fill).stroke(s_stroke).rounding(5.0)).clicked() {
-                                self.sidebar_tab = 0;
-                            }
-                            if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📁 SFTP Browser").size(11.5).strong().color(sftp_text)).fill(sftp_fill).stroke(sftp_stroke).rounding(5.0)).clicked() {
-                                self.sidebar_tab = 1;
-                            }
+                                if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📂 Sessions").size(11.0).strong().color(s_text)).fill(s_fill).stroke(s_stroke).rounding(5.0)).clicked() {
+                                    self.sidebar_tab = 0;
+                                }
+                                if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📁 SFTP Browser").size(11.0).strong().color(sftp_text)).fill(sftp_fill).stroke(sftp_stroke).rounding(5.0)).clicked() {
+                                    self.sidebar_tab = 1;
+                                }
+                            });
                         });
                     ui.add_space(5.0);
                     ui.separator();
@@ -2430,32 +2432,57 @@ impl eframe::App for RustyBoxApp {
             // 1. TABS AREA (Home + Scrollable tab strip)
             let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect).layout(Layout::left_to_right(Align::Center)));
             tabs_ui.horizontal(|ui| {
-                // Home Tab
+                // Home Tab (Engineered as a first-class tab matching exact height, baseline and rounding)
                 let is_home = self.is_home_active;
+                let (home_rect, home_resp) = ui.allocate_exact_size(vec2(76.0, 26.0), egui::Sense::click());
+                let home_hovered = home_resp.hovered();
+
                 let (h_fill, h_stroke, h_text) = if is_home {
                     (
-                        Color32::from_rgb(31, 111, 235),
+                        Color32::from_rgb(26, 36, 56),
                         egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
                         Color32::WHITE,
                     )
+                } else if home_hovered {
+                    (
+                        Color32::from_rgb(28, 36, 48),
+                        egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
+                        Color32::from_rgb(215, 225, 238),
+                    )
                 } else {
                     (
-                        Color32::from_rgb(30, 36, 46),
-                        egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
-                        Color32::from_rgb(180, 190, 200),
+                        Color32::from_rgb(20, 26, 36),
+                        egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
+                        Color32::from_rgb(160, 172, 188),
                     )
                 };
 
-                let h_btn = egui::Button::new(
-                    RichText::new("🏠 Home")
-                        .strong()
-                        .color(h_text)
-                        .size(12.0),
-                )
-                .fill(h_fill)
-                .stroke(h_stroke)
-                .rounding(egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 });
-                if ui.add(h_btn).clicked() {
+                // Background tab frame
+                ui.painter().rect(
+                    home_rect,
+                    egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 },
+                    h_fill,
+                    h_stroke,
+                );
+
+                // Electric cyan top line for active Home tab
+                if is_home {
+                    ui.painter().line_segment(
+                        [pos2(home_rect.left() + 2.0, home_rect.top() + 1.0), pos2(home_rect.right() - 2.0, home_rect.top() + 1.0)],
+                        egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                    );
+                }
+
+                // Centered icon and title
+                ui.painter().text(
+                    home_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "🏠 Home",
+                    egui::FontId::proportional(11.5),
+                    h_text,
+                );
+
+                if home_resp.clicked() {
                     self.is_home_active = true;
                     self.selected_sidebar_session_id = None;
                 }
