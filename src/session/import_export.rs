@@ -1,5 +1,6 @@
-use super::{Session, SessionType};
+use super::{AuthMethod, Session, SessionType};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Parsed session result
 #[derive(Clone, Debug)]
@@ -9,7 +10,194 @@ pub struct ImportSummary {
     pub duplicates_skipped: usize,
 }
 
-/// Parses session lines from MobaXterm TXT format, INI/mxtpro format, JSON, or CSV
+/// Returns the default OpenSSH client config path (`~/.ssh/config`) if a home directory is available.
+pub fn default_ssh_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".ssh").join("config"))
+}
+
+/// Expands leading `~/` or `~\` to the user's home directory.
+fn expand_tilde_path(raw: &str) -> String {
+    let clean = raw.trim().trim_matches('"').trim_matches('\'');
+    if let Some(rest) = clean.strip_prefix("~/").or_else(|| clean.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().to_string();
+        }
+    }
+    clean.to_string()
+}
+
+/// Checks if text contains OpenSSH config `Host <alias>` blocks.
+pub fn looks_like_openssh_config(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') || trimmed.contains("=#") {
+            continue;
+        }
+        let mut parts = trimmed.splitn(2, |c: char| c.is_whitespace() || c == '=');
+        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+            if key.eq_ignore_ascii_case("Host") && !val.trim().is_empty() && !val.contains('@') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Parses standard OpenSSH configuration (`~/.ssh/config`) into RustyBox SSH `Session` profiles.
+pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session> {
+    let folder = if default_folder.trim().is_empty() {
+        "OpenSSH Config".to_string()
+    } else {
+        default_folder.trim().to_string()
+    };
+
+    #[derive(Default, Clone)]
+    struct SshHostBlock {
+        aliases: Vec<String>,
+        hostname: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+        identity_file: Option<String>,
+        proxy_jump: Option<String>,
+        forward_x11: Option<bool>,
+        compression: Option<bool>,
+    }
+
+    let mut global_defaults = SshHostBlock::default();
+    let mut blocks: Vec<SshHostBlock> = Vec::new();
+    let mut current: Option<SshHostBlock> = None;
+
+    let flush_block = |blk: SshHostBlock, blocks: &mut Vec<SshHostBlock>, global: &mut SshHostBlock| {
+        if blk.aliases.iter().all(|a| a == "*") {
+            if blk.user.is_some() { global.user = blk.user; }
+            if blk.port.is_some() { global.port = blk.port; }
+            if blk.identity_file.is_some() { global.identity_file = blk.identity_file; }
+            if blk.proxy_jump.is_some() { global.proxy_jump = blk.proxy_jump; }
+            if blk.forward_x11.is_some() { global.forward_x11 = blk.forward_x11; }
+            if blk.compression.is_some() { global.compression = blk.compression; }
+        } else {
+            blocks.push(blk);
+        }
+    };
+
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.splitn(2, |c: char| c.is_whitespace() || c == '=');
+        let Some(key) = parts.next().map(str::trim) else { continue };
+        let Some(val) = parts.next().map(|v| v.trim().trim_start_matches('=').trim()) else { continue };
+        if val.is_empty() {
+            continue;
+        }
+
+        if key.eq_ignore_ascii_case("Host") {
+            if let Some(prev) = current.take() {
+                flush_block(prev, &mut blocks, &mut global_defaults);
+            }
+            let aliases: Vec<String> = val
+                .split_whitespace()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            current = Some(SshHostBlock {
+                aliases,
+                ..Default::default()
+            });
+            continue;
+        }
+
+        let target = current.get_or_insert_with(|| SshHostBlock {
+            aliases: vec!["*".to_string()],
+            ..Default::default()
+        });
+
+        if key.eq_ignore_ascii_case("HostName") {
+            target.hostname = Some(val.trim_matches('"').to_string());
+        } else if key.eq_ignore_ascii_case("User") {
+            target.user = Some(val.trim_matches('"').to_string());
+        } else if key.eq_ignore_ascii_case("Port") {
+            if let Ok(p) = val.parse::<u16>() {
+                target.port = Some(p);
+            }
+        } else if key.eq_ignore_ascii_case("IdentityFile") {
+            target.identity_file = Some(expand_tilde_path(val));
+        } else if key.eq_ignore_ascii_case("ProxyJump") {
+            target.proxy_jump = Some(val.trim_matches('"').to_string());
+        } else if key.eq_ignore_ascii_case("ForwardX11") || key.eq_ignore_ascii_case("ForwardX11Trusted") {
+            target.forward_x11 = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+        } else if key.eq_ignore_ascii_case("Compression") {
+            target.compression = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
+        }
+    }
+
+    if let Some(last) = current.take() {
+        flush_block(last, &mut blocks, &mut global_defaults);
+    }
+
+    let mut sessions = Vec::new();
+    for blk in blocks {
+        for alias in &blk.aliases {
+            // Skip wildcard patterns like `*`, `*.internal`, `!bastion`
+            if alias.contains('*') || alias.contains('?') || alias.starts_with('!') {
+                continue;
+            }
+            let host = blk.hostname.clone().unwrap_or_else(|| alias.clone());
+            if host.is_empty() {
+                continue;
+            }
+            let port = blk.port.or(global_defaults.port).unwrap_or(22);
+            let user = blk
+                .user
+                .clone()
+                .or_else(|| global_defaults.user.clone())
+                .unwrap_or_else(|| "root".to_string());
+            let key_path = blk
+                .identity_file
+                .clone()
+                .or_else(|| global_defaults.identity_file.clone());
+            let jump_host = blk
+                .proxy_jump
+                .clone()
+                .or_else(|| global_defaults.proxy_jump.clone());
+            let tunnel_x11 = blk
+                .forward_x11
+                .or(global_defaults.forward_x11)
+                .unwrap_or(false);
+            let ssh_compression = blk
+                .compression
+                .or(global_defaults.compression)
+                .unwrap_or(true);
+
+            let mut sess = Session::new_ssh(alias, &folder, &host, port, &user);
+            sess.ssh_compression = ssh_compression;
+            if let Some(ref jh) = jump_host {
+                sess.use_ssh_gateway = true;
+                sess.gateway_host = jh.clone();
+            }
+            sess.session_type = SessionType::Ssh {
+                host,
+                port,
+                user,
+                auth_method: if key_path.is_some() {
+                    AuthMethod::PrivateKey
+                } else {
+                    AuthMethod::Password
+                },
+                key_path,
+                jump_host,
+                tunnel_x11,
+            };
+            sessions.push(sess);
+        }
+    }
+
+    sessions
+}
+
+/// Parses session lines from OpenSSH config (`~/.ssh/config`), MobaXterm TXT/INI/mxtpro format, JSON, or CSV
 pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Session> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -22,6 +210,14 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
     }
     if let Ok(cfg) = serde_json::from_str::<crate::session::storage::RustyBoxConfig>(trimmed) {
         return cfg.sessions;
+    }
+
+    // 1b. Try parsing as OpenSSH config (`~/.ssh/config`) if `Host <alias>` blocks are present
+    if looks_like_openssh_config(trimmed) {
+        let ssh_cfg_sessions = parse_openssh_config(trimmed, default_folder);
+        if !ssh_cfg_sessions.is_empty() {
+            return ssh_cfg_sessions;
+        }
     }
 
     let mut sessions = Vec::new();
@@ -349,5 +545,64 @@ vnc:vncuser@45.82.250.75 = SwevW3f0
         assert_eq!(summary2.new_imported, 0);
         assert_eq!(summary2.duplicates_skipped, 4);
         assert_eq!(existing.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_openssh_config() {
+        let ssh_cfg = r#"
+# Global defaults
+Host *
+    User ubuntu
+    ForwardX11 yes
+
+Host prod-api
+    HostName 203.0.113.10
+    Port 2222
+    User deploy
+    IdentityFile ~/.ssh/id_ed25519
+    ProxyJump bastion.example.com:22
+
+Host db-primary db-replica
+    HostName 10.10.0.50
+    Port 2200
+
+Host *.internal
+    User ignored
+"#;
+        let parsed = parse_sessions_from_text(ssh_cfg, "OpenSSH");
+        assert_eq!(parsed.len(), 3);
+
+        assert_eq!(parsed[0].name, "prod-api");
+        assert_eq!(parsed[0].folder, "OpenSSH");
+        if let SessionType::Ssh {
+            ref host,
+            port,
+            ref user,
+            ref auth_method,
+            ref key_path,
+            ref jump_host,
+            tunnel_x11,
+        } = parsed[0].session_type
+        {
+            assert_eq!(host, "203.0.113.10");
+            assert_eq!(port, 2222);
+            assert_eq!(user, "deploy");
+            assert_eq!(*auth_method, AuthMethod::PrivateKey);
+            assert!(key_path.as_deref().unwrap_or("").ends_with(".ssh/id_ed25519"));
+            assert_eq!(jump_host.as_deref(), Some("bastion.example.com:22"));
+            assert!(tunnel_x11);
+        } else {
+            panic!("Expected SSH session for prod-api");
+        }
+
+        // db-primary inherits User ubuntu from Host *
+        assert_eq!(parsed[1].name, "db-primary");
+        if let SessionType::Ssh { ref host, port, ref user, .. } = parsed[1].session_type {
+            assert_eq!(host, "10.10.0.50");
+            assert_eq!(port, 2200);
+            assert_eq!(user, "ubuntu");
+        } else {
+            panic!("Expected SSH session for db-primary");
+        }
     }
 }

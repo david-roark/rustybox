@@ -551,8 +551,10 @@ impl RustyBoxApp {
             settings_tab: 0,
             show_import_dialog: false,
             import_raw_text: String::new(),
-            import_file_path: "/mnt/d/OneDrive/working/Moba-07-26.txt".into(),
-            import_default_folder: "MobaXterm".into(),
+            import_file_path: crate::session::import_export::default_ssh_config_path()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            import_default_folder: "SSH Profiles".into(),
             import_status_msg: None,
             focus_search: false,
             tokio_runtime,
@@ -1328,30 +1330,49 @@ impl RustyBoxApp {
         }
 
         let mut close = false;
-        egui::Window::new("📁 Import Sessions (MobaXterm / .txt / .ini / .mxtpro / JSON)")
-            .default_size(egui::vec2(680.0, 540.0))
+        egui::Window::new("📁 Import SSH Profiles (~/.ssh/config / MobaXterm / .txt / .ini / JSON)")
+            .default_size(egui::vec2(680.0, 560.0))
             .resizable(true)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading(RichText::new("Import Sessions into RustyBox").color(Color32::from_rgb(56, 189, 248)));
-                ui.label("Import server bookmarks and credentials directly from MobaXterm exports, configuration files, or server lists.");
+                ui.heading(RichText::new("Import SSH Profiles & Sessions into RustyBox").color(Color32::from_rgb(56, 189, 248)));
+                ui.label("Import SSH profiles from OpenSSH (~/.ssh/config), MobaXterm (.txt/.ini/.mxtpro), server lists, or JSON.");
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Target Folder:").strong());
                     ui.text_edit_singleline(&mut self.import_default_folder);
-                    ui.label(RichText::new("(e.g. MobaXterm, Production, Servers)").size(11.0).color(Color32::GRAY));
+                    ui.label(RichText::new("(e.g. SSH Profiles, OpenSSH, MobaXterm, Production)").size(11.0).color(Color32::GRAY));
                 });
                 ui.add_space(8.0);
 
                 ui.group(|ui| {
-                    ui.label(RichText::new("Option A: Load from File on Disk").strong());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Option A: Load from File on Disk").strong());
+                        if let Some(ssh_cfg_path) = crate::session::import_export::default_ssh_config_path() {
+                            if ui.button(RichText::new("🔑 Load ~/.ssh/config").color(Color32::from_rgb(56, 189, 248))).clicked() {
+                                let p_str = ssh_cfg_path.to_string_lossy().to_string();
+                                self.import_file_path = p_str.clone();
+                                match std::fs::read_to_string(&ssh_cfg_path) {
+                                    Ok(content) => {
+                                        let len = content.len();
+                                        self.import_raw_text = content;
+                                        self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, p_str), false));
+                                    }
+                                    Err(e) => {
+                                        self.import_status_msg = Some((format!("Cannot read '{}': {}", p_str, e), true));
+                                    }
+                                }
+                            }
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.add(TextEdit::singleline(&mut self.import_file_path).desired_width(ui.available_width() - 170.0));
                         if ui.button("📂 Browse...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Supported Files", &["txt", "ini", "mxtpro", "csv", "json"])
+                                .add_filter("SSH & Session Files", &["config", "txt", "ini", "mxtpro", "csv", "json"])
+                                .add_filter("All Files", &["*"])
                                 .pick_file()
                             {
                                 self.import_file_path = path.to_string_lossy().to_string();
@@ -1375,15 +1396,15 @@ impl RustyBoxApp {
                 ui.add_space(8.0);
 
                 ui.group(|ui| {
-                    ui.label(RichText::new("Option B: Paste Session Text / MobaXterm Data directly").strong());
-                    ui.label(RichText::new("Supports MobaXterm bookmark lines (#109#...), user@host=password, host:port=password, or JSON").size(11.0).color(Color32::GRAY));
+                    ui.label(RichText::new("Option B: Paste OpenSSH Config / MobaXterm / Session Text directly").strong());
+                    ui.label(RichText::new("Supports OpenSSH (Host/HostName/User/Port/IdentityFile), MobaXterm (#109#...), user@host=pass, or JSON").size(11.0).color(Color32::GRAY));
                     ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                         ui.add(
                             TextEdit::multiline(&mut self.import_raw_text)
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(10)
-                                .hint_text("Paste your MobaXterm export, server list, or JSON here...")
+                                .hint_text("Paste ~/.ssh/config, MobaXterm export, user@host:port, or JSON here...")
                         );
                     });
                 });
@@ -3064,6 +3085,9 @@ impl eframe::App for RustyBoxApp {
                                 }
                                 if chip(ui, "🌐 New Session").clicked() {
                                     self.new_session_dialog.open_for_new();
+                                }
+                                if chip(ui, "📥 Import SSH").clicked() {
+                                    self.show_import_dialog = true;
                                 }
                                 if chip(ui, "📡 NetScan").clicked() {
                                     self.show_network_tools = true;
