@@ -5087,7 +5087,7 @@ Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 5.15.0-105-generic x86_64)
   Swap usage:                       1%
   Processes:                        169
   Users logged in:                  0
-  IPv4 address for enp1s0:          45.76.150.226
+  IPv4 address for enp1s0:          198.51.100.42
 
 demouser1@vultr:~$ 
 "#;
@@ -5101,11 +5101,11 @@ demouser1@vultr:~$
 
     #[test]
     fn test_detect_remote_session_from_title() {
-        let title = "root@45.76.150.226: ~";
-        let screen = "root@45.76.150.226:~# ls\n";
+        let title = "root@198.51.100.42: ~";
+        let screen = "root@198.51.100.42:~# ls\n";
         let detected = detect_remote_session(title, screen, "LONG-PC").expect("should detect remote session");
         assert_eq!(detected.user, "root");
-        assert_eq!(detected.host, "45.76.150.226");
+        assert_eq!(detected.host, "198.51.100.42");
     }
 
     #[test]

@@ -398,13 +398,24 @@ impl NetworkTools {
                                                 logs_inner.lock().push(format!("Peer {} -> {} {}", peer, parts.first().unwrap_or(&""), path));
 
                                                 let decoded_path = percent_decode(path);
-                                                let target = if decoded_path == "/" {
+                                                let clean_path = decoded_path.trim_start_matches('/');
+                                                let target = if clean_path.is_empty() {
                                                     root_dir.clone()
                                                 } else {
-                                                    root_dir.join(decoded_path.trim_start_matches('/'))
+                                                    root_dir.join(clean_path)
                                                 };
 
-                                                if target.is_dir() {
+                                                // Security: Path traversal protection against directory traversal attacks
+                                                let is_safe = match (target.canonicalize(), root_dir.canonicalize()) {
+                                                    (Ok(c_target), Ok(c_root)) => c_target.starts_with(&c_root),
+                                                    _ => false,
+                                                };
+
+                                                if !is_safe {
+                                                    let forbidden = "403 Forbidden: Access Denied";
+                                                    let response = format!("HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", forbidden.len(), forbidden);
+                                                    let _ = socket.write_all(response.as_bytes()).await;
+                                                } else if target.is_dir() {
                                                     let mut html = format!("<html><head><title>RustyBox File Server</title><meta charset='utf-8'></head><body style='font-family:sans-serif;background:#1e1e24;color:#eee;padding:20px;'><h2>📁 Index of {}</h2><hr><ul>", path);
                                                     if let Ok(entries) = std::fs::read_dir(&target) {
                                                         for entry in entries.flatten() {
@@ -646,5 +657,26 @@ fn parse_proc_addr(hex_str: &str) -> String {
         format!("{}.{}.{}.{}:{}", b1, b2, b3, b4, port)
     } else {
         hex_str.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_traversal_detection() {
+        let base = std::env::temp_dir();
+        let safe_sub = base.join("safe_test_folder");
+        let _ = std::fs::create_dir_all(&safe_sub);
+
+        // Target trying to escape via ..
+        let malicious_target = safe_sub.join("../../etc/passwd");
+        let is_safe = match (malicious_target.canonicalize(), safe_sub.canonicalize()) {
+            (Ok(c_target), Ok(c_root)) => c_target.starts_with(&c_root),
+            _ => false,
+        };
+        assert!(!is_safe, "Path traversal must be detected and rejected!");
+        let _ = std::fs::remove_dir_all(&safe_sub);
     }
 }

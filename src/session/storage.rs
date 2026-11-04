@@ -351,14 +351,25 @@ impl StorageManager {
             Ok(())
         })();
 
-        if write_part.is_ok() {
+        let res = if write_part.is_ok() {
             if fs::rename(&part_path, &self.file_path).is_ok() {
-                return Ok(());
+                Ok(())
+            } else {
+                let _ = fs::remove_file(&part_path);
+                fs::write(&self.file_path, data).map_err(|e| e.to_string())
             }
-            let _ = fs::remove_file(&part_path);
+        } else {
+            fs::write(&self.file_path, data).map_err(|e| e.to_string())
+        };
+
+        #[cfg(unix)]
+        if res.is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.data_dir, fs::Permissions::from_mode(0o700));
+            let _ = fs::set_permissions(&self.file_path, fs::Permissions::from_mode(0o600));
         }
 
-        fs::write(&self.file_path, data).map_err(|e| e.to_string())
+        res
     }
 
     /// Startup check:

@@ -1,6 +1,10 @@
 # Build targets
 /target
 
+# Configuration and user data
+/data
+data/
+
 # Temporary test screenshots and crops
 *.png
 crop_*.png
