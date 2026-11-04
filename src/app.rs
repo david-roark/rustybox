@@ -677,39 +677,7 @@ impl RustyBoxApp {
     }
 
     pub fn record_session_connected(&mut self, s: &mut Session) {
-        s.mark_connected();
-        if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == s.id) {
-            existing.last_connected_at = s.last_connected_at.clone();
-            existing.connect_count = existing.connect_count.saturating_add(1);
-            s.connect_count = existing.connect_count;
-        } else if let SessionType::Ssh {
-            ref host,
-            port,
-            ref user,
-            ..
-        } = s.session_type
-        {
-            if let Some(existing) = self.sessions.iter_mut().find(|item| {
-                matches!(
-                    &item.session_type,
-                    SessionType::Ssh {
-                        host: eh,
-                        port: ep,
-                        user: eu,
-                        ..
-                    } if eh == host && *ep == port && eu == user
-                )
-            }) {
-                existing.last_connected_at = s.last_connected_at.clone();
-                existing.connect_count = existing.connect_count.saturating_add(1);
-                s.id = existing.id.clone();
-                s.connect_count = existing.connect_count;
-            } else {
-                self.sessions.push(s.clone());
-            }
-        } else {
-            self.sessions.push(s.clone());
-        }
+        Session::record_in_list(&mut self.sessions, s);
         let _ = self.storage.save_sessions(&self.sessions);
     }
 
@@ -3358,13 +3326,7 @@ impl eframe::App for RustyBoxApp {
                     };
 
                     // Section 1: Recent Connections (Đã từng kết nối)
-                    let mut recent_sessions: Vec<Session> = self
-                        .sessions
-                        .iter()
-                        .filter(|s| s.last_connected_at.is_some() && s.matches_filter(&self.home_session_filter))
-                        .cloned()
-                        .collect();
-                    recent_sessions.sort_by(|a, b| b.last_connected_at.cmp(&a.last_connected_at));
+                    let recent_sessions = Session::recent_sessions(&self.sessions, &self.home_session_filter);
 
                     ui.label(
                         RichText::new(format!("🕒 Recent Connections ({})", recent_sessions.len()))
@@ -3414,12 +3376,7 @@ impl eframe::App for RustyBoxApp {
                     ui.add_space(18.0);
 
                     // Section 2: Saved Sessions (Danh bạ đã lưu)
-                    let saved_sessions: Vec<Session> = self
-                        .sessions
-                        .iter()
-                        .filter(|s| s.matches_filter(&self.home_session_filter))
-                        .cloned()
-                        .collect();
+                    let saved_sessions = Session::saved_sessions(&self.sessions, &self.home_session_filter);
 
                     ui.label(
                         RichText::new(format!("📂 Saved Sessions ({})", saved_sessions.len()))

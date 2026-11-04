@@ -307,6 +307,66 @@ impl Session {
             || self.connection_subtitle().to_lowercase().contains(&q)
     }
 
+    /// Records `s` as connected inside `sessions` list:
+    /// - Updates `last_connected_at` and increments `connect_count` if matched by `id` or `(host, port, user)`.
+    /// - Appends `s` to `sessions` if it is a new Quick Connect / ad-hoc session not yet saved.
+    pub fn record_in_list(sessions: &mut Vec<Session>, s: &mut Session) {
+        s.mark_connected();
+        if let Some(existing) = sessions.iter_mut().find(|item| item.id == s.id) {
+            existing.last_connected_at = s.last_connected_at.clone();
+            existing.connect_count = existing.connect_count.saturating_add(1);
+            s.connect_count = existing.connect_count;
+        } else if let SessionType::Ssh {
+            ref host,
+            port,
+            ref user,
+            ..
+        } = s.session_type
+        {
+            if let Some(existing) = sessions.iter_mut().find(|item| {
+                matches!(
+                    &item.session_type,
+                    SessionType::Ssh {
+                        host: eh,
+                        port: ep,
+                        user: eu,
+                        ..
+                    } if eh == host && *ep == port && eu == user
+                )
+            }) {
+                existing.last_connected_at = s.last_connected_at.clone();
+                existing.connect_count = existing.connect_count.saturating_add(1);
+                s.id = existing.id.clone();
+                s.connect_count = existing.connect_count;
+            } else {
+                sessions.push(s.clone());
+            }
+        } else {
+            sessions.push(s.clone());
+        }
+    }
+
+    /// Returns sessions that have been connected at least once (`last_connected_at.is_some()`),
+    /// filtered by `query` and sorted from most-recently connected to oldest.
+    pub fn recent_sessions(sessions: &[Session], query: &str) -> Vec<Session> {
+        let mut recent: Vec<Session> = sessions
+            .iter()
+            .filter(|s| s.last_connected_at.is_some() && s.matches_filter(query))
+            .cloned()
+            .collect();
+        recent.sort_by(|a, b| b.last_connected_at.cmp(&a.last_connected_at));
+        recent
+    }
+
+    /// Returns all saved sessions matching `query`.
+    pub fn saved_sessions(sessions: &[Session], query: &str) -> Vec<Session> {
+        sessions
+            .iter()
+            .filter(|s| s.matches_filter(query))
+            .cloned()
+            .collect()
+    }
+
     /// Formats the session label in RustyBox style: `51.79.157.8 (ruby) - dev-vn`
     pub fn rusty_label(&self) -> String {
         match &self.session_type {
@@ -371,5 +431,156 @@ mod tests {
         assert!(s.matches_filter("10.0.1.25"));
         assert!(s.matches_filter("deploy"));
         assert!(!s.matches_filter("staging"));
+    }
+
+    #[test]
+    fn test_connection_subtitle_all_session_types() {
+        let mut s = Session::new_local("Local", "Default");
+        assert_eq!(s.connection_subtitle(), "Local Shell");
+
+        s.session_type = SessionType::LocalShell {
+            custom_shell: Some("/bin/zsh".into()),
+            working_dir: None,
+        };
+        assert_eq!(s.connection_subtitle(), "/bin/zsh");
+
+        s.session_type = SessionType::Rdp {
+            host: "192.168.1.50".into(),
+            port: 3389,
+            user: "Administrator".into(),
+        };
+        assert_eq!(s.connection_subtitle(), "rdp://Administrator@192.168.1.50:3389");
+
+        s.session_type = SessionType::Ftp {
+            host: "files.example.com".into(),
+            port: 21,
+            user: "ftpuser".into(),
+        };
+        assert_eq!(s.connection_subtitle(), "sftp://ftpuser@files.example.com:21");
+
+        s.session_type = SessionType::Telnet {
+            host: "10.0.0.1".into(),
+            port: 23,
+        };
+        assert_eq!(s.connection_subtitle(), "telnet://10.0.0.1:23");
+
+        s.session_type = SessionType::Vnc {
+            host: "10.0.0.2".into(),
+            port: 5901,
+        };
+        assert_eq!(s.connection_subtitle(), "vnc://10.0.0.2:5901");
+
+        s.session_type = SessionType::Serial {
+            port_name: "COM3".into(),
+            baud_rate: 115200,
+        };
+        assert_eq!(s.connection_subtitle(), "COM3 @ 115200 baud");
+
+        s.session_type = SessionType::Wsl {
+            distro: "Ubuntu-24.04".into(),
+            user: Some("david".into()),
+            working_dir: None,
+        };
+        assert_eq!(s.connection_subtitle(), "WSL: Ubuntu-24.04 (david)");
+    }
+
+    #[test]
+    fn test_record_in_list_updates_existing_and_persists_quick_connect() {
+        let s1 = Session::new_ssh("Web-01", "Prod", "10.10.1.1", 22, "ubuntu");
+        let s2 = Session::new_ssh("DB-01", "Prod", "10.10.1.2", 22, "postgres");
+        let mut sessions = vec![s1.clone(), s2.clone()];
+
+        // Initially no recent connections
+        assert!(Session::recent_sessions(&sessions, "").is_empty());
+        assert_eq!(Session::saved_sessions(&sessions, "").len(), 2);
+
+        // 1. Connect to existing session by ID
+        let mut launch_s1 = s1.clone();
+        Session::record_in_list(&mut sessions, &mut launch_s1);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].connect_count, 1);
+        assert!(sessions[0].last_connected_at.is_some());
+
+        // 2. Quick Connect to the same host:port:user (different temporary UUID) deduplicates!
+        let mut quick_dup = Session::new_ssh("ubuntu@10.10.1.1", "Quick Connect", "10.10.1.1", 22, "ubuntu");
+        Session::record_in_list(&mut sessions, &mut quick_dup);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].connect_count, 2);
+        assert_eq!(quick_dup.id, s1.id);
+
+        // 3. Quick Connect to a brand-new host adds it to saved & recent sessions
+        let mut quick_new = Session::new_ssh("root@192.168.99.99", "Quick Connect", "192.168.99.99", 2222, "root");
+        Session::record_in_list(&mut sessions, &mut quick_new);
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(sessions[2].folder, "Quick Connect");
+        assert_eq!(sessions[2].connect_count, 1);
+    }
+
+    #[test]
+    fn test_recent_and_saved_sessions_sorting_and_filtering() {
+        let mut s1 = Session::new_ssh("Alpha", "Staging", "10.0.0.1", 22, "alice");
+        s1.last_connected_at = Some("2026-11-04T10:00:00+07:00".into());
+        s1.connect_count = 2;
+
+        let mut s2 = Session::new_ssh("Beta", "Production", "10.0.0.2", 22, "bob");
+        s2.last_connected_at = Some("2026-11-04T12:30:00+07:00".into());
+        s2.connect_count = 5;
+
+        let s3 = Session::new_ssh("Gamma (Never Connected)", "Production", "10.0.0.3", 22, "charlie");
+
+        let sessions = vec![s1, s2, s3];
+
+        // Recent connections only include connected sessions, ordered newest first (Beta -> Alpha)
+        let recent = Session::recent_sessions(&sessions, "");
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].name, "Beta");
+        assert_eq!(recent[1].name, "Alpha");
+        assert_eq!(recent[0].last_connected_display().as_deref(), Some("2026-11-04 12:30"));
+
+        // Filter recent by user or folder
+        let recent_staging = Session::recent_sessions(&sessions, "staging");
+        assert_eq!(recent_staging.len(), 1);
+        assert_eq!(recent_staging[0].name, "Alpha");
+
+        // Saved sessions include all 3, and filter works across name/folder/host/user
+        assert_eq!(Session::saved_sessions(&sessions, "").len(), 3);
+        assert_eq!(Session::saved_sessions(&sessions, "production").len(), 2);
+        assert_eq!(Session::saved_sessions(&sessions, "charlie").len(), 1);
+        assert_eq!(Session::saved_sessions(&sessions, "10.0.0.2").len(), 1);
+    }
+
+    #[test]
+    fn test_backward_compatible_deserialization_and_edit_preservation() {
+        // Legacy JSON without last_connected_at or connect_count
+        let legacy_json = r#"{
+            "id": "legacy-1",
+            "name": "Legacy Server",
+            "folder": "Servers",
+            "session_type": {
+                "Ssh": {
+                    "host": "172.16.0.10",
+                    "port": 22,
+                    "user": "admin",
+                    "auth_method": "Password",
+                    "key_path": null,
+                    "jump_host": null,
+                    "tunnel_x11": false
+                }
+            },
+            "auto_sftp": true,
+            "created_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let mut parsed: Session = serde_json::from_str(legacy_json).expect("legacy session JSON must deserialize");
+        assert!(parsed.last_connected_at.is_none());
+        assert_eq!(parsed.connect_count, 0);
+
+        // Mark connected, then open in NewSessionDialog and verify ID matches
+        parsed.mark_connected();
+        let mut dlg = crate::session::ui::NewSessionDialog::new();
+        dlg.open_for_edit(&parsed);
+        dlg.session_name = "Legacy Server Renamed".into();
+        let edited = dlg.to_session();
+        assert_eq!(edited.id, "legacy-1");
+        assert_eq!(edited.name, "Legacy Server Renamed");
     }
 }
