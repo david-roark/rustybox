@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-48] - 2026-11-04
+
+### Security
+- **Embedded HTTP Server Path Traversal Protection**: Implemented strict canonical path resolution and prefix boundary verification (`canonical_target.starts_with(&canonical_root)`), preventing directory traversal attacks (`../`) and unauthorized host file access.
+- **Credential Storage Hardening**: Enforced POSIX `0600` (read/write owner only) on `data/RustyBox.json` and `0700` on the `data/` directory to prevent local privilege snooping on multi-user systems.
+- **Git Leak Prevention**: Added `/data` and `data/` to `.gitignore` to guarantee user credentials, private session hosts, and backups are never committed or pushed to public repositories.
+- **Test Fixture Sanitization**: Replaced real IP references in unit test fixtures with RFC 5737 reserved testnet addresses (`198.51.100.42`).
+
+---
+
 ## [v1.3-47] - 2026-11-04
 
 ### Fixed
