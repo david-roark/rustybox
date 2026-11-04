@@ -1,1 +1,26 @@
+# Build targets
 /target
+
+# Temporary test screenshots and crops
+*.png
+crop_*.png
+qa_*.png
+test_*.png
+screenshot_*.png
+yesterday_binary_screenshot.png
+
+# Test scripts and temporary reports
+qa_*.py
+test_*.py
+capture_dialogs.py
+qa_reports/
+qa_screenshots/
+qa_verified_reports/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
