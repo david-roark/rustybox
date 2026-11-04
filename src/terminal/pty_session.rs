@@ -71,10 +71,10 @@ impl PtySession {
         {
             let shell_name = if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" };
             let banner = format!(
-                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
-                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local Terminal ({})\x1b[0m\r\n\
-                 \x1b[32m  ✔\x1b[0m Interactive Shell  \x1b[32m✔\x1b[0m VT100/ANSI Emulation  \x1b[32m✔\x1b[0m UTF-8\r\n\
-                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n",
+                "\x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n\
+                 \x1b[1;37m  Terminal :\x1b[0m \x1b[1;36mRustyBox Local ({})\x1b[0m\r\n\
+                 \x1b[32m  ✔\x1b[0m Shell   \x1b[32m✔\x1b[0m VT100/ANSI   \x1b[32m✔\x1b[0m UTF-8\r\n\
+                 \x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n\r\n",
                 shell_name
             );
             let mut p = sess.parser.lock();
@@ -144,11 +144,11 @@ impl PtySession {
         let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title, password.map(|p| p.to_string()), true)?;
         {
             let banner = format!(
-                "\x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\
+                "\x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n\
                  \x1b[1;37m  Session :\x1b[0m \x1b[1;36m{}@{}:{}\x1b[0m\r\n\
-                 \x1b[32m  ✔\x1b[0m Direct SSH      \x1b[32m✔\x1b[0m SSH compression\r\n\
-                 \x1b[32m  ✔\x1b[0m SSH-browser     \x1b[32m✔\x1b[0m X11-forwarding\r\n\
-                 \x1b[38;5;75m────────────────────────────────────────────────────────────────────────\x1b[0m\r\n",
+                 \x1b[32m  ✔\x1b[0m Direct SSH      \x1b[32m✔\x1b[0m Compression\r\n\
+                 \x1b[32m  ✔\x1b[0m SFTP Browser    \x1b[32m✔\x1b[0m X11 Forward\r\n\
+                 \x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n",
                 if user.is_empty() { "root" } else { user },
                 host,
                 port

@@ -50,55 +50,59 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
         }
 
         // 2. MobaXterm INI bookmark line:
-        // Name=#109#1#Host#Port#User#...
-        if let Some(eq_pos) = line.find("=#") {
-            let name = line[..eq_pos].trim();
-            let def_part = &line[eq_pos + 2..]; // skips "=#"
-            let tokens: Vec<&str> = def_part.split('#').collect();
-            // Typically: type_id (e.g. 109=SSH), opt, host, port, user...
-            if tokens.len() >= 5 {
-                let type_id = tokens[0];
-                let host = tokens[2].trim();
-                let port: u16 = tokens[3].trim().parse().unwrap_or(22);
-                let user = tokens[4].trim();
+        // Name=#109#1#Host#Port#User#... or Name = #109#0%Host%Port%User%...
+        if let Some((left, right)) = line.split_once('=') {
+            let right_trimmed = right.trim();
+            if right_trimmed.starts_with('#') {
+                let name = left.trim();
+                let def_part = right_trimmed.trim_start_matches('#');
+                // Tokens can be separated by '#' or '%'
+                let tokens: Vec<&str> = def_part.split(|c| c == '#' || c == '%').collect();
+                // Typically: type_id (e.g. 109=SSH, 91=RDP), opt/sub_type, host, port, user...
+                if tokens.len() >= 5 {
+                    let type_id = tokens[0].trim();
+                    let host = tokens[2].trim();
+                    let port: u16 = tokens[3].trim().parse().unwrap_or(22);
+                    let user = tokens[4].trim();
 
-                if !host.is_empty() {
-                    let mut s = if type_id == "109" || type_id == "1" {
-                        Session::new_ssh(
-                            if name.is_empty() { host } else { name },
-                            &current_folder,
-                            host,
-                            port,
-                            if user.is_empty() { "root" } else { user },
-                        )
-                    } else if type_id == "91" {
-                        Session {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            name: if name.is_empty() { host.to_string() } else { name.to_string() },
-                            folder: current_folder.clone(),
-                            session_type: SessionType::Rdp {
-                                host: host.to_string(),
+                    if !host.is_empty() {
+                        let mut s = if type_id == "109" || type_id == "1" {
+                            Session::new_ssh(
+                                if name.is_empty() { host } else { name },
+                                &current_folder,
+                                host,
                                 port,
-                                user: user.to_string(),
-                            },
-                            auto_sftp: false,
-                            created_at: chrono::Local::now().to_rfc3339(),
-                            password: None,
-                            save_password: false,
-                            ..Session::new_local(name, &current_folder)
-                        }
-                    } else {
-                        Session::new_ssh(
-                            if name.is_empty() { host } else { name },
-                            &current_folder,
-                            host,
-                            port,
-                            if user.is_empty() { "root" } else { user },
-                        )
-                    };
-                    s.save_password = true;
-                    sessions.push(s);
-                    continue;
+                                if user.is_empty() { "root" } else { user },
+                            )
+                        } else if type_id == "91" {
+                            Session {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: if name.is_empty() { host.to_string() } else { name.to_string() },
+                                folder: current_folder.clone(),
+                                session_type: SessionType::Rdp {
+                                    host: host.to_string(),
+                                    port,
+                                    user: user.to_string(),
+                                },
+                                auto_sftp: false,
+                                created_at: chrono::Local::now().to_rfc3339(),
+                                password: None,
+                                save_password: false,
+                                ..Session::new_local(name, &current_folder)
+                            }
+                        } else {
+                            Session::new_ssh(
+                                if name.is_empty() { host } else { name },
+                                &current_folder,
+                                host,
+                                port,
+                                if user.is_empty() { "root" } else { user },
+                            )
+                        };
+                        s.save_password = true;
+                        sessions.push(s);
+                        continue;
+                    }
                 }
             }
         }

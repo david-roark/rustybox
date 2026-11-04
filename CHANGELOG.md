@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-55] - 2026-11-04
+### Added
+- **Automated Stress Testing & Simulation Suite**:
+  - Bổ sung bộ kiểm thử `tests/stress_user_simulation.rs` bao quát 100 chu kỳ cho Session CRUD, Vault AES-256-GCM / Argon2id, Credentials management và import bookmarks.
+  - Xây dựng kịch bản kiểm thử GUI tự động `tests/qa_simulation_runner.py` trên Xvfb đo lường độ ổn định bộ nhớ và tương tác form.
+
+### Fixed & Improved
+- **New Session Dialog Validation**:
+  - Bắt buộc kiểm tra Host/IP trước khi lưu session SSH/Telnet/RDP/VNC/FTP.
+  - Hiển thị thông báo lỗi `⚠️` rõ ràng ngay trên modal thay vì im lặng đóng form hoặc sinh cấu hình rỗng.
+- **Terminal Welcome Banner Fitting**:
+  - Rút ngắn độ rộng dòng phân cách banner chào Local Terminal và SSH xuống ~50 ký tự, loại bỏ hoàn toàn hiện tượng vỡ dòng hoặc rớt chữ `UTF-8` khi chia đôi hoặc chia 4 màn hình (`2x2 Grid`).
+- **Bottom Status & Telemetry Bar Layout**:
+  - Phân vùng độc lập giữa thanh Quick Macros và System Telemetry; hỗ trợ cuộn ngang linh hoạt cho macros, ngăn chặn việc chip telemetry che khuất nút lệnh `clear`.
+- **Dynamic Tab Width & Ellipsis**:
+  - Tối ưu dải co giãn tab (100px - 180px) và thuật toán cắt chuỗi tự động theo độ rộng thực tế của từng tab.
+- **Fault-Tolerant MobaXterm Parser**:
+  - Hỗ trợ linh hoạt cả hai ký tự phân cách `#` và `%` trong định dạng bookmark của MobaXterm.
+
 ## [v1.3-54] - 2026-11-04
 ### Added
 - **Auto-Prompt Master Password Vault on Startup**:

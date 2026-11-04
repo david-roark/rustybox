@@ -506,7 +506,6 @@ impl StorageManager {
             .ok_or_else(|| "Invalid RustyBox JSON configuration format".to_string())
     }
 
-    #[cfg(test)]
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
         let file_path = data_dir.join("RustyBox.json");
         Self {

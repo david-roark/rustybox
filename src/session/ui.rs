@@ -100,6 +100,7 @@ pub struct NewSessionDialog {
     pub term_cursor_shape: usize,
     pub term_cursor_blink: bool,
     pub startup_macro: String,
+    pub validation_error: Option<String>,
 }
 
 impl NewSessionDialog {
@@ -187,11 +188,13 @@ impl NewSessionDialog {
             term_cursor_shape: 0,
             term_cursor_blink: true,
             startup_macro: "None".into(),
+            validation_error: None,
         }
     }
 
     pub fn open_for_new(&mut self) {
         self.is_open = true;
+        self.validation_error = None;
         self.editing_session_id = None;
         self.protocol_tab = 0; // Default to SSH protocol tab
         self.session_name.clear();
@@ -211,6 +214,7 @@ impl NewSessionDialog {
 
     pub fn open_for_edit(&mut self, s: &Session) {
         self.is_open = true;
+        self.validation_error = None;
         self.editing_session_id = Some(s.id.clone());
         self.session_name = s.name.clone();
         self.folder_name = s.folder.clone();
@@ -1625,15 +1629,35 @@ pub fn render_new_session_dialog(
             ui.separator();
             ui.add_space(6.0);
 
+            if let Some(ref err) = dialog.validation_error {
+                ui.add_space(2.0);
+                ui.label(RichText::new(format!("⚠️ {}", err)).color(Color32::from_rgb(239, 68, 68)).strong().size(11.5));
+                ui.add_space(2.0);
+            }
+
             // 4. CENTERED RUSTYBOX OK / CANCEL BUTTONS
             let (ok_clicked, cancel_clicked) =
                 rusty_ok_cancel_buttons(ui, "✔  OK", "✖  Cancel");
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ok_clicked || enter_pressed {
-                create_session = Some(dialog.to_session());
-                close_dialog = true;
+                let (is_valid, err_msg) = match dialog.protocol_tab {
+                    0 if dialog.ssh_host.trim().is_empty() => (false, "Please specify a remote host/IP address for SSH."),
+                    3 if dialog.telnet_host.trim().is_empty() => (false, "Please specify a remote host/IP address for Telnet."),
+                    4 if dialog.rdp_host.trim().is_empty() => (false, "Please specify a remote host/IP address for RDP."),
+                    5 if dialog.vnc_host.trim().is_empty() => (false, "Please specify a remote host/IP address for VNC."),
+                    6 | 8 if dialog.ftp_host.trim().is_empty() => (false, "Please specify a remote host/IP address for FTP/SFTP."),
+                    _ => (true, ""),
+                };
+                if is_valid {
+                    dialog.validation_error = None;
+                    create_session = Some(dialog.to_session());
+                    close_dialog = true;
+                } else {
+                    dialog.validation_error = Some(err_msg.to_string());
+                }
             }
             if cancel_clicked || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                dialog.validation_error = None;
                 close_dialog = true;
             }
         });

@@ -1583,7 +1583,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-54")
+                                RichText::new("v1.3-55")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -2109,46 +2109,62 @@ impl eframe::App for RustyBoxApp {
             )
             .min_height(26.0)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    // LEFT: QUICK MACROS
-                    ui.label(RichText::new("⚡ Quick:").weak().size(11.0).color(Color32::from_rgb(148, 163, 184)));
-                    let mut macro_to_run: Option<String> = None;
-                    for (name, cmd) in &self.quick_macros {
-                        let pill = egui::Button::new(
-                            RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 245))
-                        )
-                        .fill(Color32::from_rgb(22, 28, 40))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
-                        .rounding(6.0);
-                        if ui.add(pill).clicked() {
-                            macro_to_run = Some(cmd.clone());
-                        }
-                    }
-                    if ui.add(
-                        egui::Button::new(RichText::new("⚙ Manage").size(11.0).color(Color32::from_rgb(148, 163, 184)))
-                            .fill(Color32::from_rgb(18, 23, 33))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 40, 56)))
-                            .rounding(5.0)
-                    ).clicked() {
-                        self.show_macro_manager = true;
-                    }
-                    if let Some(cmd) = macro_to_run {
-                        self.execute_macro(&cmd);
-                    }
+                let avail_w = ui.available_width();
+                let telem_w = 660.0f32.min(avail_w * 0.55);
+                let macros_w = (avail_w - telem_w - 12.0).max(100.0);
 
-                    // RIGHT: LIVE SYSTEM TELEMETRY MONITOR (per active tab / server)
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let telem = self.get_active_telemetry();
-                        let stat_chip = |ui: &mut egui::Ui, text: RichText| {
-                            egui::Frame::none()
-                                .fill(Color32::from_rgb(18, 24, 35))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                let bottom_rect = ui.available_rect_before_wrap();
+                let macros_rect = egui::Rect::from_min_max(bottom_rect.min, pos2(bottom_rect.min.x + macros_w, bottom_rect.max.y));
+                let telem_rect = egui::Rect::from_min_max(pos2(bottom_rect.max.x - telem_w, bottom_rect.min.y), bottom_rect.max);
+
+                // LEFT: QUICK MACROS (Scrollable without scrollbar so it never collides with telemetry)
+                let mut macros_ui = ui.new_child(egui::UiBuilder::new().max_rect(macros_rect).layout(Layout::left_to_right(Align::Center)));
+                egui::ScrollArea::horizontal()
+                    .id_salt("quick_macros_scroll")
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut macros_ui, |ui| {
+                        ui.label(RichText::new("⚡ Quick:").weak().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                        let mut macro_to_run: Option<String> = None;
+                        for (name, cmd) in &self.quick_macros {
+                            let pill = egui::Button::new(
+                                RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 245))
+                            )
+                            .fill(Color32::from_rgb(22, 28, 40))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                            .rounding(6.0);
+                            if ui.add(pill).clicked() {
+                                macro_to_run = Some(cmd.clone());
+                            }
+                        }
+                        if ui.add(
+                            egui::Button::new(RichText::new("⚙ Manage").size(11.0).color(Color32::from_rgb(148, 163, 184)))
+                                .fill(Color32::from_rgb(18, 23, 33))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 40, 56)))
                                 .rounding(5.0)
-                                .inner_margin(egui::Margin::symmetric(7.0, 2.0))
-                                .show(ui, |ui| {
-                                    ui.label(text);
-                                });
-                        };
+                        ).clicked() {
+                            self.show_macro_manager = true;
+                        }
+                        if let Some(cmd) = macro_to_run {
+                            self.execute_macro(&cmd);
+                        }
+                    });
+
+                // RIGHT: LIVE SYSTEM TELEMETRY MONITOR (per active tab / server)
+                let mut telem_ui = ui.new_child(egui::UiBuilder::new().max_rect(telem_rect).layout(Layout::right_to_left(Align::Center)));
+                {
+                    let ui = &mut telem_ui;
+                    let telem = self.get_active_telemetry();
+                    let stat_chip = |ui: &mut egui::Ui, text: RichText| {
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(18, 24, 35))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                            .rounding(5.0)
+                            .inner_margin(egui::Margin::symmetric(6.0, 1.5))
+                            .show(ui, |ui| {
+                                ui.label(text);
+                            });
+                    };
 
                         // 1. Host (Far right)
                         stat_chip(ui, RichText::new(format!("🖥 {}", telem.host)).strong().size(10.5).color(Color32::WHITE));
@@ -2229,8 +2245,7 @@ impl eframe::App for RustyBoxApp {
                         } else {
                             stat_chip(ui, RichText::new("✕ Disconnected").color(Color32::from_rgb(239, 68, 68)).size(10.5).strong());
                         }
-                    });
-                });
+                    }
             });
 
         // 5. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
@@ -2609,9 +2624,9 @@ impl eframe::App for RustyBoxApp {
             let mut tab_menu_action: Option<(usize, TabMenuAction)> = None;
 
             // Dynamic tab width: smoothly scales so all tabs fit cleanly without clipping
-            let avail_tabs_w = (tabs_rect.width() - 95.0).max(60.0);
+            let avail_tabs_w = (tabs_rect.width() - 85.0).max(60.0);
             let num_tabs = self.open_tabs.len().max(1);
-            let dynamic_tab_w = ((avail_tabs_w - 32.0) / num_tabs as f32).clamp(80.0, 140.0);
+            let dynamic_tab_w = ((avail_tabs_w - 20.0) / num_tabs as f32).clamp(100.0, 180.0);
 
             // 1. TABS AREA (Home + Scrollable tab strip)
             let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect).layout(Layout::left_to_right(Align::Center)));
@@ -2752,16 +2767,10 @@ impl eframe::App for RustyBoxApp {
                                     ">_ "
                                 };
 
-                                // Title text with ellipsis truncation so it never overflows
+                                // Title text with dynamic truncation based on actual tab width
                                 let full_title = format!("{}{}", icon, &tab.title);
                                 let clean_title = tab.title.trim_start_matches("SSH: ").trim();
-                                let max_chars = if tab_w < 95.0 {
-                                    5
-                                } else if tab_w < 115.0 {
-                                    8
-                                } else {
-                                    11
-                                };
+                                let max_chars = (((tab_w - 38.0) / 7.0) as usize).clamp(7, 22);
                                 let display_title = if clean_title.chars().count() > max_chars {
                                     let s: String = clean_title.chars().take(max_chars.saturating_sub(1)).collect();
                                     format!("{}{}\u{2026}", icon, s)
