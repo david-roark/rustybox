@@ -8,6 +8,7 @@ pub struct NewSessionDialog {
     pub is_open: bool,
     pub editing_session_id: Option<String>,
     pub request_open_passwords: bool,
+    pub request_open_import: bool,
     pub available_credentials: Vec<crate::session::storage::Credential>,
     pub session_name: String,
     pub folder_name: String,
@@ -109,6 +110,7 @@ impl NewSessionDialog {
             is_open: false,
             editing_session_id: None,
             request_open_passwords: false,
+            request_open_import: false,
             available_credentials: Vec::new(),
             session_name: "".into(),
             folder_name: "Servers".into(),
@@ -1623,6 +1625,10 @@ pub fn render_new_session_dialog(
                     let prev_tab = dialog.protocol_tab;
                     dialog.open_for_new();
                     dialog.protocol_tab = prev_tab;
+                }
+                if ui.button(RichText::new("📥 Import SSH Profiles...").color(Color32::from_rgb(56, 189, 248))).clicked() {
+                    dialog.request_open_import = true;
+                    close_dialog = true;
                 }
             });
             ui.add_space(4.0);

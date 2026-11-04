@@ -1329,26 +1329,38 @@ impl RustyBoxApp {
             }
         }
 
+        let mut open_dialog_open = self.show_import_dialog;
         let mut close = false;
-        egui::Window::new("📁 Import SSH Profiles (~/.ssh/config / MobaXterm / .txt / .ini / JSON)")
-            .default_size(egui::vec2(680.0, 560.0))
+        let screen_rect = ctx.screen_rect();
+        let dialog_w = (screen_rect.width() - 48.0).clamp(380.0, 620.0);
+        let dialog_h = (screen_rect.height() - 60.0).clamp(360.0, 520.0);
+
+        egui::Window::new("📥 Import SSH Profiles & Sessions")
+            .open(&mut open_dialog_open)
+            .default_size(egui::vec2(dialog_w, dialog_h))
+            .max_width(dialog_w)
+            .max_height(dialog_h)
             .resizable(true)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading(RichText::new("Import SSH Profiles & Sessions into RustyBox").color(Color32::from_rgb(56, 189, 248)));
-                ui.label("Import SSH profiles from OpenSSH (~/.ssh/config), MobaXterm (.txt/.ini/.mxtpro), server lists, or JSON.");
-                ui.add_space(8.0);
+                let inner_w = (dialog_w - 24.0).max(320.0);
+                ui.set_max_width(inner_w);
 
-                ui.horizontal(|ui| {
+                ui.heading(RichText::new("Import SSH Profiles & Sessions into RustyBox").size(15.0).color(Color32::from_rgb(56, 189, 248)));
+                ui.label(RichText::new("Supports OpenSSH (~/.ssh/config), MobaXterm (.txt/.ini/.mxtpro), server lists, or JSON.").size(11.5));
+                ui.add_space(6.0);
+
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Target Folder:").strong());
-                    ui.text_edit_singleline(&mut self.import_default_folder);
-                    ui.label(RichText::new("(e.g. SSH Profiles, OpenSSH, MobaXterm, Production)").size(11.0).color(Color32::GRAY));
+                    ui.add(TextEdit::singleline(&mut self.import_default_folder).desired_width(180.0));
+                    ui.label(RichText::new("(e.g. SSH Profiles, OpenSSH, MobaXterm)").size(11.0).color(Color32::GRAY));
                 });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 ui.group(|ui| {
-                    ui.horizontal(|ui| {
+                    ui.set_max_width(inner_w - 12.0);
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Option A: Load from File on Disk").strong());
                         if let Some(ssh_cfg_path) = crate::session::import_export::default_ssh_config_path() {
                             if ui.button(RichText::new("🔑 Load ~/.ssh/config").color(Color32::from_rgb(56, 189, 248))).clicked() {
@@ -1367,8 +1379,10 @@ impl RustyBoxApp {
                             }
                         }
                     });
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.add(TextEdit::singleline(&mut self.import_file_path).desired_width(ui.available_width() - 170.0));
+                        let path_w = (ui.available_width() - 175.0).max(140.0);
+                        ui.add(TextEdit::singleline(&mut self.import_file_path).desired_width(path_w));
                         if ui.button("📂 Browse...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("SSH & Session Files", &["config", "txt", "ini", "mxtpro", "csv", "json"])
@@ -1393,23 +1407,24 @@ impl RustyBoxApp {
                     });
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 ui.group(|ui| {
+                    ui.set_max_width(inner_w - 12.0);
                     ui.label(RichText::new("Option B: Paste OpenSSH Config / MobaXterm / Session Text directly").strong());
-                    ui.label(RichText::new("Supports OpenSSH (Host/HostName/User/Port/IdentityFile), MobaXterm (#109#...), user@host=pass, or JSON").size(11.0).color(Color32::GRAY));
-                    ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                    ui.label(RichText::new("Supports OpenSSH (Host/HostName/User/Port/IdentityFile), MobaXterm (#109#...), user@host=pass, or JSON").size(10.5).color(Color32::GRAY));
+                    ScrollArea::both().max_height(165.0).show(ui, |ui| {
                         ui.add(
                             TextEdit::multiline(&mut self.import_raw_text)
                                 .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(10)
+                                .desired_width(inner_w - 28.0)
+                                .desired_rows(8)
                                 .hint_text("Paste ~/.ssh/config, MobaXterm export, user@host:port, or JSON here...")
                         );
                     });
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 // Preview count
                 let preview_parsed = crate::session::import_export::parse_sessions_from_text(&self.import_raw_text, &self.import_default_folder);
@@ -1418,26 +1433,26 @@ impl RustyBoxApp {
                     .color(if preview_parsed.is_empty() { Color32::GRAY } else { Color32::from_rgb(100, 220, 100) }));
 
                 if let Some((ref msg, is_err)) = self.import_status_msg {
-                    ui.add_space(4.0);
+                    ui.add_space(2.0);
                     let color = if is_err { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(34, 197, 94) };
-                    ui.label(RichText::new(msg).color(color).strong());
+                    ui.label(RichText::new(msg).color(color).strong().size(11.5));
                 }
 
-                ui.add_space(10.0);
-                ui.separator();
                 ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
                     let can_import = !preview_parsed.is_empty();
                     if ui.add_enabled(can_import, egui::Button::new(RichText::new("📥 Import & Merge Sessions").strong().color(Color32::WHITE))
                         .fill(Color32::from_rgb(34, 197, 94))
-                        .min_size(egui::vec2(190.0, 30.0))).clicked()
+                        .min_size(egui::vec2(180.0, 28.0))).clicked()
                     {
                         let parsed = crate::session::import_export::parse_sessions_from_text(&self.import_raw_text, &self.import_default_folder);
                         let summary = crate::session::import_export::merge_imported_sessions(&mut self.sessions, parsed);
                         let _ = self.storage.save_sessions(&self.sessions);
                         self.import_status_msg = Some((
-                            format!("✅ Successfully imported {} new sessions! ({} skipped as duplicate, total {} parsed)",
+                            format!("✅ Imported {} new sessions! ({} skipped as duplicate, total {} parsed)",
                                 summary.new_imported, summary.duplicates_skipped, summary.total_parsed),
                             false
                         ));
@@ -1448,15 +1463,13 @@ impl RustyBoxApp {
                         self.import_status_msg = None;
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            close = true;
-                        }
-                    });
+                    if ui.button("✖ Close").clicked() {
+                        close = true;
+                    }
                 });
             });
 
-        if close {
+        if close || !open_dialog_open {
             self.show_import_dialog = false;
         }
     }
@@ -1634,7 +1647,7 @@ impl eframe::App for RustyBoxApp {
                         }
                         ui.close_menu();
                     }
-                    if ui.button("📁 Import MobaXterm Sessions (.txt / .ini / .mxtpro)...").clicked() {
+                    if ui.button("📥 Import SSH Profiles / Sessions (~/.ssh/config, MobaXterm)...\tCtrl+I").clicked() {
                         self.show_import_dialog = true;
                         ui.close_menu();
                     }
@@ -1955,6 +1968,17 @@ impl eframe::App for RustyBoxApp {
                     .min_size(egui::vec2(0.0, toolbar_h));
                     if ui.add(new_sess_btn).clicked() {
                         self.new_session_dialog.open_for_new();
+                    }
+
+                    let import_tb_btn = egui::Button::new(
+                        RichText::new("📥 Import").color(Color32::from_rgb(205, 215, 228)).size(12.0).strong()
+                    )
+                    .fill(Color32::from_rgb(22, 28, 40))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                    .rounding(6.0)
+                    .min_size(egui::vec2(0.0, toolbar_h));
+                    if ui.add(import_tb_btn).on_hover_text("Import SSH Profiles (~/.ssh/config, MobaXterm, JSON) [Ctrl+I]").clicked() {
+                        self.show_import_dialog = true;
                     }
 
                     ui.add_space(5.0);
@@ -2321,27 +2345,30 @@ impl eframe::App for RustyBoxApp {
                     if self.sidebar_tab == 0 {
                         // SESSIONS TREE
                         ui.horizontal(|ui| {
-                            let filter_hint = format!("Filter {} sessions...", self.sessions.len());
-                            ui.add(
-                                TextEdit::singleline(&mut self.session_search)
-                                    .hint_text(filter_hint)
-                                    .desired_width(ui.available_width() - 62.0)
-                            );
-                            let add_btn = egui::Button::new(RichText::new("➕").color(Color32::WHITE).size(12.0))
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let btn_w = (ui.available_width() - 4.0) / 2.0;
+                            let add_btn = egui::Button::new(RichText::new("➕ New").color(Color32::WHITE).size(11.5).strong())
                                 .fill(Color32::from_rgb(37, 99, 235))
                                 .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
                                 .rounding(5.0);
-                            if ui.add(add_btn).on_hover_text("New Session").clicked() {
+                            if ui.add_sized([btn_w, 24.0], add_btn).on_hover_text("Create a New Session").clicked() {
                                 self.new_session_dialog.open_for_new();
                             }
-                            let imp_btn = egui::Button::new(RichText::new("📥").color(Color32::WHITE).size(12.0))
+                            let imp_btn = egui::Button::new(RichText::new("📥 Import").color(Color32::from_rgb(210, 225, 245)).size(11.5).strong())
                                 .fill(Color32::from_rgb(22, 28, 40))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
                                 .rounding(5.0);
-                            if ui.add(imp_btn).on_hover_text("Import MobaXterm Sessions...").clicked() {
+                            if ui.add_sized([btn_w, 24.0], imp_btn).on_hover_text("Import SSH Profiles (~/.ssh/config, MobaXterm, JSON) [Ctrl+I]").clicked() {
                                 self.show_import_dialog = true;
                             }
                         });
+                        ui.add_space(4.0);
+                        let filter_hint = format!("🔍 Filter {} sessions...", self.sessions.len());
+                        ui.add(
+                            TextEdit::singleline(&mut self.session_search)
+                                .hint_text(filter_hint)
+                                .desired_width(ui.available_width())
+                        );
                         ui.add_space(6.0);
 
                         ui.label(RichText::new("★ User sessions").color(Color32::from_rgb(234, 179, 8)).strong().size(12.0));
@@ -3589,6 +3616,10 @@ impl eframe::App for RustyBoxApp {
             self.new_session_dialog.request_open_passwords = false;
             self.manage_passwords_tab = 1; // Open Credentials / Users tab directly
             self.show_manage_passwords = true;
+        }
+        if self.new_session_dialog.request_open_import {
+            self.new_session_dialog.request_open_import = false;
+            self.show_import_dialog = true;
         }
 
         // Network Tools & Scanner Modal (Port Scan, Subnet NetScan, Ping, Netstat)
