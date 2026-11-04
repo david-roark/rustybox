@@ -1435,7 +1435,7 @@ impl eframe::App for RustyBoxApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(">_ RustyBox v1.3-43")
+                        RichText::new(">_ RustyBox v1.3-44")
                             .color(Color32::from_rgb(56, 189, 248))
                             .strong()
                             .size(13.0),
