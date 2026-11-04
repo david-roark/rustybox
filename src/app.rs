@@ -520,27 +520,28 @@ impl RustyBoxApp {
             tokio_runtime,
         };
 
-        // Configure modern cohesive dark theme across the entire application
+        // Configure modern sleek dark theme (obsidian / zinc / linear-inspired)
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = Color32::from_rgb(22, 27, 34);
-        visuals.window_fill = Color32::from_rgb(26, 32, 44);
-        visuals.extreme_bg_color = Color32::from_rgb(13, 17, 23);
-        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(22, 27, 34);
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(30, 36, 46);
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61));
-        visuals.widgets.inactive.rounding = egui::Rounding::same(4.0);
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 54, 61);
+        visuals.panel_fill = Color32::from_rgb(15, 18, 26);
+        visuals.window_fill = Color32::from_rgb(18, 22, 32);
+        visuals.extreme_bg_color = Color32::from_rgb(10, 12, 18);
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 18, 26);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(34, 42, 58));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(22, 28, 40);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64));
+        visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(32, 40, 56);
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
-        visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
-        visuals.widgets.active.bg_fill = Color32::from_rgb(31, 111, 235);
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
-        visuals.widgets.active.rounding = egui::Rounding::same(4.0);
-        visuals.window_rounding = egui::Rounding::same(6.0);
+        visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250));
+        visuals.widgets.active.rounding = egui::Rounding::same(6.0);
+        visuals.window_rounding = egui::Rounding::same(8.0);
         _cc.egui_ctx.set_visuals(visuals);
 
-        // Open an initial local shell tab on launch
+        // Open an initial local shell tab on launch in the background, keeping Home Dashboard active
         app.spawn_local_terminal("Local Terminal", None, None);
+        app.is_home_active = true;
 
         // QA Hook for automated verification
         if let Ok(view) = std::env::var("RUSTYBOX_QA_VIEW") {
@@ -1429,18 +1430,32 @@ impl eframe::App for RustyBoxApp {
         TopBottomPanel::top("top_menu")
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(22, 27, 34))
-                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                    .fill(Color32::from_rgb(14, 18, 26))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 32, 46)))
+                    .inner_margin(egui::Margin::symmetric(10.0, 4.0))
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(">_ RustyBox v1.3-44")
+                        RichText::new("⚡ RustyBox")
                             .color(Color32::from_rgb(56, 189, 248))
                             .strong()
-                            .size(13.0),
+                            .size(13.5),
                     );
-                    ui.add_space(6.0);
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(22, 30, 44))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 54, 80)))
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(5.0, 1.5))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("v1.3-45")
+                                    .color(Color32::from_rgb(147, 197, 253))
+                                    .size(10.5)
+                                    .strong(),
+                            );
+                        });
+                    ui.add_space(4.0);
                     ui.separator();
                     ui.add_space(4.0);
 
@@ -1677,12 +1692,12 @@ impl eframe::App for RustyBoxApp {
                     ui.add(
                         egui::Button::new(
                             RichText::new(text)
-                                .color(Color32::from_rgb(201, 209, 217))
+                                .color(Color32::from_rgb(210, 220, 235))
                                 .size(11.5),
                         )
-                        .fill(Color32::from_rgb(30, 36, 46))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(4.0),
+                        .fill(Color32::from_rgb(20, 26, 38))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 62)))
+                        .rounding(5.0),
                     )
                 };
 
@@ -1712,12 +1727,13 @@ impl eframe::App for RustyBoxApp {
         });
     });
 
-        // 2. MAIN TOOLBAR (Unified Toolbar Suite)
+        // 2. MAIN TOOLBAR (Unified Modern Toolbar Suite)
         TopBottomPanel::top("main_toolbar")
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(22, 27, 34))
-                    .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                    .fill(Color32::from_rgb(16, 20, 29))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 47)))
+                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1725,61 +1741,91 @@ impl eframe::App for RustyBoxApp {
 
                     let tb_button = |ui: &mut egui::Ui, text: &str, active: bool| -> egui::Response {
                         let fill = if active {
-                            Color32::from_rgb(31, 111, 235)
+                            Color32::from_rgb(37, 99, 235)
                         } else {
-                            Color32::from_rgb(30, 36, 46)
+                            Color32::from_rgb(22, 28, 40)
                         };
                         let stroke = if active {
-                            egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
+                            egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250))
                         } else {
-                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61))
+                            egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64))
                         };
                         let text_color = if active {
                             Color32::WHITE
                         } else {
-                            Color32::from_rgb(201, 209, 217)
+                            Color32::from_rgb(205, 215, 228)
                         };
                         let btn = egui::Button::new(RichText::new(text).color(text_color).size(12.0))
                             .fill(fill)
                             .stroke(stroke)
-                            .rounding(4.0)
+                            .rounding(6.0)
                             .min_size(egui::vec2(0.0, toolbar_h));
                         ui.add(btn)
                     };
 
-                    // Prominent New Session Button
+                    // Prominent Modern New Session Button
                     let new_sess_btn = egui::Button::new(
                         RichText::new("➕ New Session").color(Color32::WHITE).size(12.0).strong()
                     )
-                    .fill(Color32::from_rgb(31, 111, 235))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
-                    .rounding(4.0)
+                    .fill(Color32::from_rgb(37, 99, 235))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                    .rounding(6.0)
                     .min_size(egui::vec2(0.0, toolbar_h));
                     if ui.add(new_sess_btn).clicked() {
                         self.new_session_dialog.open_for_new();
                     }
 
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
 
-                    // Split mode buttons
-                    if tb_button(ui, "🗖 Single", self.split_mode == SplitMode::Single).clicked() {
-                        self.split_mode = SplitMode::Single;
-                    }
-                    if tb_button(ui, "◫ 2-Cols", self.split_mode == SplitMode::Horizontal).clicked() {
-                        self.split_mode = SplitMode::Horizontal;
-                    }
-                    if tb_button(ui, "⬒ 2-Rows", self.split_mode == SplitMode::Vertical).clicked() {
-                        self.split_mode = SplitMode::Vertical;
-                    }
-                    if tb_button(ui, "⊞ 2x2 Grid", self.split_mode == SplitMode::Grid2x2).clicked() {
-                        self.split_mode = SplitMode::Grid2x2;
-                    }
+                    // Modern Linear-style Segmented Layout Control
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(12, 15, 22))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 38, 54)))
+                        .rounding(6.0)
+                        .inner_margin(egui::Margin::symmetric(2.0, 2.0))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let seg_btn = |ui: &mut egui::Ui, text: &str, active: bool| -> egui::Response {
+                                let (fill, stroke, text_color) = if active {
+                                    (
+                                        Color32::from_rgb(37, 99, 235),
+                                        egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)),
+                                        Color32::WHITE,
+                                    )
+                                } else {
+                                    (
+                                        Color32::TRANSPARENT,
+                                        egui::Stroke::NONE,
+                                        Color32::from_rgb(160, 175, 195),
+                                    )
+                                };
+                                ui.add(
+                                    egui::Button::new(RichText::new(text).color(text_color).size(11.5))
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .rounding(4.0)
+                                        .min_size(egui::vec2(0.0, toolbar_h - 4.0))
+                                )
+                            };
+                            if seg_btn(ui, "🗖 Single", self.split_mode == SplitMode::Single).clicked() {
+                                self.split_mode = SplitMode::Single;
+                            }
+                            if seg_btn(ui, "◫ 2-Cols", self.split_mode == SplitMode::Horizontal).clicked() {
+                                self.split_mode = SplitMode::Horizontal;
+                            }
+                            if seg_btn(ui, "⬒ 2-Rows", self.split_mode == SplitMode::Vertical).clicked() {
+                                self.split_mode = SplitMode::Vertical;
+                            }
+                            if seg_btn(ui, "⊞ 2x2 Grid", self.split_mode == SplitMode::Grid2x2).clicked() {
+                                self.split_mode = SplitMode::Grid2x2;
+                            }
+                        });
 
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
 
                     // Multi-Exec toggle
                     let multi_btn = if self.multi_exec_enabled {
@@ -1787,35 +1833,35 @@ impl eframe::App for RustyBoxApp {
                             .fill(Color32::from_rgb(217, 119, 6))
                             .stroke(egui::Stroke::new(1.0, Color32::from_rgb(251, 191, 36)))
                     } else {
-                        egui::Button::new(RichText::new("⚡ Multi-Exec: OFF").color(Color32::from_rgb(139, 148, 158)).size(12.0))
-                            .fill(Color32::from_rgb(30, 36, 46))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        egui::Button::new(RichText::new("⚡ Multi-Exec: OFF").color(Color32::from_rgb(148, 163, 184)).size(12.0))
+                            .fill(Color32::from_rgb(22, 28, 40))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
                     }
-                    .rounding(4.0)
+                    .rounding(6.0)
                     .min_size(egui::vec2(0.0, toolbar_h));
                     if ui.add(multi_btn).on_hover_text("Broadcast input to all open split terminals simultaneously").clicked() {
                         self.multi_exec_enabled = !self.multi_exec_enabled;
                     }
 
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
 
                     // Find in terminal
                     if tb_button(ui, "🔍 Find", self.search_open).clicked() {
                         self.search_open = !self.search_open;
                     }
 
-                    // Font stepper in a unified container
+                    // Font stepper in a modern unified container
                     egui::Frame::none()
-                        .fill(Color32::from_rgb(30, 36, 46))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(4.0)
+                        .fill(Color32::from_rgb(22, 28, 40))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                        .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(6.0, 2.0))
                         .show(ui, |ui| {
                             ui.set_height(toolbar_h);
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("Font:").color(Color32::from_rgb(139, 148, 158)).size(11.0));
+                                ui.label(RichText::new("Font:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
                                 if ui.small_button("➖").clicked() && self.font_size > 8.0 {
                                     self.font_size -= 1.0;
                                 }
@@ -1826,11 +1872,11 @@ impl eframe::App for RustyBoxApp {
                             });
                         });
 
-                    // Theme selector in a unified container
+                    // Theme selector in a modern unified container
                     egui::Frame::none()
-                        .fill(Color32::from_rgb(30, 36, 46))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(4.0)
+                        .fill(Color32::from_rgb(22, 28, 40))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                        .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                         .show(ui, |ui| {
                             ui.set_height(toolbar_h);
@@ -1843,9 +1889,9 @@ impl eframe::App for RustyBoxApp {
                                 });
                         });
 
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
 
                     // Master Password Vault status indicator
                     let cfg_check = self.storage.load_config();
@@ -1860,9 +1906,9 @@ impl eframe::App for RustyBoxApp {
                     };
                     if ui.add(
                         egui::Button::new(RichText::new(format!("{} {}", v_icon, v_txt)).size(11.0).color(v_col).strong())
-                            .fill(Color32::from_rgb(30, 36, 46))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                            .rounding(4.0)
+                            .fill(Color32::from_rgb(22, 28, 40))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                            .rounding(6.0)
                             .min_size(egui::vec2(0.0, toolbar_h))
                     ).on_hover_text("Manage Master Password & AES-256-GCM Vault").clicked() {
                         self.show_vault = true;
@@ -1874,28 +1920,33 @@ impl eframe::App for RustyBoxApp {
         TopBottomPanel::bottom("bottom_bar")
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(22, 27, 34))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                    .fill(Color32::from_rgb(14, 18, 25))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 46)))
+                    .inner_margin(egui::Margin::symmetric(10.0, 3.5))
             )
-            .min_height(25.0)
+            .min_height(26.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // LEFT: QUICK MACROS
-                    ui.label(RichText::new("⚡ Quick:").weak().size(11.0));
+                    ui.label(RichText::new("⚡ Quick:").weak().size(11.0).color(Color32::from_rgb(148, 163, 184)));
                     let mut macro_to_run: Option<String> = None;
                     for (name, cmd) in &self.quick_macros {
                         let pill = egui::Button::new(
-                            RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 242))
+                            RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 245))
                         )
-                        .fill(Color32::from_rgb(33, 38, 45))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(10.0);
+                        .fill(Color32::from_rgb(22, 28, 40))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                        .rounding(6.0);
                         if ui.add(pill).clicked() {
                             macro_to_run = Some(cmd.clone());
                         }
                     }
-                    if ui.small_button("⚙ Manage").clicked() {
+                    if ui.add(
+                        egui::Button::new(RichText::new("⚙ Manage").size(11.0).color(Color32::from_rgb(148, 163, 184)))
+                            .fill(Color32::from_rgb(18, 23, 33))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 40, 56)))
+                            .rounding(5.0)
+                    ).clicked() {
                         self.show_macro_manager = true;
                     }
                     if let Some(cmd) = macro_to_run {
@@ -1907,10 +1958,10 @@ impl eframe::App for RustyBoxApp {
                         let telem = self.get_active_telemetry();
                         let stat_chip = |ui: &mut egui::Ui, text: RichText| {
                             egui::Frame::none()
-                                .fill(Color32::from_rgb(26, 32, 42))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
-                                .rounding(3.0)
-                                .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                                .fill(Color32::from_rgb(18, 24, 35))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                .rounding(5.0)
+                                .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                                 .show(ui, |ui| {
                                     ui.label(text);
                                 });
@@ -1922,15 +1973,15 @@ impl eframe::App for RustyBoxApp {
                         // 2. CPU with visual gauge
                         let cpu_frac = (telem.cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
                         egui::Frame::none()
-                            .fill(Color32::from_rgb(26, 32, 42))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
-                            .rounding(3.0)
-                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                            .fill(Color32::from_rgb(18, 24, 35))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                            .rounding(5.0)
+                            .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("⚡ {}%", telem.cpu_pct)).size(10.5));
+                                    ui.label(RichText::new(format!("⚡ {}%", telem.cpu_pct)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
                                     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
-                                    ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                                    ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
                                     let mut filled_rect = rect;
                                     filled_rect.set_width(rect.width() * cpu_frac);
                                     let bar_color = if telem.cpu_pct > 75 {
@@ -1940,7 +1991,7 @@ impl eframe::App for RustyBoxApp {
                                     } else {
                                         Color32::from_rgb(34, 197, 94)
                                     };
-                                    ui.painter().rect_filled(filled_rect, 2.0, bar_color);
+                                    ui.painter().rect_filled(filled_rect, 2.5, bar_color);
                                 });
                             });
 
@@ -1950,18 +2001,18 @@ impl eframe::App for RustyBoxApp {
                         // 4. RAM with visual gauge
                         let ram_pct = (telem.ram_used_gb / telem.ram_total_gb.max(0.1)).clamp(0.0, 1.0);
                         egui::Frame::none()
-                            .fill(Color32::from_rgb(26, 32, 42))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)))
-                            .rounding(3.0)
-                            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                            .fill(Color32::from_rgb(18, 24, 35))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                            .rounding(5.0)
+                            .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("💾 {:.1}/{:.1}G", telem.ram_used_gb, telem.ram_total_gb)).size(10.5));
+                                    ui.label(RichText::new(format!("💾 {:.1}/{:.1}G", telem.ram_used_gb, telem.ram_total_gb)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
                                     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
-                                    ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(48, 54, 61));
+                                    ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
                                     let mut filled_rect = rect;
                                     filled_rect.set_width(rect.width() * ram_pct);
-                                    ui.painter().rect_filled(filled_rect, 2.0, Color32::from_rgb(59, 130, 246));
+                                    ui.painter().rect_filled(filled_rect, 2.5, Color32::from_rgb(56, 189, 248));
                                 });
                             });
 
@@ -1993,7 +2044,7 @@ impl eframe::App for RustyBoxApp {
                         } else if telem.is_connected {
                             stat_chip(ui, RichText::new("● Connected").color(Color32::from_rgb(34, 197, 94)).size(10.5).strong());
                         } else {
-                            stat_chip(ui, RichText::new("● Disconnected").color(Color32::from_rgb(248, 113, 113)).size(10.5));
+                            stat_chip(ui, RichText::new("✕ Disconnected").color(Color32::from_rgb(239, 68, 68)).size(10.5).strong());
                         }
                     });
                 });
@@ -2002,43 +2053,70 @@ impl eframe::App for RustyBoxApp {
         // 5. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
         if self.show_sftp_sidebar {
             egui::SidePanel::left("left_sidebar")
+                .frame(
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(14, 18, 25))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 46)))
+                        .inner_margin(egui::Margin::symmetric(8.0, 8.0))
+                )
                 .resizable(true)
                 .default_width(260.0)
                 .width_range(180.0..=450.0)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let btn_w = (ui.available_width() - 4.0) / 2.0;
-                        let s_active = self.sidebar_tab == 0;
-                        let sftp_active = self.sidebar_tab == 1;
+                    // Modern segmented pill switcher
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(10, 13, 19))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 50)))
+                        .rounding(6.0)
+                        .inner_margin(egui::Margin::symmetric(2.0, 2.0))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let btn_w = (ui.available_width() - 2.0) / 2.0;
+                            let s_active = self.sidebar_tab == 0;
+                            let sftp_active = self.sidebar_tab == 1;
 
-                        let s_fill = if s_active { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(30, 36, 46) };
-                        let sftp_fill = if sftp_active { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(30, 36, 46) };
+                            let (s_fill, s_stroke, s_text) = if s_active {
+                                (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                            } else {
+                                (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
+                            };
+                            let (sftp_fill, sftp_stroke, sftp_text) = if sftp_active {
+                                (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                            } else {
+                                (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
+                            };
 
-                        if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📂 Sessions").size(12.0).color(Color32::WHITE)).fill(s_fill).rounding(4.0)).clicked() {
-                            self.sidebar_tab = 0;
-                        }
-                        if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📁 SFTP Browser").size(12.0).color(Color32::WHITE)).fill(sftp_fill).rounding(4.0)).clicked() {
-                            self.sidebar_tab = 1;
-                        }
-                    });
-                    ui.add_space(4.0);
+                            if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📂 Sessions").size(11.5).strong().color(s_text)).fill(s_fill).stroke(s_stroke).rounding(5.0)).clicked() {
+                                self.sidebar_tab = 0;
+                            }
+                            if ui.add_sized([btn_w, 24.0], egui::Button::new(RichText::new("📁 SFTP Browser").size(11.5).strong().color(sftp_text)).fill(sftp_fill).stroke(sftp_stroke).rounding(5.0)).clicked() {
+                                self.sidebar_tab = 1;
+                            }
+                        });
+                    ui.add_space(5.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
 
                     if self.sidebar_tab == 0 {
                         // SESSIONS TREE
                         ui.horizontal(|ui| {
                             let filter_hint = format!("Filter {} sessions...", self.sessions.len());
-                            ui.add(TextEdit::singleline(&mut self.session_search).hint_text(filter_hint).desired_width(ui.available_width() - 60.0));
+                            ui.add(
+                                TextEdit::singleline(&mut self.session_search)
+                                    .hint_text(filter_hint)
+                                    .desired_width(ui.available_width() - 62.0)
+                            );
                             let add_btn = egui::Button::new(RichText::new("➕").color(Color32::WHITE).size(12.0))
-                                .fill(Color32::from_rgb(34, 197, 94))
-                                .rounding(3.0);
+                                .fill(Color32::from_rgb(37, 99, 235))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                                .rounding(5.0);
                             if ui.add(add_btn).on_hover_text("New Session").clicked() {
                                 self.new_session_dialog.open_for_new();
                             }
                             let imp_btn = egui::Button::new(RichText::new("📥").color(Color32::WHITE).size(12.0))
-                                .fill(Color32::from_rgb(59, 130, 246))
-                                .rounding(3.0);
+                                .fill(Color32::from_rgb(22, 28, 40))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                                .rounding(5.0);
                             if ui.add(imp_btn).on_hover_text("Import MobaXterm Sessions...").clicked() {
                                 self.show_import_dialog = true;
                             }
@@ -2120,14 +2198,14 @@ impl eframe::App for RustyBoxApp {
                                             self.selected_sidebar_session_id = Some(s.id.clone());
                                         }
 
-                                        let bg = if is_selected {
-                                            Color32::from_rgb(31, 111, 235)
+                                        let (bg, stroke) = if is_selected {
+                                            (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
                                         } else if resp.hovered() {
-                                            Color32::from_rgb(38, 44, 54)
+                                            (Color32::from_rgb(24, 32, 46), egui::Stroke::new(1.0, Color32::from_rgb(38, 50, 72)))
                                         } else {
-                                            Color32::TRANSPARENT
+                                            (Color32::TRANSPARENT, egui::Stroke::NONE)
                                         };
-                                        ui.painter().rect_filled(rect, 4.0, bg);
+                                        ui.painter().rect(rect, 6.0, bg, stroke);
 
                                         let text_color = if is_selected { Color32::WHITE } else { Color32::from_rgb(220, 230, 242) };
                                         let sub_color = if is_selected { Color32::from_rgb(200, 225, 255) } else { Color32::from_rgb(139, 148, 158) };
@@ -2376,7 +2454,7 @@ impl eframe::App for RustyBoxApp {
                 )
                 .fill(h_fill)
                 .stroke(h_stroke)
-                .rounding(egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 });
+                .rounding(egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 });
                 if ui.add(h_btn).clicked() {
                     self.is_home_active = true;
                     self.selected_sidebar_session_id = None;
@@ -2396,7 +2474,7 @@ impl eframe::App for RustyBoxApp {
                                 let title_w = (tab_w - 22.0).max(40.0);
                                 let (title_rect, title_resp) = ui.allocate_exact_size(
                                     vec2(title_w, 26.0),
-                                    egui::Sense::click_and_drag(),
+                                    egui::Sense::click(),
                                 );
                                 let (close_rect, close_resp) = ui.allocate_exact_size(
                                     vec2(22.0, 26.0),
@@ -2407,28 +2485,28 @@ impl eframe::App for RustyBoxApp {
 
                                 let (fill, stroke, text_color) = if is_active {
                                     (
-                                        Color32::from_rgb(24, 34, 52),
+                                        Color32::from_rgb(26, 36, 56),
                                         egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
                                         Color32::WHITE,
                                     )
                                 } else if tab_hovered {
                                     (
-                                        Color32::from_rgb(32, 40, 52),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(52, 60, 72)),
-                                        Color32::from_rgb(210, 220, 230),
+                                        Color32::from_rgb(28, 36, 48),
+                                        egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
+                                        Color32::from_rgb(215, 225, 238),
                                     )
                                 } else {
                                     (
-                                        Color32::from_rgb(26, 32, 42),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(44, 50, 60)),
-                                        Color32::from_rgb(175, 185, 195),
+                                        Color32::from_rgb(20, 26, 36),
+                                        egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
+                                        Color32::from_rgb(160, 172, 188),
                                     )
                                 };
 
-                                // Render tab background frame
+                                // Render tab background frame with modern rounded top corners
                                 ui.painter().rect(
                                     tab_rect,
-                                    egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 },
+                                    egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 },
                                     fill,
                                     stroke,
                                 );
@@ -2436,7 +2514,7 @@ impl eframe::App for RustyBoxApp {
                                 // Electric cyan top line for active tab
                                 if is_active {
                                     ui.painter().line_segment(
-                                        [pos2(tab_rect.left(), tab_rect.top() + 1.0), pos2(tab_rect.right(), tab_rect.top() + 1.0)],
+                                        [pos2(tab_rect.left() + 2.0, tab_rect.top() + 1.0), pos2(tab_rect.right() - 2.0, tab_rect.top() + 1.0)],
                                         egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
                                     );
                                 }
@@ -2541,34 +2619,43 @@ impl eframe::App for RustyBoxApp {
                     });
             });
 
-            // 2. QUICK CONNECT AREA (Completely separated on the right edge, zero overlap)
+            // 2. QUICK CONNECT AREA (Visible on terminal tabs, hidden on Home Dashboard to avoid duplicate)
             let mut quick_ui = ui.new_child(egui::UiBuilder::new().max_rect(quick_rect).layout(Layout::right_to_left(Align::Center)));
-            let run_btn = egui::Button::new(RichText::new("▶ Connect").color(Color32::WHITE).size(11.5).strong())
-                .fill(Color32::from_rgb(31, 111, 235))
-                .rounding(4.0);
-            if quick_ui.add(run_btn).on_hover_text("Quick Connect to user@host:port or local shell").clicked() {
-                self.handle_quick_connect();
-            }
+            if !self.is_home_active {
+                let run_btn = egui::Button::new(RichText::new("▶ Connect").color(Color32::WHITE).size(11.5).strong())
+                    .fill(Color32::from_rgb(37, 99, 235))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                    .rounding(5.0);
+                if quick_ui.add(run_btn).on_hover_text("Quick Connect to user@host:port or local shell").clicked() {
+                    self.handle_quick_connect();
+                }
 
-            egui::Frame::none()
-                .fill(Color32::from_rgb(18, 22, 28))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 2.0))
-                .show(&mut quick_ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("⚡").color(Color32::from_rgb(56, 189, 248)).size(11.0));
-                        let q_edit = ui.add_sized(
-                            egui::vec2(140.0, 18.0),
-                            TextEdit::singleline(&mut self.quick_connect_input)
-                                .hint_text("user@host:port...")
-                                .frame(false)
-                        );
-                        if q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            self.handle_quick_connect();
-                        }
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(16, 21, 30))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)))
+                    .rounding(5.0)
+                    .inner_margin(egui::Margin::symmetric(8.0, 2.0))
+                    .show(&mut quick_ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("⚡").color(Color32::from_rgb(56, 189, 248)).size(11.0));
+                            let q_edit = ui.add_sized(
+                                egui::vec2(140.0, 18.0),
+                                TextEdit::singleline(&mut self.quick_connect_input)
+                                    .hint_text("user@host:port...")
+                                    .frame(false)
+                            );
+                            if q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                self.handle_quick_connect();
+                            }
+                        });
                     });
-                });
+            } else {
+                quick_ui.label(
+                    RichText::new("⚡ Modern Remote Toolbox")
+                        .size(11.0)
+                        .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
 
             // Tab Right-Click Context Menu (Floating Foreground Area)
             if let Some((menu_idx, pos)) = self.tab_context_menu {
@@ -2693,49 +2780,50 @@ impl eframe::App for RustyBoxApp {
 
                 ui.add_space(2.0);
 
-            // If Home tab is active, render Welcome Dashboard
+            // If Home tab is active, render Modern Welcome Dashboard
             if self.is_home_active {
-                ui.add_space(15.0);
+                ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("⚡ RustyBox").size(28.0).strong().color(Color32::from_rgb(56, 189, 248)));
-                    ui.label(RichText::new("Remote Toolbox & All-in-One Multi-Terminal").size(13.5).weak());
-                    ui.add_space(16.0);
+                    ui.label(RichText::new("⚡ RustyBox").size(30.0).strong().color(Color32::from_rgb(56, 189, 248)));
+                    ui.label(RichText::new("High-Performance Remote Toolbox & Multi-Terminal Workstation").size(13.0).color(Color32::from_rgb(148, 163, 184)));
+                    ui.add_space(18.0);
 
                     // Hero Quick Connect Box
                     egui::Frame::none()
-                        .fill(Color32::from_rgb(22, 27, 34))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(8.0)
-                        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                        .fill(Color32::from_rgb(16, 21, 30))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)))
+                        .rounding(10.0)
+                        .inner_margin(egui::Margin::symmetric(18.0, 12.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("⚡ Quick Connect:").strong().color(Color32::from_rgb(56, 189, 248)).size(13.0));
                                 let q_edit = ui.add(
                                     TextEdit::singleline(&mut self.quick_connect_input)
                                         .hint_text("user@host:port, cmd, wsl...")
-                                        .desired_width(320.0),
+                                        .desired_width(340.0),
                                 );
                                 let conn_btn = egui::Button::new(
                                     RichText::new("▶ Connect").strong().color(Color32::WHITE),
                                 )
-                                .fill(Color32::from_rgb(31, 111, 235))
-                                .rounding(4.0);
+                                .fill(Color32::from_rgb(37, 99, 235))
+                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                                .rounding(6.0);
                                 if (q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                                     || ui.add(conn_btn).clicked()
                                 {
                                     self.handle_quick_connect();
                                 }
                             });
-                            ui.add_space(4.0);
+                            ui.add_space(8.0);
                             ui.horizontal(|ui| {
                                 let chip = |ui: &mut egui::Ui, text: &str| -> egui::Response {
                                     ui.add(
                                         egui::Button::new(
-                                            RichText::new(text).size(11.0).color(Color32::from_rgb(180, 190, 205)),
+                                            RichText::new(text).size(11.0).color(Color32::from_rgb(190, 205, 225)),
                                         )
-                                        .fill(Color32::from_rgb(30, 36, 46))
-                                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                                        .rounding(4.0),
+                                        .fill(Color32::from_rgb(22, 28, 40))
+                                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                                        .rounding(6.0),
                                     )
                                 };
                                 if chip(ui, "💻 Local Shell").clicked() {
@@ -2759,93 +2847,135 @@ impl eframe::App for RustyBoxApp {
                             });
                         });
 
-                    ui.add_space(20.0);
+                    ui.add_space(22.0);
 
-                    // 6 Modern Action Cards
-                    let modern_card = |ui: &mut egui::Ui, icon: &str, title: &str, desc: &str| -> egui::Response {
-                        let w = 210.0;
-                        let h = 68.0;
+                    // 6 Modern Action Cards with icon badge & refined hover effects in a balanced 3x2 grid
+                    let modern_card = |ui: &mut egui::Ui, icon: &str, title: &str, desc: &str, tint: Color32, w: f32, h: f32| -> egui::Response {
                         let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
                         let is_hovered = resp.hovered();
                         let bg = if is_hovered {
-                            Color32::from_rgb(30, 38, 52)
+                            Color32::from_rgb(25, 34, 50)
                         } else {
-                            Color32::from_rgb(22, 27, 34)
+                            Color32::from_rgb(17, 22, 32)
                         };
                         let border = if is_hovered {
                             egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248))
                         } else {
-                            egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61))
+                            egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
                         };
                         ui.painter().rect(rect, egui::Rounding::same(8.0), bg, border);
 
                         ui.allocate_new_ui(
                             egui::UiBuilder::new()
                                 .max_rect(rect.shrink(8.0))
-                                .layout(Layout::top_down(Align::Min)),
+                                .layout(Layout::left_to_right(Align::Center)),
                             |c_ui| {
-                                c_ui.horizontal(|ui| {
-                                    ui.label(RichText::new(icon).size(22.0));
-                                    ui.vertical(|ui| {
-                                        let tc = if is_hovered {
-                                            Color32::from_rgb(56, 189, 248)
-                                        } else {
-                                            Color32::WHITE
-                                        };
-                                        ui.label(RichText::new(title).strong().size(12.5).color(tc));
-                                        ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(139, 148, 158)));
-                                    });
+                                // Icon badge container
+                                let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
+                                c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0, tint));
+                                c_ui.painter().text(
+                                    badge_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    icon,
+                                    egui::FontId::proportional(20.0),
+                                    Color32::WHITE,
+                                );
+
+                                c_ui.add_space(8.0);
+                                c_ui.vertical(|ui| {
+                                    let tc = if is_hovered {
+                                        Color32::from_rgb(56, 189, 248)
+                                    } else {
+                                        Color32::WHITE
+                                    };
+                                    ui.label(RichText::new(title).strong().size(12.5).color(tc));
+                                    ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(148, 163, 184)));
                                 });
                             },
                         );
                         resp
                     };
 
-                    ui.horizontal_wrapped(|ui| {
-                        if modern_card(ui, "💻", "Local Terminal", "Interactive shell (cmd / bash) with ConPTY").clicked() {
+                    let card_w = 236.0;
+                    let card_h = 74.0;
+                    let card_spacing = 12.0;
+
+                    // Row 1: Local Terminal, SSH Client, SFTP Browser
+                    ui.horizontal(|ui| {
+                        if modern_card(ui, "💻", "Local Terminal", "Interactive shell with ConPTY", Color32::from_rgb(56, 189, 248), card_w, card_h).clicked() {
                             self.spawn_local_terminal("Local Terminal", None, None);
                             self.is_home_active = false;
                         }
-                        ui.add_space(8.0);
-                        if modern_card(ui, "🌐", "SSH Client", "Remote shell with key auth & auto-SFTP").clicked() {
+                        ui.add_space(card_spacing);
+                        if modern_card(ui, "🌐", "SSH Client", "Key auth & auto-SFTP stream", Color32::from_rgb(96, 165, 250), card_w, card_h).clicked() {
                             self.new_session_dialog.open_for_new();
                         }
-                        ui.add_space(8.0);
-                        if modern_card(ui, "📁", "SFTP Browser", "Dual-pane remote file manager & transfer").clicked() {
+                        ui.add_space(card_spacing);
+                        if modern_card(ui, "📁", "SFTP Browser", "Dual-pane remote file manager", Color32::from_rgb(52, 211, 153), card_w, card_h).clicked() {
                             self.show_sftp_sidebar = true;
                             self.sidebar_tab = 1;
                         }
-                        ui.add_space(8.0);
-                        if modern_card(ui, "📡", "Network Scanner", "Subnet IP discovery, Ping & Port Scan").clicked() {
+                    });
+
+                    ui.add_space(card_spacing);
+
+                    // Row 2: Network Scanner, SSH Tunnels, Network Daemons
+                    ui.horizontal(|ui| {
+                        if modern_card(ui, "📡", "Network Scanner", "Subnet IP discovery & Port Scan", Color32::from_rgb(251, 191, 36), card_w, card_h).clicked() {
                             self.show_network_tools = true;
                             self.net_tools_tab = 1;
                         }
-                        ui.add_space(8.0);
-                        if modern_card(ui, "🔀", "SSH Tunnels", "Local, remote & dynamic SOCKS5 proxy").clicked() {
+                        ui.add_space(card_spacing);
+                        if modern_card(ui, "🔀", "SSH Tunnels", "Local, remote & SOCKS5 proxy", Color32::from_rgb(192, 132, 252), card_w, card_h).clicked() {
                             self.show_tunnels = true;
                         }
-                        ui.add_space(8.0);
-                        if modern_card(ui, "🕊", "Network Daemons", "Micro HTTP, TFTP & Syslog servers").clicked() {
+                        ui.add_space(card_spacing);
+                        if modern_card(ui, "🕊", "Network Daemons", "Micro HTTP, TFTP & Syslog", Color32::from_rgb(244, 114, 182), card_w, card_h).clicked() {
                             self.show_services_modal = true;
                         }
                     });
 
-                    ui.add_space(25.0);
+                    ui.add_space(26.0);
                     ui.label(RichText::new("★ Quick Launch Sessions").strong().size(13.5).color(Color32::from_rgb(234, 179, 8)));
-                    ui.add_space(8.0);
+                    ui.add_space(10.0);
 
                     let mut to_launch_quick: Option<Session> = None;
-                    for s in self.sessions.iter().take(6) {
+                    let top_sessions: Vec<Session> = self.sessions.iter().take(6).cloned().collect();
+                    for chunk in top_sessions.chunks(3) {
                         ui.horizontal(|ui| {
-                            let icon = match s.session_type {
-                                SessionType::LocalShell { .. } => ">_ ",
-                                _ => "🔑 ",
-                            };
-                            if ui.button(RichText::new(format!("{} {}", icon, s.name)).strong()).clicked() {
-                                to_launch_quick = Some(s.clone());
+                            for (i, s) in chunk.iter().enumerate() {
+                                if i > 0 {
+                                    ui.add_space(card_spacing);
+                                }
+                                let icon = match s.session_type {
+                                    SessionType::LocalShell { .. } => "💻",
+                                    SessionType::Wsl { .. } => "🐧",
+                                    _ => "🔑",
+                                };
+                                let (q_rect, q_resp) = ui.allocate_exact_size(vec2(card_w, 36.0), egui::Sense::click());
+                                let is_h = q_resp.hovered();
+                                let bg = if is_h { Color32::from_rgb(26, 36, 54) } else { Color32::from_rgb(18, 23, 33) };
+                                let border = if is_h { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)) };
+                                ui.painter().rect(q_rect, 6.0, bg, border);
+
+                                ui.allocate_new_ui(
+                                    egui::UiBuilder::new()
+                                        .max_rect(q_rect.shrink(6.0))
+                                        .layout(Layout::left_to_right(Align::Center)),
+                                    |c_ui| {
+                                        c_ui.label(RichText::new(icon).size(13.0));
+                                        c_ui.add_space(4.0);
+                                        let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
+                                        c_ui.label(RichText::new(&s.name).strong().size(11.5).color(title_col));
+                                    },
+                                );
+                                if q_resp.clicked() {
+                                    to_launch_quick = Some(s.clone());
+                                }
                             }
-                            ui.label(RichText::new(format!("({})", s.folder)).weak());
                         });
+                        ui.add_space(8.0);
                     }
                     if let Some(s) = to_launch_quick {
                         self.launch_generic_session(s);
