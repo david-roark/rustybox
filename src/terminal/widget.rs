@@ -508,7 +508,28 @@ impl<'a> TerminalWidget<'a> {
                                 }
                                 Key::A if ctrl => input_bytes.extend_from_slice(b"\x01"), // Ctrl+A
                                 Key::B if ctrl => input_bytes.extend_from_slice(b"\x02"), // Ctrl+B
-                                Key::C if ctrl => input_bytes.extend_from_slice(b"\x03"), // Ctrl+C (SIGINT)
+                                Key::C if ctrl => {
+                                    // If text is actively selected, Ctrl+C copies selection (MobaXterm behavior)
+                                    let has_active_selection = selection.map(|(s, e)| s != e).unwrap_or(false);
+                                    if has_active_selection && !modifiers.shift {
+                                        let parser = self.session.parser.lock();
+                                        let text = if let Some((s, e)) = selection {
+                                            extract_selection_text(parser.screen(), s, e)
+                                        } else {
+                                            String::new()
+                                        };
+                                        if !text.is_empty() {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                let _ = cb.set_text(&text);
+                                            }
+                                            ui.output_mut(|o| o.copied_text = text);
+                                        }
+                                    } else {
+                                        // Standard Ctrl+C: Send SIGINT to running process (e.g. stop docker compose logs)
+                                        let _ = self.session.send_sigint();
+                                        input_bytes.extend_from_slice(b"\x03");
+                                    }
+                                }
                                 Key::D if ctrl => input_bytes.extend_from_slice(b"\x04"), // Ctrl+D (EOF)
                                 Key::E if ctrl => input_bytes.extend_from_slice(b"\x05"), // Ctrl+E
                                 Key::K if ctrl => input_bytes.extend_from_slice(b"\x0b"), // Ctrl+K
@@ -523,6 +544,45 @@ impl<'a> TerminalWidget<'a> {
                                 }
                                 Key::Z if ctrl => input_bytes.extend_from_slice(b"\x1a"), // Ctrl+Z (SIGTSTP)
                                 _ => {}
+                            }
+                        }
+                        Event::Copy => {
+                            // If text is actively selected, copy it to clipboard
+                            let has_active_selection = selection.map(|(s, e)| s != e).unwrap_or(false);
+                            if has_active_selection {
+                                let parser = self.session.parser.lock();
+                                let text = if let Some((s, e)) = selection {
+                                    extract_selection_text(parser.screen(), s, e)
+                                } else {
+                                    String::new()
+                                };
+                                if !text.is_empty() {
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(&text);
+                                    }
+                                    ui.output_mut(|o| o.copied_text = text);
+                                }
+                            } else {
+                                // No selection: Ctrl+C is intended as SIGINT to interrupt command (docker compose logs, etc.)
+                                let _ = self.session.send_sigint();
+                                input_bytes.extend_from_slice(b"\x03");
+                            }
+                        }
+                        Event::Cut => {
+                            let has_active_selection = selection.map(|(s, e)| s != e).unwrap_or(false);
+                            if has_active_selection {
+                                let parser = self.session.parser.lock();
+                                let text = if let Some((s, e)) = selection {
+                                    extract_selection_text(parser.screen(), s, e)
+                                } else {
+                                    String::new()
+                                };
+                                if !text.is_empty() {
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(&text);
+                                    }
+                                    ui.output_mut(|o| o.copied_text = text);
+                                }
                             }
                         }
                         Event::Paste(text) => {

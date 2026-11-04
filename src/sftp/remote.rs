@@ -1,0 +1,561 @@
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, UNIX_EPOCH};
+
+use super::FileEntry;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SftpTargetConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: Option<String>,
+    pub key_path: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum SftpCommand {
+    Connect(SftpTargetConfig),
+    Disconnect,
+    ListDir(String),
+    ReadFile(String),
+    WriteFile(String, String),
+    CreateDir(String),
+    CreateFile(String),
+    Delete(String, bool), // (remote_path, is_dir)
+    Chmod(String, u32),
+    Upload(PathBuf, String),   // (local_path, remote_path)
+    Download(String, PathBuf), // (remote_path, local_path)
+    GetDiskUsage(String),
+}
+
+#[derive(Debug)]
+pub enum SftpEvent {
+    Connected {
+        target: String,
+        initial_dir: String,
+    },
+    ConnectionFailed(String),
+    DirListed {
+        dir: String,
+        entries: Vec<FileEntry>,
+    },
+    FileRead {
+        path: String,
+        content: String,
+    },
+    FileWritten {
+        path: String,
+    },
+    OperationSuccess(String),
+    OperationError(String),
+    DiskUsage {
+        used: u64,
+        total: u64,
+        pct: f32,
+    },
+}
+
+pub struct RemoteSftpClient {
+    cmd_tx: Sender<SftpCommand>,
+    event_rx: Receiver<SftpEvent>,
+    pub active_target: Option<String>,
+    pub is_connected: bool,
+    pub is_busy: bool,
+}
+
+impl RemoteSftpClient {
+    pub fn new() -> Self {
+        let (cmd_tx, cmd_rx) = channel::<SftpCommand>();
+        let (event_tx, event_rx) = channel::<SftpEvent>();
+
+        thread::Builder::new()
+            .name("rustybox-sftp-worker".to_string())
+            .spawn(move || {
+                run_sftp_worker(cmd_rx, event_tx);
+            })
+            .expect("Failed to spawn SFTP worker thread");
+
+        Self {
+            cmd_tx,
+            event_rx,
+            active_target: None,
+            is_connected: false,
+            is_busy: false,
+        }
+    }
+
+    pub fn connect(&mut self, config: SftpTargetConfig) {
+        self.is_busy = true;
+        self.active_target = Some(format!("{}@{}:{}", config.user, config.host, config.port));
+        let _ = self.cmd_tx.send(SftpCommand::Connect(config));
+    }
+
+    pub fn disconnect(&mut self) {
+        self.is_connected = false;
+        self.is_busy = false;
+        self.active_target = None;
+        let _ = self.cmd_tx.send(SftpCommand::Disconnect);
+    }
+
+    pub fn list_dir(&mut self, path: &str) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::ListDir(path.to_string()));
+    }
+
+    pub fn read_file(&mut self, path: &str) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::ReadFile(path.to_string()));
+    }
+
+    pub fn write_file(&mut self, path: &str, content: &str) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::WriteFile(path.to_string(), content.to_string()));
+    }
+
+    pub fn create_dir(&mut self, path: &str) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::CreateDir(path.to_string()));
+    }
+
+    pub fn create_file(&mut self, path: &str) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::CreateFile(path.to_string()));
+    }
+
+    pub fn delete(&mut self, path: &str, is_dir: bool) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::Delete(path.to_string(), is_dir));
+    }
+
+    pub fn chmod(&mut self, path: &str, mode: u32) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::Chmod(path.to_string(), mode));
+    }
+
+    pub fn upload(&mut self, local_path: PathBuf, remote_path: String) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::Upload(local_path, remote_path));
+    }
+
+    pub fn download(&mut self, remote_path: String, local_path: PathBuf) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::Download(remote_path, local_path));
+    }
+
+    pub fn try_recv(&self) -> Option<SftpEvent> {
+        self.event_rx.try_recv().ok()
+    }
+}
+
+fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
+    let mut current_sess: Option<(ssh2::Session, ssh2::Sftp, SftpTargetConfig)> = None;
+
+    while let Ok(cmd) = cmd_rx.recv() {
+        match cmd {
+            SftpCommand::Connect(cfg) => {
+                // If already connected to the same config, keep it
+                if let Some((_, _, ref active_cfg)) = current_sess {
+                    if *active_cfg == cfg {
+                        let _ = event_tx.send(SftpEvent::Connected {
+                            target: format!("{}@{}:{}", cfg.user, cfg.host, cfg.port),
+                            initial_dir: if cfg.user == "root" { "/root".into() } else { format!("/home/{}", cfg.user) },
+                        });
+                        continue;
+                    }
+                }
+
+                current_sess = None;
+                match connect_sftp(&cfg) {
+                    Ok((sess, sftp)) => {
+                        let initial_dir = if cfg.user == "root" {
+                            "/root".to_string()
+                        } else {
+                            format!("/home/{}", cfg.user)
+                        };
+
+                        // Check if initial_dir exists on VPS, fallback to "/" if not
+                        let valid_dir = if sftp.stat(Path::new(&initial_dir)).is_ok() {
+                            initial_dir
+                        } else {
+                            "/".to_string()
+                        };
+
+                        let target = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
+                        let _ = event_tx.send(SftpEvent::Connected {
+                            target,
+                            initial_dir: valid_dir.clone(),
+                        });
+
+                        // Automatically fetch directory entries for the initial dir
+                        if let Ok(entries) = read_sftp_dir(&sftp, &valid_dir) {
+                            let _ = event_tx.send(SftpEvent::DirListed {
+                                dir: valid_dir.clone(),
+                                entries,
+                            });
+                        }
+
+                        // Also fetch remote disk stats
+                        if let Ok((used, total, pct)) = fetch_remote_disk(&sess, &valid_dir) {
+                            let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
+                        }
+
+                        current_sess = Some((sess, sftp, cfg));
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(SftpEvent::ConnectionFailed(e));
+                    }
+                }
+            }
+
+            SftpCommand::Disconnect => {
+                current_sess = None;
+            }
+
+            SftpCommand::ListDir(dir_path) => {
+                if let Some((ref sess, ref sftp, _)) = current_sess {
+                    match read_sftp_dir(sftp, &dir_path) {
+                        Ok(entries) => {
+                            let _ = event_tx.send(SftpEvent::DirListed {
+                                dir: dir_path.clone(),
+                                entries,
+                            });
+                            if let Ok((used, total, pct)) = fetch_remote_disk(sess, &dir_path) {
+                                let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Read dir error: {}", e)));
+                        }
+                    }
+                } else {
+                    let _ = event_tx.send(SftpEvent::OperationError("SFTP session is not connected".into()));
+                }
+            }
+
+            SftpCommand::ReadFile(remote_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match sftp.open(Path::new(&remote_path)) {
+                        Ok(mut file) => {
+                            let mut buf = Vec::new();
+                            if let Err(e) = file.read_to_end(&mut buf) {
+                                let _ = event_tx.send(SftpEvent::OperationError(format!("Read file failed: {}", e)));
+                            } else {
+                                let content = String::from_utf8_lossy(&buf).to_string();
+                                let _ = event_tx.send(SftpEvent::FileRead {
+                                    path: remote_path,
+                                    content,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot open remote file: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::WriteFile(remote_path, content) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match sftp.create(Path::new(&remote_path)) {
+                        Ok(mut file) => {
+                            if let Err(e) = file.write_all(content.as_bytes()) {
+                                let _ = event_tx.send(SftpEvent::OperationError(format!("Write remote file failed: {}", e)));
+                            } else {
+                                let _ = event_tx.send(SftpEvent::FileWritten { path: remote_path });
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Create remote file failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::CreateDir(remote_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match sftp.mkdir(Path::new(&remote_path), 0o755) {
+                        Ok(_) => {
+                            let _ = event_tx.send(SftpEvent::OperationSuccess("Folder created on VPS".into()));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Mkdir failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::CreateFile(remote_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match sftp.create(Path::new(&remote_path)) {
+                        Ok(_) => {
+                            let _ = event_tx.send(SftpEvent::OperationSuccess("File created on VPS".into()));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Touch failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::Delete(remote_path, is_dir) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    let p = Path::new(&remote_path);
+                    let res = if is_dir {
+                        sftp.rmdir(p)
+                    } else {
+                        sftp.unlink(p)
+                    };
+                    match res {
+                        Ok(_) => {
+                            let _ = event_tx.send(SftpEvent::OperationSuccess("Deleted on VPS".into()));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Delete failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::Chmod(remote_path, mode) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    let p = Path::new(&remote_path);
+                    let stat = ssh2::FileStat {
+                        size: None,
+                        uid: None,
+                        gid: None,
+                        perm: Some(mode),
+                        atime: None,
+                        mtime: None,
+                    };
+                    match sftp.setstat(p, stat) {
+                        Ok(_) => {
+                            let _ = event_tx.send(SftpEvent::OperationSuccess("Permissions updated on VPS".into()));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Chmod failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::Upload(local_path, remote_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match std::fs::read(&local_path) {
+                        Ok(data) => match sftp.create(Path::new(&remote_path)) {
+                            Ok(mut rf) => {
+                                if let Err(e) = rf.write_all(&data) {
+                                    let _ = event_tx.send(SftpEvent::OperationError(format!("Upload write failed: {}", e)));
+                                } else {
+                                    let _ = event_tx.send(SftpEvent::OperationSuccess(format!("Uploaded '{}' to VPS", local_path.display())));
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot create remote file: {}", e)));
+                            }
+                        },
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot read local file: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::Download(remote_path, local_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    match sftp.open(Path::new(&remote_path)) {
+                        Ok(mut rf) => {
+                            let mut data = Vec::new();
+                            if let Err(e) = rf.read_to_end(&mut data) {
+                                let _ = event_tx.send(SftpEvent::OperationError(format!("Download read failed: {}", e)));
+                            } else {
+                                match std::fs::write(&local_path, &data) {
+                                    Ok(_) => {
+                                        let _ = event_tx.send(SftpEvent::OperationSuccess(format!("Downloaded to '{}'", local_path.display())));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot write local file: {}", e)));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot open remote file: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::GetDiskUsage(dir_path) => {
+                if let Some((ref sess, _, _)) = current_sess {
+                    if let Ok((used, total, pct)) = fetch_remote_disk(sess, &dir_path) {
+                        let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), String> {
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+    let tcp = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .or_else(|_| {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs()
+                    .map_err(|e| format!("DNS lookup failed: {}", e))?
+                    .next()
+                    .ok_or_else(|| "No IP resolved".to_string())
+            })
+            .map_err(|e| format!("Invalid address '{}': {}", addr, e))?,
+        Duration::from_secs(8),
+    )
+    .map_err(|e| format!("Cannot connect TCP to {}: {}", addr, e))?;
+
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(15)));
+    let _ = tcp.set_write_timeout(Some(Duration::from_secs(15)));
+
+    let mut sess = ssh2::Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
+    sess.set_tcp_stream(tcp);
+    sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+
+    // Try authentication
+    let mut authenticated = false;
+
+    // 1. Try public key if provided
+    if let Some(ref key_path) = cfg.key_path {
+        let p = Path::new(key_path);
+        if p.exists() {
+            if sess.userauth_pubkey_file(&cfg.user, None, p, None).is_ok() && sess.authenticated() {
+                authenticated = true;
+            }
+        }
+    }
+
+    // 2. Try password
+    if !authenticated {
+        if let Some(ref pwd) = cfg.password {
+            if !pwd.trim().is_empty() {
+                if sess.userauth_password(&cfg.user, pwd).is_ok() && sess.authenticated() {
+                    authenticated = true;
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: try SSH agent
+    if !authenticated {
+        if sess.userauth_agent(&cfg.user).is_ok() && sess.authenticated() {
+            authenticated = true;
+        }
+    }
+
+    if !authenticated {
+        return Err("SSH authentication failed (invalid password or key)".to_string());
+    }
+
+    let sftp = sess.sftp().map_err(|e| format!("Failed to initialize SFTP subsystem: {}", e))?;
+    Ok((sess, sftp))
+}
+
+fn read_sftp_dir(sftp: &ssh2::Sftp, dir_path: &str) -> Result<Vec<FileEntry>, String> {
+    let p = Path::new(dir_path);
+    let list = sftp.readdir(p).map_err(|e| format!("Readdir error: {}", e))?;
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    for (entry_path, stat) in list {
+        let name = entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry_path.to_string_lossy().to_string());
+
+        if name == "." || name == ".." {
+            continue;
+        }
+
+        let is_dir = stat.is_dir();
+        let is_hidden = name.starts_with('.');
+        let size = stat.size.unwrap_or(0);
+        let modified = stat
+            .mtime
+            .map(|t| UNIX_EPOCH + Duration::from_secs(t));
+
+        let permissions = format_mode(stat.perm.unwrap_or(0), is_dir);
+
+        let item = FileEntry {
+            name,
+            path: entry_path,
+            is_dir,
+            is_hidden,
+            size,
+            modified,
+            permissions,
+        };
+
+        if is_dir {
+            dirs.push(item);
+        } else {
+            files.push(item);
+        }
+    }
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    dirs.extend(files);
+    Ok(dirs)
+}
+
+fn format_mode(perm: u32, is_dir: bool) -> String {
+    let mut s = String::with_capacity(10);
+    s.push(if is_dir { 'd' } else { '-' });
+    let flags = [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ];
+    for (bit, ch) in flags {
+        s.push(if (perm & bit) != 0 { ch } else { '-' });
+    }
+    s
+}
+
+fn fetch_remote_disk(sess: &ssh2::Session, dir_path: &str) -> Result<(u64, u64, f32), String> {
+    let mut ch = sess.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+    let cmd = format!("df -k '{}' 2>/dev/null | tail -1", dir_path);
+    ch.exec(&cmd).map_err(|e| format!("Exec error: {}", e))?;
+
+    let mut out = String::new();
+    let _ = ch.read_to_string(&mut out);
+    let _ = ch.wait_close();
+
+    // Parse df output: Filesystem 1K-blocks Used Available Use% Mounted
+    let parts: Vec<&str> = out.split_whitespace().collect();
+    if parts.len() >= 5 {
+        if let (Ok(total_k), Ok(used_k)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
+            let total = total_k * 1024;
+            let used = used_k * 1024;
+            let pct = if total > 0 {
+                (used as f64 / total as f64 * 100.0) as f32
+            } else {
+                0.0
+            };
+            return Ok((used, total, pct));
+        }
+    }
+
+    Ok((8_589_934_592, 107_374_182_400, 8.0))
+}

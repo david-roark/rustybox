@@ -6,8 +6,29 @@ use egui::{
 use std::path::PathBuf;
 
 pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
+    explorer.poll();
+
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 5.0;
+
+        // Header indicator: Remote SFTP vs Local
+        ui.horizontal(|ui| {
+            if explorer.is_remote {
+                let label = explorer.remote_label.as_deref().unwrap_or("VPS");
+                ui.label(RichText::new("●").color(Color32::from_rgb(63, 185, 80)).size(12.0));
+                ui.label(RichText::new(format!("SFTP: {}", label)).strong().size(11.5).color(Color32::from_rgb(88, 166, 255)));
+                if explorer.is_loading {
+                    ui.spinner();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("💻 Local").on_hover_text("Switch to browsing local files").clicked() {
+                        explorer.disconnect_remote();
+                    }
+                });
+            } else {
+                ui.label(RichText::new("💻 Local Files").strong().size(11.5).color(Color32::from_rgb(139, 148, 158)));
+            }
+        });
 
         // 1. RUSTYBOX 10-ICON VECTOR ACTION TOOLBAR
         let avail_w = ui.available_width();
@@ -188,20 +209,17 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 0 => explorer.go_up(),
                 1 => {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        if let Some(file_name) = path.file_name() {
-                            let target = explorer.current_path.join(file_name);
-                            let _ = std::fs::copy(&path, target);
-                            explorer.refresh();
-                        }
+                        explorer.upload_file(path);
                     }
                 }
                 2 => {
-                    if let Some(ref selected) = explorer.selected_file {
+                    if let Some(ref selected) = explorer.selected_file.clone() {
                         if let Some(dest_dir) = rfd::FileDialog::new().pick_folder() {
-                            if let Some(name) = selected.file_name() {
-                                let dest = dest_dir.join(name);
-                                let _ = std::fs::copy(selected, dest);
-                            }
+                            let file_name = selected
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "downloaded_file".to_string());
+                            explorer.download_file(&selected, dest_dir.join(file_name));
                         }
                     }
                 }
@@ -415,6 +433,9 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
         if let Some(ref err) = explorer.error_message {
             ui.colored_label(Color32::from_rgb(248, 81, 73), RichText::new(err).size(11.0));
+        }
+        if let Some(ref msg) = explorer.status_message {
+            ui.colored_label(Color32::from_rgb(63, 185, 80), RichText::new(msg).size(11.0));
         }
 
         // 3. RECESSED SFTP FILE LIST TABLE (With `Name ▼` Header + `..` Row + Vector Icons)

@@ -37,6 +37,15 @@ impl TerminalTheme {
         }
     }
 
+    pub fn from_name(name: &str) -> Option<Self> {
+        for t in Self::all() {
+            if t.name() == name {
+                return Some(*t);
+            }
+        }
+        None
+    }
+
     pub fn default_bg(&self) -> Color32 {
         match self {
             TerminalTheme::RustyBoxDark => Color32::from_rgb(16, 18, 22),

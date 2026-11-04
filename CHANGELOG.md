@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-52] - 2026-11-04
+### Added
+- **Real SFTP Remote File Explorer for VPS (`ssh2`)**: 
+  - Thay thế toàn bộ file explorer cục bộ bằng SFTP Client bất đồng bộ thực tế qua thư viện `ssh2`.
+  - Tự động kết nối SFTP và duyệt danh sách file trên VPS ngay khi người dùng mở phiên SSH (hỗ trợ cả mật khẩu và SSH private key).
+  - Tự động chuyển đổi thư mục từ xa theo tab SSH đang active trên thanh công cụ.
+  - Hỗ trợ đầy đủ các thao tác: duyệt thư mục từ xa, Upload từ local lên VPS, Download từ VPS về máy cục bộ, Chmod, Xóa file/folder và đo dung lượng đĩa thực tế của VPS (`df -k`).
+  - Cung cấp nút chuyển đổi linh hoạt `💻 Local` và `● SFTP: <user@host>` trên thanh sidebar.
+
+### Security
+- **Eliminate SSH Auto-fill Password Leakage**: Thiết lập cơ chế timeout (10s) và nhận diện prompt thành công (`$ `, `# `, `Last login:`, `Welcome to`) để tự động hủy `pending_password`, ngăn chặn triệt để nguy cơ tự điền mật khẩu SSH vào shell khi chạy sudo hoặc xem file log.
+- **Cryptographically Secure Password Generator**: Thay thế thuật toán LCG thô sơ bằng CSPRNG chuẩn (`OsRng`) từ hệ thống mật mã học.
+- **Remove Fake SSH Key Generation**: Loại bỏ việc tạo key giả lập bằng UUID khi thiếu công cụ; thông báo rõ ràng yêu cầu cài đặt OpenSSH client (`ssh-keygen`).
+
+### Performance & UX
+- **Zero Every-Frame Disk I/O**: Loại bỏ việc đọc và parse file `RustyBox.json` trên đĩa ở mỗi khung hình UI, lưu cache trạng thái cấu hình Vault trong bộ nhớ.
+- **Multi-line Paste Protection Toggle**: Tôn trọng cấu hình `paste_protection_enabled`, tự động paste thẳng vào terminal mà không bật popup cảnh báo khi người dùng đã tắt tùy chọn trong Settings.
+
+## [v1.3-51] - 2026-11-04
+### Fixed
+- **Terminal SIGINT (Ctrl+C) Interrupt Reliability**: Bổ sung xử lý `Event::Copy` từ egui khi không có văn bản nào được chọn để gửi tín hiệu `\x03` (SIGINT) đến PTY process group thay vì nuốt phím. Khắc phục triệt để lỗi không thể `Ctrl+C` dừng lại khi xem luồng log dài hoặc liên tục (`docker compose logs`, `tail -f`, vòng lặp shell).
+- **PTY Session Signal Handling**: Bổ sung phương thức `send_sigint()` gửi tín hiệu ngắt trực tiếp đến process con qua PTY master và system signal (`kill -2`), đảm bảo tiến trình foreground dừng ngay lập tức.
+- **Cross-Platform Compatibility**: Hỗ trợ khởi chạy shell nội bộ Linux/Ubuntu trực tiếp khi click quick-launch WSL trên Linux.
+
+## [v1.3-50] - 2026-11-04
+
+### Fixed
+- **Vietnamese Unicode Diacritics & Font Coverage**: Embedded native TTF fonts (`NotoSansMono`, `UbuntuMono`, `DejaVuSans`, `DejaVuSansMono`) into the executable. Resolves missing glyphs ("tofu" squares `□`) on Ubuntu / Linux for complex Vietnamese diacritical characters (`ễ`, `ọ`, `ạ`, `ờ`, `ậ`, `ộ`).
+- **UI Font & Display Scaling**: Added dedicated UI Scale controls (`UI: ➖ 100% ➕`) with hotkeys (`Ctrl+Shift++`, `Ctrl+Shift+-`, `Ctrl+0`) and persistent storage in `data/RustyBox.json`.
+
+---
+
+## [v1.3-49] - 2026-11-04
+
+### Added
+- **Independent UI and Terminal Font Zoom**: Tách riêng biệt việc điều chỉnh kích thước hiển thị toàn bộ giao diện (UI Zoom) và kích thước chữ trong màn hình dòng lệnh (Terminal Font Zoom).
+
+---
+
 ## [v1.3-48] - 2026-11-04
 
 ### Security

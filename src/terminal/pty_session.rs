@@ -206,7 +206,12 @@ impl PtySession {
                 let mut buf = [0u8; 8192];
                 let mut prev_tail: Vec<u8> = Vec::new();
                 let mut pending_password = auto_password;
+                let session_start_time = std::time::Instant::now();
                 while running_clone.load(Ordering::Relaxed) {
+                    // Security guard: discard pending password after 10s or if login prompt passed
+                    if pending_password.is_some() && session_start_time.elapsed() > Duration::from_secs(10) {
+                        pending_password = None;
+                    }
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             running_clone.store(false, Ordering::Relaxed);
@@ -233,6 +238,19 @@ impl PtySession {
                             // ConPTY on Windows blocks startup and resize waiting for CPR (\x1b[6n)
                             let mut combined = prev_tail.clone();
                             combined.extend_from_slice(chunk);
+
+                            // Clear pending password if shell prompt or welcome banner is seen
+                            if pending_password.is_some() {
+                                let check_str = String::from_utf8_lossy(&combined);
+                                if check_str.ends_with("$ ")
+                                    || check_str.ends_with("# ")
+                                    || check_str.ends_with("% ")
+                                    || check_str.contains("Last login:")
+                                    || check_str.contains("Welcome to")
+                                {
+                                    pending_password = None;
+                                }
+                            }
 
                             let at_pwd_prompt = is_ssh_password_prompt(&combined);
 
@@ -367,6 +385,23 @@ impl PtySession {
         let mut w = self.writer.lock();
         w.write_all(bytes)?;
         w.flush()
+    }
+
+    /// Send SIGINT (Ctrl+C) to child process group
+    pub fn send_sigint(&mut self) -> std::io::Result<()> {
+        // 1. Send \x03 to PTY master
+        let _ = self.write_bytes(b"\x03");
+
+        // 2. On Unix/Linux, also send SIGINT to child PID via kill command to guarantee interruption
+        #[cfg(not(target_os = "windows"))]
+        if let Some(pid) = self.child_pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-2", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {

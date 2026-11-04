@@ -16,6 +16,10 @@ fn default_version() -> String {
     "1.3".to_string()
 }
 
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
 fn default_font_size() -> f32 {
     14.0
 }
@@ -141,6 +145,8 @@ pub struct RustyBoxConfig {
     pub credentials: Vec<Credential>,
     #[serde(default = "default_version")]
     pub version: String,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
     #[serde(default = "default_theme_name")]
@@ -160,6 +166,7 @@ impl Default for RustyBoxConfig {
             save_key_passphrases: false,
             credentials: Vec::new(),
             version: default_version(),
+            ui_scale: default_ui_scale(),
             font_size: default_font_size(),
             theme_name: default_theme_name(),
             paste_protection_enabled: true,
@@ -182,6 +189,7 @@ pub struct StorageManager {
     file_path: PathBuf,
     is_portable: bool,
     vault_key: Option<[u8; 32]>,
+    is_vault_configured: bool,
 }
 
 impl StorageManager {
@@ -195,12 +203,31 @@ impl StorageManager {
         let data_dir = exe_dir.join("data");
         let file_path = data_dir.join("RustyBox.json");
 
+        let is_vault_configured = if file_path.exists() {
+            std::fs::read_to_string(&file_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<RustyBoxConfig>(&raw).ok())
+                .map(|cfg| cfg.vault.is_some())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         Self {
             data_dir,
             file_path,
             is_portable: true,
             vault_key: None,
+            is_vault_configured,
         }
+    }
+
+    pub fn is_vault_configured(&self) -> bool {
+        self.is_vault_configured
+    }
+
+    pub fn set_vault_configured(&mut self, configured: bool) {
+        self.is_vault_configured = configured;
     }
 
     pub fn set_vault_key(&mut self, key: Option<[u8; 32]>) {
@@ -289,6 +316,15 @@ impl StorageManager {
     pub fn save_credentials(&self, credentials: &[Credential]) -> Result<(), String> {
         let mut cfg = self.load_config();
         cfg.credentials = credentials.to_vec();
+        self.save_config(&cfg)
+    }
+
+    pub fn save_preferences(&self, ui_scale: f32, font_size: f32, theme_name: &str, paste_protection: bool) -> Result<(), String> {
+        let mut cfg = self.load_config();
+        cfg.ui_scale = ui_scale;
+        cfg.font_size = font_size;
+        cfg.theme_name = theme_name.to_string();
+        cfg.paste_protection_enabled = paste_protection;
         self.save_config(&cfg)
     }
 
@@ -478,6 +514,7 @@ impl StorageManager {
             file_path,
             is_portable: true,
             vault_key: None,
+            is_vault_configured: false,
         }
     }
 }
@@ -679,6 +716,28 @@ mod tests {
         assert!(json_reverted.contains("mR@6x?U(P$,hQ8RA"));
         assert!(json_reverted.contains("MySuperSecret123!"));
         assert!(json_reverted.contains("\"vault\": null"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_ui_scale_and_preferences_persistence() {
+        let base = std::env::temp_dir().join(format!("test_prefs_{}", uuid::Uuid::new_v4()));
+        let storage = StorageManager::with_data_dir(base.join("data"));
+
+        // Default ui_scale should be 1.0
+        let cfg = storage.load_config();
+        assert_eq!(cfg.ui_scale, 1.0);
+        assert_eq!(cfg.font_size, 14.0);
+
+        // Update preferences
+        storage.save_preferences(1.25, 16.0, "Dracula", false).unwrap();
+
+        let loaded = storage.load_config();
+        assert_eq!(loaded.ui_scale, 1.25);
+        assert_eq!(loaded.font_size, 16.0);
+        assert_eq!(loaded.theme_name, "Dracula");
+        assert_eq!(loaded.paste_protection_enabled, false);
 
         let _ = fs::remove_dir_all(&base);
     }

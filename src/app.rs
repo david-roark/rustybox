@@ -295,6 +295,7 @@ pub struct RustyBoxApp {
     vault_status: Option<(String, bool)>,
     // Terminal Customization, Theme & Search
     theme: TerminalTheme,
+    ui_scale: f32,
     font_size: f32,
     search_open: bool,
     search_query: String,
@@ -384,10 +385,46 @@ pub struct RustyBoxApp {
 }
 
 impl RustyBoxApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Configure embedded Unicode fonts for full Vietnamese diacritics & international symbols
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "noto_sans_mono".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSansMono.ttf"))),
+        );
+        fonts.font_data.insert(
+            "ubuntu_mono".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/UbuntuMono.ttf"))),
+        );
+        fonts.font_data.insert(
+            "dejavu_sans_mono".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSansMono.ttf"))),
+        );
+        fonts.font_data.insert(
+            "dejavu_sans".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSans.ttf"))),
+        );
+
+        // Prioritize Noto Sans Mono & Ubuntu Mono for complete Vietnamese Unicode coverage in Terminal
+        let mono = fonts.families.entry(egui::FontFamily::Monospace).or_default();
+        mono.insert(0, "dejavu_sans_mono".to_owned());
+        mono.insert(0, "ubuntu_mono".to_owned());
+        mono.insert(0, "noto_sans_mono".to_owned());
+
+        // Put DejaVu Sans at top of Proportional family for crisp UI text
+        let prop = fonts.families.entry(egui::FontFamily::Proportional).or_default();
+        prop.insert(0, "dejavu_sans".to_owned());
+
+        cc.egui_ctx.set_fonts(fonts);
+
         let storage = StorageManager::new();
-        let mut sessions = storage.load_sessions();
-        let credentials = storage.load_credentials();
+        let config = storage.load_config();
+        let mut sessions = config.sessions.clone();
+        let credentials = config.credentials.clone();
+        let ui_scale = if config.ui_scale >= 0.7 && config.ui_scale <= 2.5 { config.ui_scale } else { 1.0 };
+        let font_size = if config.font_size >= 8.0 && config.font_size <= 36.0 { config.font_size } else { 14.0 };
+        let theme = TerminalTheme::from_name(&config.theme_name).unwrap_or(TerminalTheme::RustyBoxDark);
+        let paste_protection_enabled = config.paste_protection_enabled;
         let (broadcast_tx, broadcast_rx) = unbounded();
 
         // Ensure every session has a unique UUID (auto-repair any historical duplicate IDs)
@@ -447,12 +484,13 @@ impl RustyBoxApp {
             master_password: String::new(),
             master_password_confirm: String::new(),
             vault_status: None,
-            theme: TerminalTheme::RustyBoxDark,
-            font_size: 14.0,
+            theme,
+            ui_scale,
+            font_size,
             search_open: false,
             search_query: String::new(),
             pending_paste_text: None,
-            paste_protection_enabled: true,
+            paste_protection_enabled,
             show_settings_dialog: false,
             show_hotkeys_dialog: false,
             show_manage_passwords: false,
@@ -537,11 +575,16 @@ impl RustyBoxApp {
         visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250));
         visuals.widgets.active.rounding = egui::Rounding::same(6.0);
         visuals.window_rounding = egui::Rounding::same(8.0);
-        _cc.egui_ctx.set_visuals(visuals);
+        cc.egui_ctx.set_visuals(visuals);
 
         // Open an initial local shell tab on launch in the background, keeping Home Dashboard active
         app.spawn_local_terminal("Local Terminal", None, None);
         app.is_home_active = true;
+
+        if std::env::var("RUSTYBOX_QA_TERMINAL_ACTIVE").is_ok() {
+            app.is_home_active = false;
+            app.active_tab_idx = 0;
+        }
 
         // QA Hook for automated verification
         if let Ok(view) = std::env::var("RUSTYBOX_QA_VIEW") {
@@ -701,10 +744,77 @@ impl RustyBoxApp {
                     if s.auto_sftp {
                         self.show_sftp_sidebar = true;
                         self.sidebar_tab = 1;
+                        self.explorer.connect_remote(crate::sftp::remote::SftpTargetConfig {
+                            host: host.clone(),
+                            port,
+                            user: user.clone(),
+                            password: final_password.map(|p| p.to_string()),
+                            key_path: key_path.clone(),
+                        });
                     }
                 }
                 Err(e) => {
                     eprintln!("Failed to spawn SSH session: {}", e);
+                }
+            }
+        }
+    }
+
+    pub fn sync_active_tab_sftp(&mut self) {
+        if self.is_home_active {
+            return;
+        }
+        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+            if let Some(ref s) = tab.session_def {
+                if let SessionType::Ssh {
+                    ref host,
+                    port,
+                    ref user,
+                    ref key_path,
+                    ..
+                } = s.session_type
+                {
+                    let effective_password = s
+                        .password
+                        .as_deref()
+                        .filter(|p| !p.trim().is_empty())
+                        .or_else(|| {
+                            self.credentials
+                                .iter()
+                                .find(|c| {
+                                    (!c.username.is_empty() && c.username == *user)
+                                        || (!c.name.is_empty() && c.name == s.name)
+                                })
+                                .map(|c| c.password.as_str())
+                                .filter(|p| !p.trim().is_empty())
+                        });
+
+                    let mut decrypted_pw_buf: Option<String> = None;
+                    if let Some(pw) = effective_password {
+                        if is_encrypted(pw) {
+                            if self.storage.is_vault_unlocked() {
+                                if let Some(key) = self.storage.vault_key() {
+                                    if let Ok(dec) = decrypt_str(&key, pw) {
+                                        decrypted_pw_buf = Some(dec);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let final_password = if let Some(ref dec) = decrypted_pw_buf {
+                        Some(dec.as_str())
+                    } else {
+                        effective_password
+                    };
+
+                    self.explorer.connect_remote(crate::sftp::remote::SftpTargetConfig {
+                        host: host.clone(),
+                        port,
+                        user: user.clone(),
+                        password: final_password.map(|p| p.to_string()),
+                        key_path: key_path.clone(),
+                    });
                 }
             }
         }
@@ -842,17 +952,28 @@ impl RustyBoxApp {
                 self.sidebar_tab = 1;
             }
             SessionType::Wsl { ref distro, ref user, ref working_dir } => {
-                let mut cmd = if distro.is_empty() {
-                    "wsl".to_string()
-                } else {
-                    format!("wsl -d {}", distro)
-                };
-                if let Some(u) = user {
-                    if !u.is_empty() {
-                        cmd.push_str(&format!(" -u {}", u));
-                    }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = distro;
+                    let _ = user;
+                    // Running natively on Linux/Ubuntu: launch default bash or login as user
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+                    self.spawn_local_terminal_ext(&s.name, Some(&shell), working_dir.as_deref(), Some(s.clone()));
                 }
-                self.spawn_local_terminal_ext(&s.name, Some(&cmd), working_dir.as_deref(), Some(s.clone()));
+                #[cfg(target_os = "windows")]
+                {
+                    let mut cmd = if distro.is_empty() {
+                        "wsl".to_string()
+                    } else {
+                        format!("wsl -d {}", distro)
+                    };
+                    if let Some(u) = user {
+                        if !u.is_empty() {
+                            cmd.push_str(&format!(" -u {}", u));
+                        }
+                    }
+                    self.spawn_local_terminal_ext(&s.name, Some(&cmd), working_dir.as_deref(), Some(s.clone()));
+                }
             }
         }
     }
@@ -1139,21 +1260,10 @@ impl RustyBoxApp {
                 return;
             }
         }
-        // Fallback key generation simulation if ssh-keygen is unavailable
-        let rand_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-        if self.keygen_type == 1 {
-            self.keygen_public = format!("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQD{} {} (4096-bit)", &rand_id[..24], comment);
-            self.keygen_private = format!("-----BEGIN RSA PRIVATE KEY-----
-MIIEogIBAAKCAQEA{}
------END RSA PRIVATE KEY-----", rand_id);
-            self.keygen_fingerprint = format!("SHA256:{} {}", &rand_id[..20], comment);
-        } else {
-            self.keygen_public = format!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI{} {}", &rand_id[..28], comment);
-            self.keygen_private = format!("-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAA{}
------END OPENSSH PRIVATE KEY-----", rand_id);
-            self.keygen_fingerprint = format!("SHA256:{} {}", &rand_id[..20], comment);
-        }
+        // If ssh-keygen is unavailable, report clear error instead of generating cryptographically invalid fake keys
+        self.keygen_public = "❌ Error: ssh-keygen command failed or is not available on this system.".to_string();
+        self.keygen_private = "Please install OpenSSH client (ssh-keygen) to generate secure cryptographic key pairs.".to_string();
+        self.keygen_fingerprint = "N/A".to_string();
     }
 
     pub fn generate_random_password(&mut self) {
@@ -1166,12 +1276,12 @@ b3BlbnNzaC1rZXktdjEAAAAA{}
             self.pwdgen_output = "Select at least 1 character set".into();
             return;
         }
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mut seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(123456789);
+        use aes_gcm::aead::rand_core::{OsRng, RngCore};
+        let mut random_bytes = vec![0u8; self.pwdgen_len];
+        OsRng.fill_bytes(&mut random_bytes);
         let mut res = Vec::with_capacity(self.pwdgen_len);
-        for _ in 0..self.pwdgen_len {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let idx = ((seed >> 32) as usize) % charset.len();
+        for b in random_bytes {
+            let idx = (b as usize) % charset.len();
             res.push(charset[idx] as char);
         }
         self.pwdgen_output = res.into_iter().collect();
@@ -1328,6 +1438,25 @@ b3BlbnNzaC1rZXktdjEAAAAA{}
 
 impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Enforce UI zoom / font scale factor
+        ctx.set_zoom_factor(self.ui_scale);
+
+        // Global Keyboard Shortcuts for UI Zoom & Font Scale
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Plus)
+            || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Equals)) {
+            self.ui_scale = (self.ui_scale + 0.1).min(2.0);
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Minus)) {
+            self.ui_scale = (self.ui_scale - 0.1).max(0.7);
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Num0)
+            || i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0)) {
+            self.ui_scale = 1.0;
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+        }
+
         // Global Keyboard Shortcuts
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.search_open = true;
@@ -1449,7 +1578,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-48")
+                                RichText::new("v1.3-52")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -1568,6 +1697,33 @@ impl eframe::App for RustyBoxApp {
                     }
                     ui.separator();
                     ui.checkbox(&mut self.multi_exec_enabled, "⚡ Multi-Execution (Broadcast to all tabs)");
+                    ui.separator();
+                    ui.menu_button("🔍 UI Font & Zoom Scale", |ui| {
+                        if ui.button("➕ Zoom In UI (+10%)\tCtrl+Shift++").clicked() {
+                            self.ui_scale = (self.ui_scale + 0.1).min(2.0);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            ui.close_menu();
+                        }
+                        if ui.button("➖ Zoom Out UI (-10%)\tCtrl+Shift+-").clicked() {
+                            self.ui_scale = (self.ui_scale - 0.1).max(0.7);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            ui.close_menu();
+                        }
+                        if ui.button("↺ Reset Zoom (100%)\tCtrl+0").clicked() {
+                            self.ui_scale = 1.0;
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        for scale in [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0] {
+                            let label = format!("{:.0}%{}", scale * 100.0, if (self.ui_scale - scale).abs() < 0.02 { "  ✓" } else { "" });
+                            if ui.selectable_label((self.ui_scale - scale).abs() < 0.02, label).clicked() {
+                                self.ui_scale = scale;
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                     ui.separator();
                     ui.menu_button("🎨 Terminal Theme", |ui| {
                         for t in TerminalTheme::all() {
@@ -1852,7 +2008,7 @@ impl eframe::App for RustyBoxApp {
                         self.search_open = !self.search_open;
                     }
 
-                    // Font stepper in a modern unified container
+                    // Dual UI Scale & Terminal Font stepper in modern unified container
                     egui::Frame::none()
                         .fill(Color32::from_rgb(22, 28, 40))
                         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
@@ -1861,13 +2017,36 @@ impl eframe::App for RustyBoxApp {
                         .show(ui, |ui| {
                             ui.set_height(toolbar_h);
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("Font:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
-                                if ui.small_button("➖").clicked() && self.font_size > 8.0 {
-                                    self.font_size -= 1.0;
+                                // UI Font / Scale Zoom
+                                ui.label(RichText::new("UI:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
+                                if ui.small_button("➖").on_hover_text("Zoom out UI font (Ctrl+Shift+-)").clicked() && self.ui_scale > 0.75 {
+                                    self.ui_scale = (self.ui_scale - 0.1).max(0.7);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
                                 }
-                                ui.label(RichText::new(format!("{:.0}", self.font_size)).size(11.0).strong());
-                                if ui.small_button("➕").clicked() && self.font_size < 32.0 {
+                                let pct = (self.ui_scale * 100.0).round() as i32;
+                                if ui.button(RichText::new(format!("{}%", pct)).size(11.0).strong())
+                                    .on_hover_text("Click to reset UI Zoom to 100%")
+                                    .clicked() {
+                                    self.ui_scale = 1.0;
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                }
+                                if ui.small_button("➕").on_hover_text("Zoom in UI font (Ctrl+Shift++)").clicked() && self.ui_scale < 2.0 {
+                                    self.ui_scale = (self.ui_scale + 0.1).min(2.0);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                }
+
+                                ui.separator();
+
+                                // Terminal Font Size
+                                ui.label(RichText::new("Term:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
+                                if ui.small_button("➖").on_hover_text("Decrease terminal font size (Ctrl+-)").clicked() && self.font_size > 8.0 {
+                                    self.font_size -= 1.0;
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                }
+                                ui.label(RichText::new(format!("{:.0}px", self.font_size)).size(11.0).strong());
+                                if ui.small_button("➕").on_hover_text("Increase terminal font size (Ctrl++)").clicked() && self.font_size < 32.0 {
                                     self.font_size += 1.0;
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
                                 }
                             });
                         });
@@ -1894,8 +2073,7 @@ impl eframe::App for RustyBoxApp {
                     ui.add_space(5.0);
 
                     // Master Password Vault status indicator
-                    let cfg_check = self.storage.load_config();
-                    let is_vault_configured = cfg_check.vault.is_some();
+                    let is_vault_configured = self.storage.is_vault_configured();
                     let is_unlocked = self.storage.is_vault_unlocked();
                     let (v_icon, v_txt, v_col) = if !is_vault_configured {
                         ("🔑", "Master Key: Off", Color32::from_rgb(148, 163, 184))
@@ -2421,6 +2599,7 @@ impl eframe::App for RustyBoxApp {
             let quick_rect = egui::Rect::from_min_max(pos2(strip_rect.max.x - quick_w, strip_rect.min.y), strip_rect.max);
 
             let mut close_tab_idx: Option<usize> = None;
+            let mut switch_to_tab: Option<usize> = None;
             enum TabMenuAction { Duplicate, Restart, Rename, Close, CloseOthers, CloseRight }
             let mut tab_menu_action: Option<(usize, TabMenuAction)> = None;
 
@@ -2616,9 +2795,7 @@ impl eframe::App for RustyBoxApp {
                                 if close_resp.clicked() || tab_middle_clicked {
                                     close_tab_idx = Some(idx);
                                 } else if title_resp.clicked() {
-                                    self.is_home_active = false;
-                                    self.active_tab_idx = idx;
-                                    self.selected_sidebar_session_id = tab.session_def.as_ref().map(|def| def.id.clone());
+                                    switch_to_tab = Some(idx);
                                 }
 
                                 let right_clicked = title_resp.secondary_clicked() || (title_resp.hovered() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
@@ -2645,6 +2822,13 @@ impl eframe::App for RustyBoxApp {
                             }
                         });
                     });
+
+            if let Some(idx) = switch_to_tab {
+                self.is_home_active = false;
+                self.active_tab_idx = idx;
+                self.selected_sidebar_session_id = self.open_tabs.get(idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id.clone());
+                self.sync_active_tab_sftp();
+            }
 
             // 2. QUICK CONNECT AREA (Visible on terminal tabs, hidden on Home Dashboard to avoid duplicate)
             let mut quick_ui = ui.new_child(egui::UiBuilder::new().max_rect(quick_rect).layout(Layout::right_to_left(Align::Center)));
@@ -2858,7 +3042,10 @@ impl eframe::App for RustyBoxApp {
                                     self.is_home_active = false;
                                 }
                                 if chip(ui, "🐧 WSL").clicked() {
+                                    #[cfg(target_os = "windows")]
                                     self.spawn_local_terminal("WSL", Some("wsl"), None);
+                                    #[cfg(not(target_os = "windows"))]
+                                    self.spawn_local_terminal("Local Shell", None, None);
                                     self.is_home_active = false;
                                 }
                                 if chip(ui, "🌐 New Session").clicked() {
@@ -3251,7 +3438,11 @@ impl eframe::App for RustyBoxApp {
         // Handle Action from Terminal
         match triggered_action {
             TerminalAction::MultiLinePaste(text) => {
-                self.pending_paste_text = Some(text);
+                if self.paste_protection_enabled {
+                    self.pending_paste_text = Some(text);
+                } else if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                    let _ = tab.session.write_str(&text);
+                }
             }
             TerminalAction::SaveBufferToFile => {
                 self.save_active_terminal_buffer();
@@ -4184,6 +4375,7 @@ impl eframe::App for RustyBoxApp {
                                     match create_vault(&self.master_password) {
                                         Ok((meta, key)) => {
                                             self.storage.set_vault_key(Some(key));
+                                            self.storage.set_vault_configured(true);
                                             let mut new_cfg = self.storage.load_config();
                                             new_cfg.vault = Some(meta);
                                             new_cfg.sessions = self.sessions.clone();
@@ -4280,6 +4472,7 @@ impl eframe::App for RustyBoxApp {
                                     let mut new_cfg = self.storage.load_config();
                                     new_cfg.vault = None;
                                     self.storage.set_vault_key(None);
+                                    self.storage.set_vault_configured(false);
                                     new_cfg.sessions = self.sessions.clone();
                                     new_cfg.credentials = self.credentials.clone();
                                     let _ = self.storage.save_config(&new_cfg);
@@ -4771,6 +4964,27 @@ impl eframe::App for RustyBoxApp {
                             // Display Tab
                             ui.label(RichText::new("Interface & Display Preferences").strong());
                             ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("UI Font & Interface Zoom:");
+                                let mut pct = (self.ui_scale * 100.0).round() as i32;
+                                if ui.add(egui::Slider::new(&mut pct, 70..=200).suffix("%").step_by(5.0)).changed() {
+                                    self.ui_scale = pct as f32 / 100.0;
+                                }
+                                if ui.button("↺ Reset 100%").clicked() {
+                                    self.ui_scale = 1.0;
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Preset UI Scales:");
+                                for s in [0.8, 0.9, 1.0, 1.1, 1.25, 1.5] {
+                                    let label = format!("{:.0}%", s * 100.0);
+                                    if ui.selectable_label((self.ui_scale - s).abs() < 0.02, label).clicked() {
+                                        self.ui_scale = s;
+                                    }
+                                }
+                            });
+                            ui.add_space(6.0);
                             ui.label("• Display left sidebar at startup");
                             ui.label("• Use compact tab bar height");
                             ui.label("• Ask for confirmation when closing window with active sessions");
@@ -4793,6 +5007,7 @@ impl eframe::App for RustyBoxApp {
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("💾 Save Preferences").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
                             let _ = self.storage.save_sessions(&self.sessions);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
                             close_dialog = true;
                         }
                         if ui.button("Close").clicked() {
