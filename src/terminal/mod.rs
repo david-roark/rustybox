@@ -1,3 +1,4 @@
+pub mod fonts;
 pub mod highlight;
 pub mod pty_session;
 pub mod vt_screen;

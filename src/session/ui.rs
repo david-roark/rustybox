@@ -34,6 +34,7 @@ pub struct NewSessionDialog {
     pub ssh_compression: bool,
     // Terminal settings tab
     pub terminal_font_size: u16,
+    pub terminal_font_family: String,
     pub terminal_color_scheme: String,
     pub backspace_sends_ctrl_h: bool,
     pub right_click_paste: bool,
@@ -133,6 +134,7 @@ impl NewSessionDialog {
             do_not_exit_after_cmd: false,
             ssh_compression: true,
             terminal_font_size: 14,
+            terminal_font_family: String::new(),
             terminal_color_scheme: "RustyBox Dark (Default)".into(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
@@ -238,6 +240,7 @@ impl NewSessionDialog {
         } else {
             s.terminal_font_size
         };
+        self.terminal_font_family = s.terminal_font_family.clone();
         self.terminal_color_scheme = if s.terminal_color_scheme.is_empty() {
             "RustyBox Dark (Default)".into()
         } else {
@@ -479,6 +482,7 @@ impl NewSessionDialog {
             do_not_exit_after_cmd: self.do_not_exit_after_cmd,
             ssh_compression: self.ssh_compression,
             terminal_font_size: self.terminal_font_size,
+            terminal_font_family: self.terminal_font_family.clone(),
             terminal_color_scheme: self.terminal_color_scheme.clone(),
             backspace_sends_ctrl_h: self.backspace_sends_ctrl_h,
             right_click_paste: self.right_click_paste,
@@ -1176,7 +1180,18 @@ pub fn render_new_session_dialog(
                                     );
                                     ui.add_space(8.0);
                                     ui.horizontal(|ui| {
-                                        ui.label("Terminal font size:");
+                                        ui.label("Terminal font:");
+                                        egui::ComboBox::from_id_salt("advanced_term_font_family")
+                                            .selected_text(crate::terminal::fonts::terminal_font_display_name(&dialog.terminal_font_family))
+                                            .width(150.0)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut dialog.terminal_font_family, "".to_string(), "Default (Global Setting)");
+                                                for opt in crate::terminal::fonts::AVAILABLE_TERMINAL_FONTS {
+                                                    ui.selectable_value(&mut dialog.terminal_font_family, opt.id.to_string(), opt.name);
+                                                }
+                                            });
+                                        ui.add_space(8.0);
+                                        ui.label("Size:");
                                         ui.add(
                                             egui::DragValue::new(&mut dialog.terminal_font_size)
                                                 .range(9..=28),
@@ -1583,7 +1598,18 @@ pub fn render_new_session_dialog(
                                 }
                                 1 => {
                                     ui.horizontal(|ui| {
-                                        ui.label("Terminal font size:");
+                                        ui.label("Terminal font:");
+                                        egui::ComboBox::from_id_salt("compact_term_font_family")
+                                            .selected_text(crate::terminal::fonts::terminal_font_display_name(&dialog.terminal_font_family))
+                                            .width(150.0)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut dialog.terminal_font_family, "".to_string(), "Default (Global Setting)");
+                                                for opt in crate::terminal::fonts::AVAILABLE_TERMINAL_FONTS {
+                                                    ui.selectable_value(&mut dialog.terminal_font_family, opt.id.to_string(), opt.name);
+                                                }
+                                            });
+                                        ui.add_space(8.0);
+                                        ui.label("Size:");
                                         ui.add(egui::DragValue::new(&mut dialog.terminal_font_size).range(9..=28));
                                         if ui.button("Font settings...").clicked() {
                                             dialog.show_font_selector = true;
@@ -1943,6 +1969,20 @@ fn render_session_child_popups(ctx: &egui::Context, dialog: &mut NewSessionDialo
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Monospace terminal font").strong());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Font family:");
+                        egui::ComboBox::from_id_salt("tform_font_family")
+                            .selected_text(crate::terminal::fonts::terminal_font_display_name(&dialog.terminal_font_family))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut dialog.terminal_font_family, "".to_string(), "Default (Global Setting)");
+                                for opt in crate::terminal::fonts::AVAILABLE_TERMINAL_FONTS {
+                                    ui.selectable_value(&mut dialog.terminal_font_family, opt.id.to_string(), opt.name);
+                                }
+                            });
+                    });
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Font size (pt):");
                         ui.add(egui::DragValue::new(&mut dialog.terminal_font_size).range(9..=28));

@@ -124,6 +124,8 @@ pub struct Session {
     pub ssh_compression: bool,
     #[serde(default = "default_font_size")]
     pub terminal_font_size: u16,
+    #[serde(default)]
+    pub terminal_font_family: String,
     #[serde(default = "default_color_scheme")]
     pub terminal_color_scheme: String,
     #[serde(default)]
@@ -175,6 +177,7 @@ impl Session {
             do_not_exit_after_cmd: false,
             ssh_compression: true,
             terminal_font_size: 14,
+            terminal_font_family: String::new(),
             terminal_color_scheme: default_color_scheme(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
@@ -216,6 +219,7 @@ impl Session {
             do_not_exit_after_cmd: false,
             ssh_compression: true,
             terminal_font_size: 14,
+            terminal_font_family: String::new(),
             terminal_color_scheme: default_color_scheme(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
