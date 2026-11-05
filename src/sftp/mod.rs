@@ -20,6 +20,13 @@ pub struct FileEntry {
     pub permissions: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalOpenMode {
+    TextEditor,
+    OpenWithDialog,
+    DefaultProgram,
+}
+
 pub struct FileExplorer {
     pub current_path: PathBuf,
     pub path_input: String,
@@ -40,6 +47,7 @@ pub struct FileExplorer {
     pub follow_terminal_folder: bool,
     pub remote_monitoring_enabled: bool,
     pub active_remote_label: Option<String>,
+    pub remote_home_dir: Option<String>,
     // Modal quick editor
     pub editor_open: bool,
     pub editor_file_path: Option<PathBuf>,
@@ -63,6 +71,25 @@ pub struct FileExplorer {
     pub show_new_file: bool,
     pub new_file_name: String,
     pub pending_delete: Option<PathBuf>,
+    // Modal rename dialog
+    pub show_rename: bool,
+    pub rename_target: Option<PathBuf>,
+    pub rename_new_name: String,
+    // Modal properties dialog
+    pub properties_open: bool,
+    pub properties_target: Option<FileEntry>,
+    // Terminal cd request
+    pub requested_cd_terminal: Option<String>,
+    // Terminal paste path request (MobaXterm middle click / menu)
+    pub requested_terminal_paste: Option<String>,
+    // External open request
+    pub pending_external_open: Option<(PathBuf, ExternalOpenMode)>,
+    // Diff / Compare Viewer
+    pub diff_open: bool,
+    pub diff_file_a: String,
+    pub diff_file_b: String,
+    pub diff_content_a: String,
+    pub diff_content_b: String,
 }
 
 impl FileExplorer {
@@ -84,9 +111,10 @@ impl FileExplorer {
             remote_disk_stats: None,
             show_hidden: true,
             sort_ascending: true,
-            follow_terminal_folder: false,
+            follow_terminal_folder: true,
             remote_monitoring_enabled: true,
             active_remote_label: None,
+            remote_home_dir: None,
             editor_open: false,
             editor_file_path: None,
             editor_content: String::new(),
@@ -107,6 +135,19 @@ impl FileExplorer {
             show_new_file: false,
             new_file_name: "new_file.txt".into(),
             pending_delete: None,
+            show_rename: false,
+            rename_target: None,
+            rename_new_name: String::new(),
+            properties_open: false,
+            properties_target: None,
+            requested_cd_terminal: None,
+            requested_terminal_paste: None,
+            pending_external_open: None,
+            diff_open: false,
+            diff_file_a: String::new(),
+            diff_file_b: String::new(),
+            diff_content_a: String::new(),
+            diff_content_b: String::new(),
         };
         explorer.refresh();
         explorer
@@ -155,6 +196,7 @@ impl FileExplorer {
         self.is_loading = false;
         self.remote_label = None;
         self.active_remote_label = None;
+        self.remote_home_dir = None;
         self.remote_disk_stats = None;
         self.current_path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         self.path_input = Self::format_display_path(&self.current_path);
@@ -179,6 +221,7 @@ impl FileExplorer {
                     self.is_remote = true;
                     self.remote_label = Some(target.clone());
                     self.active_remote_label = Some(target);
+                    self.remote_home_dir = Some(initial_dir.clone());
                     self.current_path = PathBuf::from(&initial_dir);
                     self.path_input = Self::format_display_path(&self.current_path);
                     if !self.path_history.contains(&self.current_path) {
@@ -203,10 +246,14 @@ impl FileExplorer {
                     }
                 }
                 SftpEvent::FileRead { path, content } => {
-                    self.editor_file_path = Some(PathBuf::from(path));
-                    self.editor_content = content;
-                    self.editor_status = None;
-                    self.editor_open = true;
+                    if self.diff_open && self.diff_content_a.starts_with("Loading remote") {
+                        self.diff_content_a = content;
+                    } else {
+                        self.editor_file_path = Some(PathBuf::from(path));
+                        self.editor_content = content;
+                        self.editor_status = None;
+                        self.editor_open = true;
+                    }
                     self.is_loading = false;
                 }
                 SftpEvent::FileWritten { .. } => {
@@ -218,6 +265,11 @@ impl FileExplorer {
                     self.status_message = Some(msg);
                     self.is_loading = false;
                     self.error_message = None;
+                    if let Some((ref p, mode)) = self.pending_external_open.take() {
+                        if p.exists() {
+                            Self::launch_external_file(p, mode);
+                        }
+                    }
                     self.refresh();
                 }
                 SftpEvent::OperationError(err) => {
@@ -254,24 +306,72 @@ impl FileExplorer {
         }
     }
 
-    pub fn sync_terminal_cwd(&mut self, child_pid: Option<u32>) {
-        if !self.follow_terminal_folder || self.is_remote {
+    pub fn sync_terminal_cwd(&mut self, target_dir: &str) {
+        if !self.follow_terminal_folder {
             return;
         }
-        #[cfg(unix)]
-        if let Some(pid) = child_pid {
-            let proc_cwd = PathBuf::from(format!("/proc/{}/cwd", pid));
-            if let Ok(target) = fs::read_link(&proc_cwd) {
-                if target.is_dir() && target != self.current_path {
-                    self.current_path = target;
-                    self.path_input = Self::format_display_path(&self.current_path);
-                    self.refresh();
-                }
-            }
+        let clean = target_dir.trim();
+        if clean.is_empty() {
+            return;
         }
-        #[cfg(not(unix))]
-        {
-            let _ = child_pid;
+
+        if self.is_remote {
+            let resolved = if clean == "~" {
+                self.remote_home_dir.clone().unwrap_or_else(|| {
+                    if let Some(ref lbl) = self.remote_label {
+                        if lbl.starts_with("root@") {
+                            "/root".to_string()
+                        } else if let Some((u, _)) = lbl.split_once('@') {
+                            format!("/home/{}", u)
+                        } else {
+                            "/root".to_string()
+                        }
+                    } else {
+                        "/root".to_string()
+                    }
+                })
+            } else if let Some(sub) = clean.strip_prefix("~/") {
+                let home = self.remote_home_dir.clone().unwrap_or_else(|| {
+                    if let Some(ref lbl) = self.remote_label {
+                        if lbl.starts_with("root@") {
+                            "/root".to_string()
+                        } else if let Some((u, _)) = lbl.split_once('@') {
+                            format!("/home/{}", u)
+                        } else {
+                            "/root".to_string()
+                        }
+                    } else {
+                        "/root".to_string()
+                    }
+                });
+                format!("{}/{}", home.trim_end_matches('/'), sub)
+            } else if clean.starts_with('/') {
+                clean.to_string()
+            } else {
+                return;
+            };
+
+            let norm_resolved = if resolved.len() > 1 && resolved.ends_with('/') {
+                resolved.trim_end_matches('/').to_string()
+            } else {
+                resolved
+            };
+            let cur_str = self.current_path.to_string_lossy().to_string();
+            let norm_cur = if cur_str.len() > 1 && cur_str.ends_with('/') {
+                cur_str.trim_end_matches('/').to_string()
+            } else {
+                cur_str
+            };
+
+            if norm_resolved != norm_cur {
+                self.set_path(PathBuf::from(norm_resolved));
+            }
+        } else {
+            // Local filesystem directory
+            let target_path = PathBuf::from(clean);
+            if target_path.is_dir() && target_path != self.current_path {
+                self.set_path(target_path);
+            }
         }
     }
 
@@ -520,28 +620,101 @@ impl FileExplorer {
         }
     }
 
-    pub fn upload_file(&mut self, local_path: PathBuf) {
+    pub fn upload_file_to(&mut self, local_path: PathBuf, target_dir: &Path) {
         if let Some(file_name) = local_path.file_name() {
             let name_str = file_name.to_string_lossy().to_string();
-            let curr = self.current_path.to_string_lossy().to_string();
+            let curr = target_dir.to_string_lossy().to_string();
             let remote_p = if curr.ends_with('/') {
                 format!("{}{}", curr, name_str)
             } else {
                 format!("{}/{}", curr, name_str)
             };
-            if let Some(ref client) = self.remote_client {
-                self.is_loading = true;
-                client.lock().upload(local_path, remote_p);
+            if self.is_remote {
+                if let Some(ref client) = self.remote_client {
+                    self.is_loading = true;
+                    client.lock().upload(local_path, remote_p);
+                }
+            } else {
+                let dest = target_dir.join(file_name);
+                match fs::copy(&local_path, &dest) {
+                    Ok(_) => {
+                        self.status_message = Some(format!("Uploaded '{}'", name_str));
+                        self.refresh();
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Upload failed: {}", e));
+                    }
+                }
             }
         }
     }
 
+    pub fn upload_file(&mut self, local_path: PathBuf) {
+        let curr = self.current_path.clone();
+        self.upload_file_to(local_path, &curr);
+    }
+
     pub fn download_file(&mut self, remote_path: &Path, local_dest: PathBuf) {
-        let remote_str = remote_path.to_string_lossy().to_string();
-        if let Some(ref client) = self.remote_client {
-            self.is_loading = true;
-            client.lock().download(remote_str, local_dest);
+        if self.is_remote {
+            let remote_str = remote_path.to_string_lossy().to_string();
+            if let Some(ref client) = self.remote_client {
+                self.is_loading = true;
+                client.lock().download(remote_str, local_dest);
+            }
+        } else {
+            match fs::copy(remote_path, &local_dest) {
+                Ok(_) => {
+                    self.status_message = Some(format!("Saved to '{}'", local_dest.display()));
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Download failed: {}", e));
+                }
+            }
         }
+    }
+
+    pub fn open_rename(&mut self, path: PathBuf) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.rename_new_name = name;
+        self.rename_target = Some(path);
+        self.show_rename = true;
+    }
+
+    pub fn rename_entry(&mut self, old_path: &Path, new_name: &str) {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            self.error_message = Some("Name cannot be empty".to_string());
+            return;
+        }
+        let parent = old_path.parent().unwrap_or(&self.current_path);
+        let new_path = parent.join(trimmed);
+        if self.is_remote {
+            if let Some(ref client) = self.remote_client {
+                self.is_loading = true;
+                client.lock().rename(
+                    old_path.to_string_lossy().to_string(),
+                    new_path.to_string_lossy().to_string(),
+                );
+            }
+        } else {
+            match fs::rename(old_path, &new_path) {
+                Ok(_) => {
+                    self.status_message = Some(format!("Renamed to '{}'", trimmed));
+                    self.refresh();
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Rename failed: {}", e));
+                }
+            }
+        }
+    }
+
+    pub fn open_properties(&mut self, entry: FileEntry) {
+        self.properties_target = Some(entry);
+        self.properties_open = true;
     }
 
     pub fn open_chmod(&mut self, path: PathBuf) {
@@ -593,6 +766,95 @@ impl FileExplorer {
         self.chmod_open = false;
     }
 
+    pub fn launch_external_file(local_path: &Path, mode: ExternalOpenMode) {
+        let path_str = local_path.to_string_lossy().to_string();
+        #[cfg(target_os = "windows")]
+        {
+            match mode {
+                ExternalOpenMode::TextEditor => {
+                    let _ = std::process::Command::new("notepad.exe").arg(&path_str).spawn();
+                }
+                ExternalOpenMode::OpenWithDialog => {
+                    let _ = std::process::Command::new("rundll32.exe")
+                        .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                        .spawn();
+                }
+                ExternalOpenMode::DefaultProgram => {
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &path_str])
+                        .spawn();
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            match mode {
+                ExternalOpenMode::TextEditor => {
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+                    let _ = std::process::Command::new(editor).arg(&path_str).spawn();
+                }
+                ExternalOpenMode::OpenWithDialog | ExternalOpenMode::DefaultProgram => {
+                    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+                }
+            }
+        }
+    }
+
+    pub fn open_external(&mut self, remote_path: &Path, mode: ExternalOpenMode) {
+        let file_name = remote_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "temp_file".to_string());
+        let temp_cache_dir = std::env::temp_dir().join("rustybox_cache");
+        let _ = fs::create_dir_all(&temp_cache_dir);
+        let local_dest = temp_cache_dir.join(&file_name);
+
+        if self.is_remote {
+            self.pending_external_open = Some((local_dest.clone(), mode));
+            self.download_file(remote_path, local_dest);
+        } else {
+            Self::launch_external_file(remote_path, mode);
+        }
+    }
+
+    pub fn open_compare(&mut self, file_a_path: &Path, file_b_path: PathBuf) {
+        let content_b = match fs::read_to_string(&file_b_path) {
+            Ok(c) => c,
+            Err(e) => format!("[Cannot read comparison file: {}]", e),
+        };
+        let file_a_name = file_a_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "File A".to_string());
+        let file_b_name = file_b_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "File B".to_string());
+
+        if self.is_remote {
+            if let Some(ref client) = self.remote_client {
+                let path_str = file_a_path.to_string_lossy().to_string();
+                self.is_loading = true;
+                client.lock().read_file(&path_str);
+            }
+            self.diff_file_a = file_a_name;
+            self.diff_file_b = file_b_name;
+            self.diff_content_a = "Loading remote file content...".to_string();
+            self.diff_content_b = content_b;
+            self.diff_open = true;
+        } else {
+            let content_a = match fs::read_to_string(file_a_path) {
+                Ok(c) => c,
+                Err(e) => format!("[Cannot read file: {}]", e),
+            };
+            self.diff_file_a = file_a_name;
+            self.diff_file_b = file_b_name;
+            self.diff_content_a = content_a;
+            self.diff_content_b = content_b;
+            self.diff_open = true;
+        }
+    }
+
     pub fn disk_usage_stats(&self) -> (u64, u64, f32) {
         if self.is_remote {
             if let Some(stats) = self.remote_disk_stats {
@@ -639,6 +901,55 @@ mod tests {
         assert!(!explorer.is_remote);
         assert_eq!(explorer.remote_label, None);
         assert!(!explorer.is_loading);
+    }
+
+    #[test]
+    fn test_file_explorer_local_rename_and_properties() {
+        let temp_dir = std::env::temp_dir().join(format!("sftp_test_{}", uuid::Uuid::new_v4()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let test_file = temp_dir.join("sample.txt");
+        let _ = fs::write(&test_file, "hello world");
+
+        let mut explorer = FileExplorer::new();
+        explorer.set_path(temp_dir.clone());
+        explorer.refresh();
+
+        // Test open_rename
+        explorer.open_rename(test_file.clone());
+        assert!(explorer.show_rename);
+        assert_eq!(explorer.rename_new_name, "sample.txt");
+
+        // Test rename_entry
+        explorer.rename_entry(&test_file, "sample_renamed.txt");
+        let renamed_file = temp_dir.join("sample_renamed.txt");
+        assert!(renamed_file.exists());
+        assert!(!test_file.exists());
+
+        // Test open_properties
+        let entry = FileEntry {
+            name: "sample_renamed.txt".to_string(),
+            path: renamed_file.clone(),
+            is_dir: false,
+            is_hidden: false,
+            size: 11,
+            modified: None,
+            permissions: "rw-r--r--".to_string(),
+        };
+        explorer.open_properties(entry);
+        assert!(explorer.properties_open);
+        assert_eq!(explorer.properties_target.as_ref().map(|e| e.name.as_str()), Some("sample_renamed.txt"));
+
+        // Test open_compare
+        let file_b = temp_dir.join("sample_b.txt");
+        let _ = fs::write(&file_b, "hello rust");
+        explorer.open_compare(&renamed_file, file_b.clone());
+        assert!(explorer.diff_open);
+        assert_eq!(explorer.diff_file_a, "sample_renamed.txt");
+        assert_eq!(explorer.diff_file_b, "sample_b.txt");
+        assert_eq!(explorer.diff_content_a, "hello world");
+        assert_eq!(explorer.diff_content_b, "hello rust");
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
 

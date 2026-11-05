@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-61] - 2026-11-05
+### Added
+- **Command Snippets Library (Termius Inspired)**:
+  - Quản lý kho lệnh DevOps/SysAdmin chuyên sâu (Docker, Nginx, System, Database, Git) trong module `src/snippets/`.
+  - Hỗ trợ tham số biến động `{{variable_name}}`: Tự động nhận diện và hiển thị popup điền giá trị tham số trực quan trước khi thực thi.
+  - Tích hợp nút `▶ Run` (chạy ngay kèm `\n`) và `📋 Insert` (chèn vào dấu nhắc lệnh) trực tiếp vào Terminal tab đang kích hoạt.
+  - Modal quản lý Snippets hoàn chỉnh: Bộ lọc nhóm, tìm kiếm theo từ khóa/lệnh/tag, thêm/sửa/xóa và lưu trữ an toàn trong cấu hình.
+- **Visual SSH Tunnels & Port Forwarding Dashboard**:
+  - Quản lý đa luồng Tokio async forwarding cho 3 chế độ đường hầm trong `src/tunneling/`:
+    - Local Forwarding (`-L`): Lắng nghe port nội bộ chuyển tiếp tới cơ sở dữ liệu / dịch vụ nội bộ remote qua SSH.
+    - Remote Forwarding (`-R`): Mở port trên server remote chuyển tiếp ngược về máy phát triển local.
+    - Dynamic Forwarding (`-D`): SOCKS5 Proxy Server nội bộ duyệt web và định tuyến qua IP của VPS.
+  - Giao diện sơ đồ mạng trực quan (`Local ──SSH Gateway──➔ Remote`), badge Active/Inactive, nút Bật/Tắt 1-click độc lập.
+- **Real-Time Auto-Highlight Keywords (ZOC Terminal Inspired)**:
+  - Tự động tô màu nổi bật các từ khóa log quan trọng (`ERROR`, `FAIL`, `WARN`, `SUCCESS`, `PANIC`, địa chỉ IPv4) trực tiếp tại tầng render PTY Screen/VT100 của `TerminalWidget`.
+  - Hoạt động thuần túy phía client, không can thiệp hay sửa đổi bất kỳ tệp cấu hình/shell nào trên máy chủ từ xa.
+  - Thuật toán quét hiệu năng cao 1 lần/dòng theo chỉ mục UTF-8, hỗ trợ kiểm tra ranh giới từ (`whole_word`) và phân biệt hoa/thường (`match_case`).
+  - Hộp thoại quản lý danh sách quy tắc với 16 bộ quy tắc mặc định, bảng màu swatch trực quan và khung Live Preview kiểm tra log tức thời.
+- **SFTP Explorer Context Menu Đạt 100% Tính Năng Chuẩn MobaXterm**:
+  - Context menu chuột phải chuyên sâu cho File (12 tác vụ: Open, Edit with, Diff Viewer, Download, Duplicate, Rename, Chmod permissions, Copy Path/Name, Delete), Folder và Vùng trống.
+  - Tích hợp Diff Viewer so sánh nội dung 2 tập tin.
+  - Nhấp chuột giữa (Middle-click) vào tệp/thư mục để dán nhanh đường dẫn vào cửa sổ dòng lệnh.
+
+### Fixed & Improved (QA Audit)
+- **Modal Dimming Backdrop Scrim**:
+  - Bổ sung lớp phủ đen mờ (`Color32::from_black_alpha(150)`) cho toàn bộ modal dialogs (Snippets, Tunnels, Highlight, Passwords, Settings, Diff Viewer), loại bỏ hoàn toàn hiện tượng chữ terminal nền vẽ đè lên viền modal.
+- **Auto-Highlight Modal Layout & Multi-line Log Fitting**:
+  - Sửa lỗi tràn chiều ngang và lỗi glyph ký tự ngắt dòng trong modal Auto-Highlight; cố định dải kích thước cửa sổ và tối ưu form nhập 2 hàng cân đối.
+- **Session Cards Clip Rect Boundary**:
+  - Khắc phục triệt để hiện tượng thẻ session cuộn đè lấn lên thanh trạng thái Bottom Bar bằng cơ chế giao cắt (`intersect`) clip rect.
+- **Duy trì 94/94 Unit & Stress Tests Pass 100%**:
+  - Đo kiểm độ ổn định bộ nhớ đạt chuẩn (dao động 20 KB sau 50 chu kỳ tương tác GUI liên tục).
+
 ## [v1.3-57] - 2026-11-05
 ### Fixed & Improved (PR #2)
 - **Fix Ctrl+C egui RwLock UI Freeze Deadlock**:

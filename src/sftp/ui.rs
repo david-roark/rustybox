@@ -1,4 +1,4 @@
-use super::FileExplorer;
+use super::{ExternalOpenMode, FileEntry, FileExplorer};
 use egui::{
     pos2, vec2, Align2, Color32, FontId, Margin, Rect, RichText, Rounding,
     ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
@@ -520,6 +520,19 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 let mut double_clicked_file: Option<PathBuf> = None;
                 let mut context_chmod: Option<PathBuf> = None;
                 let mut context_del: Option<PathBuf> = None;
+                let mut context_rename: Option<PathBuf> = None;
+                let mut context_properties: Option<FileEntry> = None;
+                let mut context_download: Option<PathBuf> = None;
+                let mut context_new_folder = false;
+                let mut context_new_file = false;
+                let mut context_refresh = false;
+                let mut context_upload = false;
+                let mut context_copy_text: Option<String> = None;
+                let mut context_toggle_hidden = false;
+                let mut context_terminal_here: Option<String> = None;
+                let mut context_terminal_paste_path: Option<String> = None;
+                let mut context_open_external: Option<(PathBuf, ExternalOpenMode)> = None;
+                let mut context_compare: Option<PathBuf> = None;
                 let mut go_parent = false;
 
                 ScrollArea::vertical()
@@ -553,12 +566,21 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             FontId::monospace(12.0),
                             Color32::from_rgb(230, 237, 243),
                         );
-                        if up_resp
-                            .on_hover_text("Double-click to go to parent directory")
-                            .double_clicked()
-                        {
+                        let up_resp = up_resp.on_hover_text("Double-click to go to parent directory");
+                        if up_resp.double_clicked() {
                             go_parent = true;
                         }
+                        up_resp.context_menu(|ui| {
+                            if ui.button("⬆  Parent directory").clicked() {
+                                go_parent = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("🔄  Refresh current folder").clicked() {
+                                context_refresh = true;
+                                ui.close_menu();
+                            }
+                        });
 
                         for entry in &explorer.entries {
                             let is_selected = explorer.selected_file.as_ref() == Some(&entry.path);
@@ -651,6 +673,9 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             if resp.clicked() {
                                 explorer.selected_file = Some(entry.path.clone());
                             }
+                            if resp.middle_clicked() {
+                                context_terminal_paste_path = Some(entry.path.to_string_lossy().to_string());
+                            }
                             if resp.double_clicked() {
                                 if entry.is_dir {
                                     clicked_dir = Some(entry.path.clone());
@@ -670,23 +695,144 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                 }
                             );
                             let path_clone = entry.path.clone();
-                            let is_file_entry = !entry.is_dir;
+                            let is_dir_entry = entry.is_dir;
+                            let entry_clone = entry.clone();
                             resp.on_hover_text(tip).context_menu(|ui| {
-                                if is_file_entry && ui.button("Open in Quick Editor").clicked() {
-                                    double_clicked_file = Some(path_clone.clone());
-                                    ui.close_menu();
-                                }
-                                if ui.button("Permissions (chmod)...").clicked() {
-                                    context_chmod = Some(path_clone.clone());
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button("Delete...").clicked() {
-                                    context_del = Some(path_clone.clone());
-                                    ui.close_menu();
+                                if is_dir_entry {
+                                    if ui.button("📂  Open").clicked() {
+                                        clicked_dir = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📥  Download").clicked() {
+                                        context_download = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("🗑  Delete").clicked() {
+                                        context_del = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("✏  Rename").clicked() {
+                                        context_rename = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("📋  Copy file path").clicked() {
+                                        context_copy_text = Some(path_clone.to_string_lossy().to_string());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🖥  Copy file path to terminal (Middle mouse click)").clicked() {
+                                        context_terminal_paste_path = Some(path_clone.to_string_lossy().to_string());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("ℹ️  Properties").clicked() {
+                                        context_properties = Some(entry_clone);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🔒  Permissions").clicked() {
+                                        context_chmod = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                } else {
+                                    if ui.button("📂  Open").clicked() {
+                                        double_clicked_file = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📄  Open with default text editor").clicked() {
+                                        context_open_external = Some((path_clone.clone(), ExternalOpenMode::TextEditor));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("⚙️  Open with...").clicked() {
+                                        context_open_external = Some((path_clone.clone(), ExternalOpenMode::OpenWithDialog));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📎  Open with default program...").clicked() {
+                                        context_open_external = Some((path_clone.clone(), ExternalOpenMode::DefaultProgram));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🔍  Compare file with...").clicked() {
+                                        context_compare = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📥  Download").clicked() {
+                                        context_download = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("🗑  Delete").clicked() {
+                                        context_del = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("✏  Rename").clicked() {
+                                        context_rename = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("📋  Copy file path").clicked() {
+                                        context_copy_text = Some(path_clone.to_string_lossy().to_string());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🖥  Copy file path to terminal (Middle mouse click)").clicked() {
+                                        context_terminal_paste_path = Some(path_clone.to_string_lossy().to_string());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("ℹ️  Properties").clicked() {
+                                        context_properties = Some(entry_clone);
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🔒  Permissions").clicked() {
+                                        context_chmod = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
                                 }
                             });
                         }
+
+                        // Background empty space for Folder Context Menu (Matches MobaXterm 100%)
+                        let avail_h = ui.available_height().max(50.0);
+                        let (_, bg_resp) = ui.allocate_exact_size(vec2(ui.available_width(), avail_h), Sense::click());
+                        bg_resp.context_menu(|ui| {
+                            if ui.button("⬆  Parent directory").clicked() {
+                                go_parent = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("📁  New directory...").clicked() {
+                                context_new_folder = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("📄  New empty file...").clicked() {
+                                context_new_file = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("🔄  Refresh current folder").clicked() {
+                                context_refresh = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("📤  Upload to current folder...").clicked() {
+                                context_upload = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("📋  Copy current folder path").clicked() {
+                                context_copy_text = Some(explorer.current_path.to_string_lossy().to_string());
+                                ui.close_menu();
+                            }
+                            let hidden_label = if explorer.show_hidden {
+                                "👁  Hide hidden files (.*)"
+                            } else {
+                                "👁  Show hidden files (.*)"
+                            };
+                            if ui.button(hidden_label).clicked() {
+                                context_toggle_hidden = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("🖥  Open terminal here").clicked() {
+                                context_terminal_here = Some(explorer.current_path.to_string_lossy().to_string());
+                                ui.close_menu();
+                            }
+                        });
                     });
 
                 if go_parent {
@@ -703,6 +849,68 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 }
                 if let Some(target) = context_del {
                     explorer.pending_delete = Some(target);
+                }
+                if let Some(target) = context_rename {
+                    explorer.open_rename(target);
+                }
+                if let Some(entry) = context_properties {
+                    explorer.open_properties(entry);
+                }
+                if let Some(target) = context_download {
+                    let name = target
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "download".to_string());
+                    let is_dir = explorer.entries.iter().any(|e| e.path == target && e.is_dir);
+                    if is_dir {
+                        if let Some(dest_dir) = rfd::FileDialog::new().set_title("Select Destination Folder").pick_folder() {
+                            let final_dest = dest_dir.join(&name);
+                            explorer.download_file(&target, final_dest);
+                        }
+                    } else if let Some(dest) = rfd::FileDialog::new().set_file_name(&name).save_file() {
+                        explorer.download_file(&target, dest);
+                    }
+                }
+                if context_new_folder {
+                    explorer.show_new_folder = true;
+                    explorer.new_folder_name = "new_folder".to_string();
+                }
+                if context_new_file {
+                    explorer.show_new_file = true;
+                    explorer.new_file_name = "new_file.txt".to_string();
+                }
+                if context_refresh {
+                    explorer.refresh();
+                }
+                if context_upload {
+                    if let Some(files) = rfd::FileDialog::new().set_title("Select Files to Upload").pick_files() {
+                        for f in files {
+                            explorer.upload_file(f);
+                        }
+                    }
+                }
+                if let Some(text) = context_copy_text {
+                    ui.output_mut(|o| o.copied_text = text);
+                    explorer.status_message = Some("Copied to clipboard".into());
+                }
+                if context_toggle_hidden {
+                    explorer.show_hidden = !explorer.show_hidden;
+                    explorer.refresh();
+                }
+                if let Some(dir_str) = context_terminal_here {
+                    explorer.requested_cd_terminal = Some(dir_str);
+                }
+                if let Some(paste_path) = context_terminal_paste_path {
+                    explorer.requested_terminal_paste = Some(paste_path);
+                    explorer.status_message = Some("Copied path to terminal".into());
+                }
+                if let Some((target, mode)) = context_open_external {
+                    explorer.open_external(&target, mode);
+                }
+                if let Some(target) = context_compare {
+                    if let Some(other) = rfd::FileDialog::new().set_title("Select file to compare with").pick_file() {
+                        explorer.open_compare(&target, other);
+                    }
                 }
             });
 
@@ -843,6 +1051,160 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 }
             });
         explorer.chmod_open = open && !close_chmod;
+    }
+
+    // Modal Rename Item
+    if explorer.show_rename {
+        let mut open = explorer.show_rename;
+        let mut close_rename = false;
+        let mut do_rename = false;
+        egui::Window::new("🏷 Rename Item")
+            .open(&mut open)
+            .collapsible(false)
+            .default_size(Vec2::new(320.0, 130.0))
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.label(RichText::new("Enter new name:").strong());
+                let resp = ui.add(TextEdit::singleline(&mut explorer.rename_new_name).desired_width(f32::INFINITY));
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    do_rename = true;
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+                let (ok, cancel) = crate::session::ui::rusty_ok_cancel_buttons(ui, "✔ Rename", "✖ Cancel");
+                if ok || do_rename {
+                    if let Some(target) = explorer.rename_target.clone() {
+                        let name = explorer.rename_new_name.clone();
+                        explorer.rename_entry(&target, &name);
+                    }
+                    close_rename = true;
+                }
+                if cancel {
+                    close_rename = true;
+                }
+            });
+        explorer.show_rename = open && !close_rename;
+    }
+
+    // Modal Properties
+    if explorer.properties_open {
+        let mut open = explorer.properties_open;
+        let mut close_prop = false;
+        if let Some(entry) = explorer.properties_target.clone() {
+            egui::Window::new(format!("ℹ Properties - {}", entry.name))
+                .open(&mut open)
+                .collapsible(false)
+                .default_size(Vec2::new(380.0, 220.0))
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ui.ctx(), |ui| {
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Name:").strong().color(Color32::from_rgb(139, 148, 158)));
+                            ui.label(RichText::new(&entry.name).color(Color32::WHITE));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Path:").strong().color(Color32::from_rgb(139, 148, 158)));
+                            ui.label(RichText::new(entry.path.to_string_lossy().to_string()).monospace());
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Type:").strong().color(Color32::from_rgb(139, 148, 158)));
+                            ui.label(if entry.is_dir { "Directory / Folder" } else { "Regular File" });
+                        });
+                        if !entry.is_dir {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Size:").strong().color(Color32::from_rgb(139, 148, 158)));
+                                ui.label(format!("{} bytes ({})", entry.size, format_file_size(entry.size)));
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Permissions:").strong().color(Color32::from_rgb(139, 148, 158)));
+                            ui.label(RichText::new(&entry.permissions).monospace());
+                        });
+                        if let Some(mod_time) = entry.modified {
+                            if let Ok(dur) = mod_time.duration_since(std::time::UNIX_EPOCH) {
+                                if let Some(dt) = chrono::DateTime::from_timestamp(dur.as_secs() as i64, 0) {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("Modified:").strong().color(Color32::from_rgb(139, 148, 158)));
+                                        ui.label(dt.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+                                    });
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    if ui.button("✖ Close").clicked() {
+                        close_prop = true;
+                    }
+                });
+        }
+        explorer.properties_open = open && !close_prop;
+    }
+
+    // Modal Diff / Compare Viewer
+    if explorer.diff_open {
+        let mut open = explorer.diff_open;
+        let mut close_diff = false;
+        egui::Window::new(format!("🔍 Compare Files: {} vs {}", explorer.diff_file_a, explorer.diff_file_b))
+            .open(&mut open)
+            .collapsible(false)
+            .default_size(Vec2::new(760.0, 500.0))
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("File A: {}", explorer.diff_file_a)).strong().color(Color32::from_rgb(56, 189, 248)));
+                    ui.separator();
+                    ui.label(RichText::new(format!("File B: {}", explorer.diff_file_b)).strong().color(Color32::from_rgb(163, 230, 53)));
+                });
+                ui.separator();
+
+                let avail_h = (ui.available_height() - 40.0).max(200.0);
+                let half_w = ((ui.available_width() - 20.0) / 2.0).max(100.0);
+
+                ui.horizontal(|ui| {
+                    // Left Column: File A
+                    ui.vertical(|ui| {
+                        ui.set_width(half_w);
+                        ScrollArea::vertical()
+                            .id_salt("diff_scroll_a")
+                            .max_height(avail_h)
+                            .show(ui, |ui| {
+                                TextEdit::multiline(&mut explorer.diff_content_a)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(half_w)
+                                    .interactive(false)
+                                    .show(ui);
+                            });
+                    });
+                    ui.separator();
+                    // Right Column: File B
+                    ui.vertical(|ui| {
+                        ui.set_width(half_w);
+                        ScrollArea::vertical()
+                            .id_salt("diff_scroll_b")
+                            .max_height(avail_h)
+                            .show(ui, |ui| {
+                                TextEdit::multiline(&mut explorer.diff_content_b)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(half_w)
+                                    .interactive(false)
+                                    .show(ui);
+                            });
+                    });
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("✖ Close").clicked() {
+                        close_diff = true;
+                    }
+                });
+            });
+        explorer.diff_open = open && !close_diff;
     }
 }
 

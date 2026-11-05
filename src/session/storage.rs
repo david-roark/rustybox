@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const MAX_BACKUP_FILES: usize = 3;
+pub const MAX_BACKUP_FILES: usize = 5;
 
 fn default_version() -> String {
     "1.3".to_string()
@@ -155,6 +155,14 @@ pub struct RustyBoxConfig {
     pub paste_protection_enabled: bool,
     #[serde(default = "default_quick_macros")]
     pub quick_macros: Vec<(String, String)>,
+    #[serde(default = "crate::snippets::default_snippets")]
+    pub snippets: Vec<crate::snippets::Snippet>,
+    #[serde(default = "crate::tunneling::default_tunnels")]
+    pub tunnels: Vec<crate::tunneling::TunnelConfig>,
+    #[serde(default = "default_true")]
+    pub highlight_rules_enabled: bool,
+    #[serde(default = "crate::terminal::highlight::default_highlight_rules")]
+    pub highlight_rules: Vec<crate::terminal::HighlightRule>,
     pub sessions: Vec<Session>,
 }
 
@@ -171,6 +179,10 @@ impl Default for RustyBoxConfig {
             theme_name: default_theme_name(),
             paste_protection_enabled: true,
             quick_macros: default_quick_macros(),
+            snippets: crate::snippets::default_snippets(),
+            tunnels: crate::tunneling::default_tunnels(),
+            highlight_rules_enabled: true,
+            highlight_rules: crate::terminal::highlight::default_highlight_rules(),
             sessions: default_sessions_list(),
         }
     }
@@ -328,6 +340,25 @@ impl StorageManager {
         self.save_config(&cfg)
     }
 
+    pub fn save_snippets(&self, snippets: &[crate::snippets::Snippet]) -> Result<(), String> {
+        let mut cfg = self.load_config();
+        cfg.snippets = snippets.to_vec();
+        self.save_config(&cfg)
+    }
+
+    pub fn save_tunnels(&self, tunnels: &[crate::tunneling::TunnelConfig]) -> Result<(), String> {
+        let mut cfg = self.load_config();
+        cfg.tunnels = tunnels.to_vec();
+        self.save_config(&cfg)
+    }
+
+    pub fn save_highlight_rules(&self, rules: &[crate::terminal::HighlightRule], enabled: bool) -> Result<(), String> {
+        let mut cfg = self.load_config();
+        cfg.highlight_rules = rules.to_vec();
+        cfg.highlight_rules_enabled = enabled;
+        self.save_config(&cfg)
+    }
+
     pub fn parse_config_str(content: &str) -> Option<RustyBoxConfig> {
         let trimmed = content.trim();
         if trimmed.is_empty() {
@@ -443,7 +474,7 @@ impl StorageManager {
     /// Saves updated configuration to `data/RustyBox.json`.
     /// When `create_backup` is true and a valid `data/RustyBox.json` already exists with different content:
     /// 1. Backs up current `data/RustyBox.json` -> `data/RustyBox.json.<unixtime>` BEFORE updating.
-    /// 2. Rotates backups to keep at most `MAX_BACKUP_FILES` (3) newest files.
+    /// 2. Rotates backups to keep at most `MAX_BACKUP_FILES` (5) newest files.
     /// 3. Atomically writes and replaces `data/RustyBox.json`.
     pub fn save_config_with_options(&self, config: &RustyBoxConfig, create_backup: bool) -> Result<(), String> {
         fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
@@ -523,7 +554,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_backup_before_update_max_3_and_corrupt_recovery() {
+    fn test_backup_before_update_max_5_and_corrupt_recovery() {
         let base = std::env::temp_dir()
             .join(format!("storage_unit_test_{}", uuid::Uuid::new_v4()));
         let data_dir = base.join("data");
@@ -535,9 +566,9 @@ mod tests {
         assert_eq!(cfg.sessions.len(), 3);
         assert_eq!(storage.list_backups().len(), 0);
 
-        // 2. Add 5 new accounts sequentially -> each save backs up old RustyBox.json to RustyBox.json.<unixtime>
-        //    and prunes so strictly at most 3 newest backups remain!
-        for i in 1..=5 {
+        // 2. Add 7 new accounts sequentially -> each save backs up old RustyBox.json to RustyBox.json.<unixtime>
+        //    and prunes so strictly at most 5 newest backups remain!
+        for i in 1..=7 {
             cfg.sessions.push(Session::new_ssh(
                 &format!("Added Account #{}", i),
                 "Production",
@@ -552,28 +583,29 @@ mod tests {
             assert_eq!(backups.len(), expected_count);
         }
 
-        // Verify current RustyBox.json has 3 + 5 = 8 accounts
+        // Verify current RustyBox.json has 3 + 7 = 10 accounts
         let reloaded = storage.load_config();
-        assert_eq!(reloaded.sessions.len(), 8);
+        assert_eq!(reloaded.sessions.len(), 10);
 
-        // Verify strictly 3 newest backups exist, and the newest backup holds the state right BEFORE the 5th addition (7 accounts)
+        // Verify strictly 5 newest backups exist, and the newest backup holds the state right BEFORE the 7th addition (9 accounts)
         let backups = storage.list_backups();
-        assert_eq!(backups.len(), 3);
-        assert!(backups[0].unix_ts > backups[1].unix_ts);
-        assert!(backups[1].unix_ts > backups[2].unix_ts);
+        assert_eq!(backups.len(), 5);
+        for w in backups.windows(2) {
+            assert!(w[0].unix_ts > w[1].unix_ts);
+        }
 
         let newest_bak_content = fs::read_to_string(&backups[0].path).unwrap();
         let newest_bak_cfg = StorageManager::parse_config_str(&newest_bak_content).unwrap();
-        assert_eq!(newest_bak_cfg.sessions.len(), 7);
+        assert_eq!(newest_bak_cfg.sessions.len(), 9);
 
         // 3. Simulate file corruption / malformed JSON on RustyBox.json
         fs::write(storage.file_path(), "{{{ CORRUPTED MALFORMED JSON !!!").unwrap();
 
-        // Reloading must auto-recover from newest valid RustyBox.json.<unixtime> backup (7 accounts)
-        // and must NOT overwrite the 3 valid backups with the corrupted text!
+        // Reloading must auto-recover from newest valid RustyBox.json.<unixtime> backup (9 accounts)
+        // and must NOT overwrite the 5 valid backups with the corrupted text!
         let recovered = storage.load_config();
-        assert_eq!(recovered.sessions.len(), 7);
-        assert_eq!(storage.list_backups().len(), 3);
+        assert_eq!(recovered.sessions.len(), 9);
+        assert_eq!(storage.list_backups().len(), 5);
 
         // RustyBox.json on disk is repaired back to valid JSON
         let repaired_on_disk = fs::read_to_string(storage.file_path()).unwrap();
