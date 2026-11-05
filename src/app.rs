@@ -515,6 +515,7 @@ pub struct RustyBoxApp {
     last_synced_tab_id: Option<String>,
     last_synced_is_home: bool,
     last_synced_tab_idx: usize,
+    is_maximized_requested: bool,
     connect_as_target: Option<(Session, String)>,
     rename_session_target: Option<(String, String)>,
     rename_folder_target: Option<(String, String)>,
@@ -728,6 +729,7 @@ impl RustyBoxApp {
             last_synced_tab_id: None,
             last_synced_is_home: true,
             last_synced_tab_idx: 0,
+            is_maximized_requested: false,
             connect_as_target: None,
             rename_session_target: None,
             rename_folder_target: None,
@@ -1941,6 +1943,12 @@ impl RustyBoxApp {
 
 impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Enforce Window Maximized on launch
+        if !self.is_maximized_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            self.is_maximized_requested = true;
+        }
+
         // Enforce UI zoom / font scale factor
         ctx.set_zoom_factor(self.ui_scale);
 
@@ -2137,7 +2145,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-70")
+                                RichText::new("v1.3-71")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
