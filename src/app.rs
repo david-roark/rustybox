@@ -12,7 +12,7 @@ use crate::terminal::PtySession;
 use crate::tunneling::TunnelManager;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{
-    menu, pos2, vec2, Align, Align2, Color32, Layout, RichText, ScrollArea,
+    menu, pos2, vec2, Align, Align2, Color32, Layout, Margin, RichText, ScrollArea,
     TextEdit, TopBottomPanel, Vec2,
 };
 use std::collections::BTreeMap;
@@ -400,6 +400,7 @@ pub struct OpenTab {
     pub workdir: Option<String>,
     pub telemetry: TabTelemetry,
     pub last_synced_cwd: Option<String>,
+    pub last_sftp_path: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -511,6 +512,9 @@ pub struct RustyBoxApp {
     local_telemetry: TabTelemetry,
     // Context Actions & Modals
     selected_sidebar_session_id: Option<String>,
+    last_synced_tab_id: Option<String>,
+    last_synced_is_home: bool,
+    last_synced_tab_idx: usize,
     connect_as_target: Option<(Session, String)>,
     rename_session_target: Option<(String, String)>,
     rename_folder_target: Option<(String, String)>,
@@ -721,6 +725,9 @@ impl RustyBoxApp {
             last_telemetry_time: std::time::Instant::now() - std::time::Duration::from_secs(10),
             local_telemetry: TabTelemetry::new_local(),
             selected_sidebar_session_id: None,
+            last_synced_tab_id: None,
+            last_synced_is_home: true,
+            last_synced_tab_idx: 0,
             connect_as_target: None,
             rename_session_target: None,
             rename_folder_target: None,
@@ -765,23 +772,31 @@ impl RustyBoxApp {
             tokio_runtime,
         };
 
-        // Configure modern sleek dark theme (obsidian / zinc / linear-inspired)
+        // Configure modern sleek dark theme (high contrast, elevated surfaces & distinct borders)
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(15, 18, 26);
-        visuals.window_fill = Color32::from_rgb(18, 22, 32);
-        visuals.extreme_bg_color = Color32::from_rgb(10, 12, 18);
-        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 18, 26);
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(34, 42, 58));
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(22, 28, 40);
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64));
+        visuals.window_fill = Color32::from_rgb(26, 32, 46); // Elevated surface for modals/windows
+        visuals.extreme_bg_color = Color32::from_rgb(11, 15, 23);
+        visuals.window_stroke = egui::Stroke::new(1.5, Color32::from_rgb(59, 130, 246)); // Crisp vibrant border
+        visuals.window_shadow.blur = 24.0;
+        visuals.window_shadow.spread = 4.0;
+        visuals.window_shadow.color = Color32::from_black_alpha(200);
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(20, 25, 36);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85));
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(18, 24, 38);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(71, 85, 105));
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
         visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(32, 40, 56);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(30, 41, 59);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
         visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
         visuals.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250));
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, Color32::from_rgb(96, 165, 250));
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
         visuals.widgets.active.rounding = egui::Rounding::same(6.0);
-        visuals.window_rounding = egui::Rounding::same(8.0);
+        visuals.window_rounding = egui::Rounding::same(10.0);
         cc.egui_ctx.set_visuals(visuals);
 
         // Open an initial local shell tab on launch in the background, keeping Home Dashboard active
@@ -848,6 +863,9 @@ impl RustyBoxApp {
                 "sftp" => {
                     app.show_sftp_sidebar = true;
                     app.sidebar_tab = 1;
+                }
+                "session_new" => {
+                    app.new_session_dialog.open_for_new();
                 }
                 _ => {}
             }
@@ -964,9 +982,11 @@ impl RustyBoxApp {
                     workdir: workdir.map(|w| w.to_string()),
                     telemetry,
                     last_synced_cwd: None,
+                    last_sftp_path: None,
                 };
                 self.open_tabs.push(tab);
                 self.active_tab_idx = self.open_tabs.len() - 1;
+                self.sync_sidebar_with_active_tab();
             }
             Err(e) => {
                 eprintln!("Failed to spawn local terminal: {}", e);
@@ -992,10 +1012,11 @@ impl RustyBoxApp {
             ..
         } = s.session_type
         {
-            let mut effective_password = s
+            let effective_password = s
                 .password
                 .as_deref()
                 .filter(|p| !p.trim().is_empty())
+                .map(|p| p.to_string())
                 .or_else(|| {
                     self.credentials
                         .iter()
@@ -1003,32 +1024,30 @@ impl RustyBoxApp {
                             (!c.username.is_empty() && c.username == *user)
                                 || (!c.name.is_empty() && c.name == s.name)
                         })
-                        .map(|c| c.password.as_str())
+                        .map(|c| c.password.clone())
                         .filter(|p| !p.trim().is_empty())
                 });
 
             let mut decrypted_pw_buf: Option<String> = None;
+            let mut final_password_str: Option<String> = None;
             if let Some(pw) = effective_password {
-                if is_encrypted(pw) {
+                if is_encrypted(&pw) {
                     if self.storage.is_vault_unlocked() {
                         if let Some(key) = self.storage.vault_key() {
-                            if let Ok(dec) = decrypt_str(&key, pw) {
+                            if let Ok(dec) = decrypt_str(&key, &pw) {
                                 decrypted_pw_buf = Some(dec);
                             }
                         }
                     } else {
                         self.show_vault = true;
                         self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
-                        effective_password = None;
                     }
+                } else {
+                    final_password_str = Some(pw);
                 }
             }
 
-            let final_password = if let Some(ref dec) = decrypted_pw_buf {
-                Some(dec.as_str())
-            } else {
-                effective_password
-            };
+            let final_password = decrypted_pw_buf.as_deref().or(final_password_str.as_deref());
 
             let (effective_jump, ssh_cfg) = Self::build_ssh_spawn_config(&s, tunnel_x11);
 
@@ -1054,21 +1073,11 @@ impl RustyBoxApp {
                         workdir: None,
                         telemetry,
                         last_synced_cwd: None,
+                        last_sftp_path: None,
                     };
                     self.open_tabs.push(tab);
                     self.active_tab_idx = self.open_tabs.len() - 1;
-
-                    if s.auto_sftp {
-                        self.show_sftp_sidebar = true;
-                        self.sidebar_tab = 1;
-                        self.explorer.connect_remote(crate::sftp::remote::SftpTargetConfig {
-                            host: host.clone(),
-                            port,
-                            user: user.clone(),
-                            password: final_password.map(|p| p.to_string()),
-                            key_path: key_path.clone(),
-                        });
-                    }
+                    self.sync_sidebar_with_active_tab();
                 }
                 Err(e) => {
                     eprintln!("Failed to spawn SSH session: {}", e);
@@ -1077,19 +1086,62 @@ impl RustyBoxApp {
         }
     }
 
-    pub fn sync_active_tab_sftp(&mut self) {
-        if self.is_home_active {
-            return;
+    pub fn check_and_sync_active_tab(&mut self) {
+        let current_is_home = self.is_home_active || self.open_tabs.is_empty();
+        let current_tab_id = if current_is_home {
+            None
+        } else {
+            let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+            Some(self.open_tabs[idx].id.clone())
+        };
+        let current_idx = if current_is_home { 0 } else { self.active_tab_idx.min(self.open_tabs.len().saturating_sub(1)) };
+
+        if self.last_synced_is_home != current_is_home
+            || self.last_synced_tab_id != current_tab_id
+            || self.last_synced_tab_idx != current_idx
+        {
+            self.last_synced_is_home = current_is_home;
+            self.last_synced_tab_id = current_tab_id;
+            self.last_synced_tab_idx = current_idx;
+            self.sync_sidebar_with_active_tab();
         }
-        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-            tab.last_synced_cwd = None;
-            let is_ssh = tab.session_def.as_ref().map(|s| matches!(s.session_type, SessionType::Ssh { .. })).unwrap_or(false);
-            if !is_ssh && self.explorer.is_remote {
+    }
+
+    pub fn sync_sidebar_with_active_tab(&mut self) {
+        // Poll background SFTP events so status is fresh
+        self.explorer.poll();
+
+        if self.is_home_active || self.open_tabs.is_empty() {
+            self.selected_sidebar_session_id = None;
+            if self.open_tabs.is_empty() && self.explorer.is_remote {
                 self.explorer.disconnect_remote();
             }
+            return;
         }
-        if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-            if let Some(ref s) = tab.session_def {
+
+        let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+        self.active_tab_idx = idx;
+
+        // 1. Sync Sessions Tree in Left Sidebar
+        let tab = &self.open_tabs[idx];
+        if let Some(ref s) = tab.session_def {
+            self.selected_sidebar_session_id = Some(s.id.clone());
+        } else {
+            self.selected_sidebar_session_id = self.sessions.iter()
+                .find(|s| matches!(s.session_type, SessionType::LocalShell { .. }))
+                .map(|s| s.id.clone());
+        }
+
+        // 2. Sync SFTP / File Explorer in Left Sidebar
+        let tab = &mut self.open_tabs[idx];
+        tab.last_synced_cwd = None;
+        let is_ssh = tab.session_def.as_ref().map(|s| matches!(s.session_type, SessionType::Ssh { .. })).unwrap_or(false);
+        let tab_def = tab.session_def.clone();
+        let tab_workdir = tab.workdir.clone();
+        let tab_last_sftp = tab.last_sftp_path.clone();
+
+        if is_ssh {
+            if let Some(ref s) = tab_def {
                 if let SessionType::Ssh {
                     ref host,
                     port,
@@ -1132,17 +1184,53 @@ impl RustyBoxApp {
                         effective_password
                     };
 
-                    self.explorer.connect_remote(crate::sftp::remote::SftpTargetConfig {
-                        host: host.clone(),
-                        port,
-                        user: user.clone(),
-                        password: final_password.map(|p| p.to_string()),
-                        key_path: key_path.clone(),
-                    });
+                    let target_label = format!("{}@{}:{}", user, host, port);
+                    if self.explorer.is_remote && self.explorer.remote_label.as_deref() == Some(&target_label) {
+                        if let Some(ref p) = tab_last_sftp {
+                            self.explorer.sync_terminal_cwd(p);
+                        } else if let Some(detected) = self.open_tabs.get(idx).and_then(detect_terminal_cwd) {
+                            self.explorer.sync_terminal_cwd(&detected);
+                        } else if let Some(ref w) = tab_workdir {
+                            self.explorer.sync_terminal_cwd(w);
+                        }
+                    } else {
+                        self.explorer.connect_remote(crate::sftp::remote::SftpTargetConfig {
+                            host: host.clone(),
+                            port,
+                            user: user.clone(),
+                            password: final_password.map(|p| p.to_string()),
+                            key_path: key_path.clone(),
+                        });
+                    }
+
+                    if s.auto_sftp {
+                        self.show_sftp_sidebar = true;
+                        self.sidebar_tab = 1;
+                    }
+                }
+            }
+        } else {
+            // Local Terminal / WSL: switch explorer to local files
+            if self.explorer.is_remote {
+                self.explorer.disconnect_remote();
+            }
+            let target_local_dir = self.open_tabs.get(idx)
+                .and_then(detect_terminal_cwd)
+                .or(tab_workdir)
+                .map(std::path::PathBuf::from);
+
+            if let Some(dir) = target_local_dir {
+                if dir.is_dir() && self.explorer.current_path != dir {
+                    self.explorer.set_path(dir);
                 }
             }
         }
+
         self.sync_terminal_cwd_if_enabled();
+    }
+
+    pub fn sync_active_tab_sftp(&mut self) {
+        self.sync_sidebar_with_active_tab();
     }
 
     pub fn restart_tab(&mut self, idx: usize) {
@@ -1856,6 +1944,9 @@ impl eframe::App for RustyBoxApp {
         // Enforce UI zoom / font scale factor
         ctx.set_zoom_factor(self.ui_scale);
 
+        // Synchronize left explorer (Sessions tree & SFTP browser) if active tab changed
+        self.check_and_sync_active_tab();
+
         // Global Keyboard Shortcuts for UI Zoom & Font Scale
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Equals)) {
@@ -1873,6 +1964,24 @@ impl eframe::App for RustyBoxApp {
         }
 
         // Global Keyboard Shortcuts
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageDown)) {
+            if !self.open_tabs.is_empty() {
+                self.is_home_active = false;
+                self.active_tab_idx = (self.active_tab_idx + 1) % self.open_tabs.len();
+                self.sync_sidebar_with_active_tab();
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageUp)) {
+            if !self.open_tabs.is_empty() {
+                self.is_home_active = false;
+                self.active_tab_idx = if self.active_tab_idx == 0 {
+                    self.open_tabs.len() - 1
+                } else {
+                    self.active_tab_idx - 1
+                };
+                self.sync_sidebar_with_active_tab();
+            }
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.search_open = true;
             self.focus_search = true;
@@ -1904,9 +2013,11 @@ impl eframe::App for RustyBoxApp {
                     closed.session.kill();
                     if self.open_tabs.is_empty() {
                         self.is_home_active = true;
+                        self.active_tab_idx = 0;
                     } else if self.active_tab_idx >= self.open_tabs.len() {
                         self.active_tab_idx = self.open_tabs.len() - 1;
                     }
+                    self.sync_sidebar_with_active_tab();
                 }
             }
         }
@@ -2026,7 +2137,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-61")
+                                RichText::new("v1.3-67")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -2767,25 +2878,6 @@ impl eframe::App for RustyBoxApp {
 
                     if self.sidebar_tab == 0 {
                         // SESSIONS TREE
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let btn_w = (ui.available_width() - 4.0) / 2.0;
-                            let add_btn = egui::Button::new(RichText::new("➕ New").color(Color32::WHITE).size(11.5).strong())
-                                .fill(Color32::from_rgb(37, 99, 235))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
-                                .rounding(5.0);
-                            if ui.add_sized([btn_w, 24.0], add_btn).on_hover_text("Create a New Session").clicked() {
-                                self.new_session_dialog.open_for_new();
-                            }
-                            let imp_btn = egui::Button::new(RichText::new("📥 Import").color(Color32::from_rgb(210, 225, 245)).size(11.5).strong())
-                                .fill(Color32::from_rgb(22, 28, 40))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
-                                .rounding(5.0);
-                            if ui.add_sized([btn_w, 24.0], imp_btn).on_hover_text("Import SSH Profiles (~/.ssh/config, MobaXterm, JSON) [Ctrl+I]").clicked() {
-                                self.show_import_dialog = true;
-                            }
-                        });
-                        ui.add_space(4.0);
                         let filter_hint = format!("🔍 Filter {} sessions...", self.sessions.len());
                         ui.add(
                             TextEdit::singleline(&mut self.session_search)
@@ -2794,8 +2886,7 @@ impl eframe::App for RustyBoxApp {
                         );
                         ui.add_space(6.0);
 
-                        ui.label(RichText::new("★ User sessions").color(Color32::from_rgb(234, 179, 8)).strong().size(12.0));
-                        ui.add_space(2.0);
+                        let is_searching = !self.session_search.trim().is_empty();
 
                         let mut grouped: BTreeMap<String, Vec<Session>> = BTreeMap::new();
                         for s in &self.sessions {
@@ -2803,6 +2894,7 @@ impl eframe::App for RustyBoxApp {
                                 grouped.entry(s.folder.clone()).or_default().push(s.clone());
                             }
                         }
+                        let total_filtered_sessions: usize = grouped.values().map(|v| v.len()).sum();
 
                         let mut to_launch: Option<Session> = None;
                         let mut to_connect_as: Option<(Session, String)> = None;
@@ -2820,15 +2912,31 @@ impl eframe::App for RustyBoxApp {
                         let mut to_delete_folder: Option<String> = None;
 
                         ScrollArea::vertical().show(ui, |ui| {
-                            for (folder, list) in grouped {
-                                let folder_name = folder.clone();
-                                let header = egui::CollapsingHeader::new(
-                                    RichText::new(format!("📁 {} ({})", folder, list.len())).strong().color(Color32::from_rgb(201, 209, 217))
-                                )
-                                .default_open(true);
+                            let root_header = egui::CollapsingHeader::new(
+                                RichText::new(format!("★ User sessions ({})", total_filtered_sessions))
+                                    .color(Color32::from_rgb(234, 179, 8))
+                                    .strong()
+                                    .size(12.0),
+                            )
+                            .id_salt("user_sessions_root_tree")
+                            .default_open(true)
+                            .open(if is_searching { Some(true) } else { None });
 
-                                let res = header.show(ui, |ui| {
-                                    for s in list {
+                            let root_res = root_header.show(ui, |ui| {
+                                for (folder, list) in grouped {
+                                    let folder_name = folder.clone();
+                                    let display_folder = if folder.is_empty() { "Default" } else { &folder };
+                                    let header = egui::CollapsingHeader::new(
+                                        RichText::new(format!("📁 {} ({})", display_folder, list.len()))
+                                            .strong()
+                                            .color(Color32::from_rgb(201, 209, 217)),
+                                    )
+                                    .id_salt(format!("user_sessions_folder_{}", folder))
+                                    .default_open(false)
+                                    .open(if is_searching { Some(true) } else { None });
+
+                                    let res = header.show(ui, |ui| {
+                                        for s in list {
                                         let icon = match s.session_type {
                                             SessionType::LocalShell { .. } => ">_ ",
                                             SessionType::Ssh { .. } => "🔑 ",
@@ -2854,10 +2962,14 @@ impl eframe::App for RustyBoxApp {
                                         let is_connected_tab = self.open_tabs.iter().any(|t| {
                                             t.session_def.as_ref().map(|def| def.id == s.id).unwrap_or(false) && t.session.is_alive()
                                         });
+                                        let is_active_tab_session = !self.is_home_active
+                                            && self.open_tabs.get(self.active_tab_idx)
+                                                .and_then(|t| t.session_def.as_ref())
+                                                .map(|def| def.id == s.id)
+                                                .unwrap_or(false);
+
                                         let is_selected = self.selected_sidebar_session_id.as_deref() == Some(&s.id)
-                                            || (self.selected_sidebar_session_id.is_none()
-                                                && !self.is_home_active
-                                                && self.open_tabs.get(self.active_tab_idx).and_then(|t| t.session_def.as_ref()).map(|def| def.id == s.id).unwrap_or(false));
+                                            || is_active_tab_session;
 
                                         let id = ui.make_persistent_id(&s.id);
                                         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
@@ -2867,7 +2979,9 @@ impl eframe::App for RustyBoxApp {
                                             self.selected_sidebar_session_id = Some(s.id.clone());
                                         }
 
-                                        let (bg, stroke) = if is_selected {
+                                        let (bg, stroke) = if is_active_tab_session {
+                                            (Color32::from_rgb(29, 78, 216), egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)))
+                                        } else if is_selected {
                                             (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
                                         } else if resp.hovered() {
                                             (Color32::from_rgb(24, 32, 46), egui::Stroke::new(1.0, Color32::from_rgb(38, 50, 72)))
@@ -2901,12 +3015,30 @@ impl eframe::App for RustyBoxApp {
                                             egui::FontId::proportional(10.5),
                                             sub_color,
                                         );
+                                        if is_active_tab_session {
+                                            let badge_x = if is_connected_tab { rect.right() - 24.0 } else { rect.right() - 10.0 };
+                                            ui.painter().text(
+                                                egui::pos2(badge_x, rect.top() + 10.0),
+                                                egui::Align2::RIGHT_CENTER,
+                                                "ACTIVE",
+                                                egui::FontId::proportional(8.5),
+                                                Color32::from_rgb(74, 222, 128),
+                                            );
+                                        }
                                         if is_connected_tab {
                                             let dot_pos = egui::pos2(rect.right() - 14.0, rect.center().y);
                                             ui.painter().circle_filled(dot_pos, 4.0, Color32::from_rgb(34, 197, 94));
                                         }
 
-                                        if resp.double_clicked() || (self.selected_sidebar_session_id.as_deref() == Some(&s.id) && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                        if resp.double_clicked() {
+                                            if let Some(existing_pos) = self.open_tabs.iter().position(|t| t.session_def.as_ref().map(|def| def.id == s.id).unwrap_or(false) && t.session.is_alive()) {
+                                                self.is_home_active = false;
+                                                self.active_tab_idx = existing_pos;
+                                                self.sync_sidebar_with_active_tab();
+                                            } else {
+                                                to_launch = Some(s.clone());
+                                            }
+                                        } else if self.selected_sidebar_session_id.as_deref() == Some(&s.id) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                             to_launch = Some(s.clone());
                                         }
                                         resp.context_menu(|ui| {
@@ -2982,6 +3114,14 @@ impl eframe::App for RustyBoxApp {
                                     }
                                 });
                             }
+                            });
+
+                            root_res.header_response.context_menu(|ui| {
+                                if ui.button("➕ New Session...").clicked() {
+                                    self.new_session_dialog.open_for_new();
+                                    ui.close_menu();
+                                }
+                            });
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -3157,7 +3297,7 @@ impl eframe::App for RustyBoxApp {
 
                         if home_resp.clicked() {
                             self.is_home_active = true;
-                            self.selected_sidebar_session_id = None;
+                            self.sync_sidebar_with_active_tab();
                         }
 
                         ui.add_space(2.0);
@@ -3450,6 +3590,7 @@ impl eframe::App for RustyBoxApp {
                                 }
                                 self.open_tabs.push(keep);
                                 self.active_tab_idx = 0;
+                                self.sync_sidebar_with_active_tab();
                             }
                         }
                         TabMenuAction::CloseRight => {
@@ -3459,6 +3600,7 @@ impl eframe::App for RustyBoxApp {
                             if self.active_tab_idx > idx {
                                 self.active_tab_idx = idx;
                             }
+                            self.sync_sidebar_with_active_tab();
                         }
                     }
                 }
@@ -3469,11 +3611,13 @@ impl eframe::App for RustyBoxApp {
                         closed.session.kill();
                         if self.open_tabs.is_empty() {
                             self.is_home_active = true;
+                            self.active_tab_idx = 0;
                         } else if self.active_tab_idx >= self.open_tabs.len() {
                             self.active_tab_idx = self.open_tabs.len() - 1;
                         } else if self.active_tab_idx > close_idx {
                             self.active_tab_idx = self.active_tab_idx.saturating_sub(1);
                         }
+                        self.sync_sidebar_with_active_tab();
                     }
                 }
 
@@ -3489,15 +3633,37 @@ impl eframe::App for RustyBoxApp {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("⚡ RustyBox").size(30.0).strong().color(Color32::from_rgb(56, 189, 248)));
                     ui.label(RichText::new("High-Performance Remote Toolbox & Multi-Terminal Workstation").size(13.0).color(Color32::from_rgb(148, 163, 184)));
-                    ui.add_space(18.0);
+                });
+                ui.add_space(18.0);
 
-                    // Hero Quick Connect Box
-                    egui::Frame::none()
-                        .fill(Color32::from_rgb(16, 21, 30))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)))
-                        .rounding(10.0)
-                        .inner_margin(egui::Margin::symmetric(18.0, 12.0))
-                        .show(ui, |ui| {
+                let card_w: f32 = 236.0;
+                let card_h: f32 = 74.0;
+                let card_spacing: f32 = 12.0;
+                let total_card_grid_w: f32 = card_w * 3.0 + card_spacing * 2.0; // 732.0
+
+                let avail_w = ui.available_width();
+                let content_w = total_card_grid_w.min((avail_w - 24.0).max(300.0));
+                let left_pad = ((avail_w - content_w) / 2.0).max(0.0);
+
+                let mut to_launch_quick: Option<Session> = None;
+                let mut to_edit_session: Option<Session> = None;
+                let mut to_clear_recent_id: Option<String> = None;
+                let mut to_delete_id: Option<String> = None;
+
+                ui.horizontal(|ui| {
+                    ui.add_space(left_pad);
+                    ui.vertical(|ui| {
+                        ui.set_width(content_w);
+                        ui.set_max_width(content_w);
+
+                        // Hero Quick Connect Box
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(16, 21, 30))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)))
+                            .rounding(10.0)
+                            .inner_margin(egui::Margin::symmetric(18.0, 12.0))
+                            .show(ui, |ui| {
+                                ui.set_width(content_w - 36.0);
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("⚡ Quick Connect:").strong().color(Color32::from_rgb(56, 189, 248)).size(13.0));
                                 let q_edit = ui.add(
@@ -3633,10 +3799,6 @@ impl eframe::App for RustyBoxApp {
                         resp
                     };
 
-                    let card_w = 236.0;
-                    let card_h = 74.0;
-                    let card_spacing = 12.0;
-
                     // Row 1: Local Terminal, SSH Client, SFTP Browser
                     ui.horizontal(|ui| {
                         if modern_card(ui, "💻", "Local Terminal", "Interactive shell with ConPTY", Color32::from_rgb(56, 189, 248), card_w, card_h).clicked() {
@@ -3688,11 +3850,6 @@ impl eframe::App for RustyBoxApp {
                     });
 
                     ui.add_space(16.0);
-
-                    let mut to_launch_quick: Option<Session> = None;
-                    let mut to_edit_session: Option<Session> = None;
-                    let mut to_clear_recent_id: Option<String> = None;
-                    let mut to_delete_id: Option<String> = None;
 
                     let render_session_card = |ui: &mut egui::Ui, s: &Session, show_time: bool| -> egui::Response {
                         let icon = match s.session_type {
@@ -3768,8 +3925,11 @@ impl eframe::App for RustyBoxApp {
                         ))
                     };
 
-                    // Section 1: Recent Connections (Đã từng kết nối)
-                    let recent_sessions = Session::recent_sessions(&self.sessions, &self.home_session_filter);
+                    // Section 1: Recent Connections (Tối đa 5 kết nối gần nhất)
+                    let recent_sessions: Vec<_> = Session::recent_sessions(&self.sessions, &self.home_session_filter)
+                        .into_iter()
+                        .take(5)
+                        .collect();
 
                     ui.label(
                         RichText::new(format!("🕒 Recent Connections ({})", recent_sessions.len()))
@@ -3786,7 +3946,7 @@ impl eframe::App for RustyBoxApp {
                                 .color(Color32::from_rgb(100, 116, 139)),
                         );
                     } else {
-                        for chunk in recent_sessions.iter().take(9).collect::<Vec<_>>().chunks(3) {
+                        for chunk in recent_sessions.chunks(3) {
                             ui.horizontal(|ui| {
                                 for (i, s) in chunk.iter().enumerate() {
                                     if i > 0 {
@@ -3807,52 +3967,6 @@ impl eframe::App for RustyBoxApp {
                                         }
                                         if menu_ui.button("🧹 Clear from Recent").clicked() {
                                             to_clear_recent_id = Some(s.id.clone());
-                                            menu_ui.close_menu();
-                                        }
-                                    });
-                                }
-                            });
-                            ui.add_space(8.0);
-                        }
-                    }
-
-                    ui.add_space(18.0);
-
-                    // Section 2: Saved Sessions (Danh bạ đã lưu)
-                    let saved_sessions = Session::saved_sessions(&self.sessions, &self.home_session_filter);
-
-                    ui.label(
-                        RichText::new(format!("📂 Saved Sessions ({})", saved_sessions.len()))
-                            .strong()
-                            .size(13.5)
-                            .color(Color32::from_rgb(234, 179, 8)),
-                    );
-                    ui.add_space(8.0);
-
-                    if saved_sessions.is_empty() {
-                        ui.label(
-                            RichText::new("No saved sessions match your filter.")
-                                .size(11.5)
-                                .color(Color32::from_rgb(100, 116, 139)),
-                        );
-                    } else {
-                        for chunk in saved_sessions.chunks(3) {
-                            ui.horizontal(|ui| {
-                                for (i, s) in chunk.iter().enumerate() {
-                                    if i > 0 {
-                                        ui.add_space(card_spacing);
-                                    }
-                                    let q_resp = render_session_card(ui, s, false);
-                                    if q_resp.clicked() {
-                                        to_launch_quick = Some(s.clone());
-                                    }
-                                    q_resp.context_menu(|menu_ui| {
-                                        if menu_ui.button("▶ Connect").clicked() {
-                                            to_launch_quick = Some(s.clone());
-                                            menu_ui.close_menu();
-                                        }
-                                        if menu_ui.button("✏ Edit Session").clicked() {
-                                            to_edit_session = Some(s.clone());
                                             menu_ui.close_menu();
                                         }
                                         if menu_ui.button(RichText::new("🗑 Delete Session").color(Color32::from_rgb(248, 113, 113))).clicked() {
@@ -3885,6 +3999,7 @@ impl eframe::App for RustyBoxApp {
                         self.is_home_active = false;
                     }
                     ui.add_space(24.0);
+                });
                 });
                 });
                 return;
@@ -4222,7 +4337,10 @@ impl eframe::App for RustyBoxApp {
             }
 
             if let Some(new_idx) = newly_focused_tab_idx {
-                self.active_tab_idx = new_idx;
+                if self.active_tab_idx != new_idx {
+                    self.active_tab_idx = new_idx;
+                    self.sync_sidebar_with_active_tab();
+                }
             }
         });
 
@@ -4267,10 +4385,30 @@ impl eframe::App for RustyBoxApp {
                         closed.session.kill();
                         if self.open_tabs.is_empty() {
                             self.is_home_active = true;
+                            self.active_tab_idx = 0;
                         } else if self.active_tab_idx >= self.open_tabs.len() {
                             self.active_tab_idx = self.open_tabs.len() - 1;
                         }
+                        self.sync_sidebar_with_active_tab();
                     }
+                }
+            }
+            TerminalAction::NextTab => {
+                if !self.open_tabs.is_empty() {
+                    self.is_home_active = false;
+                    self.active_tab_idx = (self.active_tab_idx + 1) % self.open_tabs.len();
+                    self.sync_sidebar_with_active_tab();
+                }
+            }
+            TerminalAction::PrevTab => {
+                if !self.open_tabs.is_empty() {
+                    self.is_home_active = false;
+                    self.active_tab_idx = if self.active_tab_idx == 0 {
+                        self.open_tabs.len() - 1
+                    } else {
+                        self.active_tab_idx - 1
+                    };
+                    self.sync_sidebar_with_active_tab();
                 }
             }
             _ => {}
@@ -4664,25 +4802,6 @@ impl eframe::App for RustyBoxApp {
             self.show_services_modal = open;
         }
 
-        // Modal backdrop scrim (dim workspace when dialog is open)
-        let is_any_modal_open = self.show_snippets
-            || self.show_tunnels
-            || self.show_highlight_modal
-            || self.show_tunnel_edit
-            || self.show_snippet_edit
-            || self.show_snippet_vars
-            || self.show_settings_dialog
-            || self.show_manage_passwords
-            || self.show_vault
-            || self.show_keygen
-            || self.show_pwdgen
-            || self.show_diff;
-
-        if is_any_modal_open {
-            let screen_rect = ctx.screen_rect();
-            ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal_backdrop_scrim")))
-                .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
-        }
 
         // =========================================================================
         // SSH TUNNELS / PORT FORWARDING DASHBOARD (Visual Graph Cards like Termius)
@@ -4697,7 +4816,7 @@ impl eframe::App for RustyBoxApp {
 
             egui::Window::new("🔀 SSH Tunnels & Port Forwarding Dashboard")
                 .open(&mut open)
-                .default_size(Vec2::new(760.0, 520.0))
+                .default_size(Vec2::new(840.0, 560.0))
                 .resizable(true)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
@@ -4914,7 +5033,7 @@ impl eframe::App for RustyBoxApp {
             let mut save_te = false;
             egui::Window::new(if self.editing_tunnel_idx.is_some() { "✏ Edit SSH Tunnel" } else { "➕ New SSH Tunnel" })
                 .open(&mut open)
-                .default_size(Vec2::new(600.0, 420.0))
+                .default_size(Vec2::new(680.0, 480.0))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut self.tunnel_edit_mode, 0, "Local port forwarding (-L)");
@@ -4933,11 +5052,11 @@ impl eframe::App for RustyBoxApp {
 
                     // Auto-fill from saved sessions
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Auto-fill from Saved Session:").size(11.5).color(Color32::from_rgb(148, 163, 184)));
+                        ui.label(RichText::new("Auto-fill from Saved Session:").size(12.0).color(Color32::from_rgb(148, 163, 184)));
                         let ssh_sessions: Vec<&Session> = self.sessions.iter().filter(|s| matches!(s.session_type, SessionType::Ssh { .. })).collect();
                         egui::ComboBox::from_id_salt("tunnel_session_picker")
                             .selected_text(if self.selected_session_fill.is_empty() { "-- Select SSH session --" } else { &self.selected_session_fill })
-                            .width(220.0)
+                            .width(240.0)
                             .show_ui(ui, |ui| {
                                 for s in &ssh_sessions {
                                     if ui.selectable_label(self.selected_session_fill == s.name, &s.name).clicked() {
@@ -4952,26 +5071,26 @@ impl eframe::App for RustyBoxApp {
                                 }
                             });
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
 
-                    egui::Grid::new("tunnel_edit_grid").num_columns(4).spacing([10.0, 8.0]).show(ui, |ui| {
+                    egui::Grid::new("tunnel_edit_grid").num_columns(4).spacing([12.0, 10.0]).show(ui, |ui| {
                         ui.label("Tunnel name:");
-                        ui.add(TextEdit::singleline(&mut self.new_tunnel_name).desired_width(170.0));
+                        ui.add(TextEdit::singleline(&mut self.new_tunnel_name).desired_width(210.0).margin(Margin::symmetric(8.0, 5.0)));
                         ui.label("Forwarded port:");
                         ui.add(egui::DragValue::new(&mut self.new_tunnel_local_port).range(1..=65535));
                         ui.end_row();
 
                         ui.label("SSH gateway host:");
-                        ui.add(TextEdit::singleline(&mut self.tunnel_ssh_srv).desired_width(170.0));
+                        ui.add(TextEdit::singleline(&mut self.tunnel_ssh_srv).desired_width(210.0).margin(Margin::symmetric(8.0, 5.0)));
                         ui.label("SSH gateway port:");
                         ui.add(egui::DragValue::new(&mut self.tunnel_ssh_port).range(1..=65535));
                         ui.end_row();
 
                         ui.label("SSH gateway user:");
-                        ui.add(TextEdit::singleline(&mut self.tunnel_ssh_user).desired_width(170.0));
+                        ui.add(TextEdit::singleline(&mut self.tunnel_ssh_user).desired_width(210.0).margin(Margin::symmetric(8.0, 5.0)));
                         ui.label("SSH private key:");
                         ui.horizontal(|ui| {
-                            ui.add(TextEdit::singleline(&mut self.tunnel_ssh_key_path).desired_width(120.0));
+                            ui.add(TextEdit::singleline(&mut self.tunnel_ssh_key_path).desired_width(150.0).margin(Margin::symmetric(8.0, 5.0)));
                             if ui.small_button("📂").on_hover_text("Browse key file").clicked() {
                                 if let Some(f) = rfd::FileDialog::new().pick_file() {
                                     self.tunnel_ssh_key_path = f.to_string_lossy().to_string();
@@ -5061,7 +5180,7 @@ impl eframe::App for RustyBoxApp {
 
             egui::Window::new("📋 Command Snippets (DevOps & SysAdmin Library)")
                 .open(&mut open)
-                .default_size(Vec2::new(760.0, 520.0))
+                .default_size(Vec2::new(840.0, 560.0))
                 .resizable(true)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
@@ -5079,20 +5198,20 @@ impl eframe::App for RustyBoxApp {
                         });
                     });
 
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("🔍").size(14.0));
-                        ui.add(TextEdit::singleline(&mut self.snippet_search).hint_text("Search snippets...").desired_width(190.0));
+                        ui.add(TextEdit::singleline(&mut self.snippet_search).hint_text("Search snippets...").desired_width(260.0).margin(Margin::symmetric(8.0, 5.0)));
 
                         ui.add_space(8.0);
                         let cat_chip = |ui: &mut egui::Ui, label: &str, current: &mut String| {
                             let is_sel = current == label;
-                            let bg = if is_sel { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(22, 28, 40) };
-                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(45, 55, 75)) };
-                            let btn = egui::Button::new(RichText::new(label).size(11.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(201, 209, 217) }))
+                            let bg = if is_sel { Color32::from_rgb(37, 99, 235) } else { Color32::from_rgb(22, 28, 40) };
+                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85)) };
+                            let btn = egui::Button::new(RichText::new(label).size(12.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(226, 232, 240) }))
                                 .fill(bg)
                                 .stroke(stroke)
-                                .rounding(4.0);
+                                .rounding(6.0);
                             if ui.add(btn).clicked() {
                                 *current = label.to_string();
                             }
@@ -5237,34 +5356,35 @@ impl eframe::App for RustyBoxApp {
             egui::Window::new(if self.editing_snippet_idx.is_some() { "✏ Edit Snippet" } else { "➕ Add New Snippet" })
                 .open(&mut open)
                 .collapsible(false)
-                .default_size(Vec2::new(520.0, 360.0))
+                .default_size(Vec2::new(620.0, 460.0))
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new("Configure Reusable Command Template").strong());
-                    ui.add_space(4.0);
+                    ui.label(RichText::new("Configure Reusable Command Template").strong().size(13.5));
+                    ui.add_space(6.0);
 
-                    egui::Grid::new("snippet_edit_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                        ui.label("Name:");
-                        ui.add(TextEdit::singleline(&mut self.snippet_form_name).desired_width(320.0));
+                    egui::Grid::new("snippet_edit_grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
+                        ui.label(RichText::new("Name:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
+                        ui.add(TextEdit::singleline(&mut self.snippet_form_name).desired_width(420.0).margin(Margin::symmetric(8.0, 5.0)));
                         ui.end_row();
 
-                        ui.label("Category:");
+                        ui.label(RichText::new("Category:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
                         ui.horizontal(|ui| {
-                            ui.add(TextEdit::singleline(&mut self.snippet_form_category).desired_width(180.0));
-                            ui.label("(e.g. Docker, Nginx, System, Database, Git)");
+                            ui.add(TextEdit::singleline(&mut self.snippet_form_category).desired_width(200.0).margin(Margin::symmetric(8.0, 5.0)));
+                            ui.label(RichText::new("(e.g. Docker, Nginx, System, Database, Git)").size(11.5).color(Color32::from_rgb(148, 163, 184)));
                         });
                         ui.end_row();
 
-                        ui.label("Description:");
-                        ui.add(TextEdit::singleline(&mut self.snippet_form_desc).desired_width(320.0));
+                        ui.label(RichText::new("Description:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
+                        ui.add(TextEdit::singleline(&mut self.snippet_form_desc).desired_width(420.0).margin(Margin::symmetric(8.0, 5.0)));
                         ui.end_row();
 
-                        ui.label("Command:");
+                        ui.label(RichText::new("Command:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
                         ui.add(
                             TextEdit::multiline(&mut self.snippet_form_command)
                                 .font(egui::TextStyle::Monospace)
-                                .desired_width(320.0)
-                                .desired_rows(4),
+                                .desired_width(420.0)
+                                .desired_rows(6)
+                                .margin(Margin::symmetric(8.0, 6.0)),
                         );
                         ui.end_row();
                     });
@@ -6110,7 +6230,7 @@ impl eframe::App for RustyBoxApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
-                .default_size(Vec2::new(600.0, 480.0))
+                .default_size(Vec2::new(720.0, 520.0))
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     // 1. Radio: Save sessions passwords
@@ -6425,25 +6545,26 @@ impl eframe::App for RustyBoxApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
-                .default_size(Vec2::new(380.0, 240.0))
+                .default_size(Vec2::new(480.0, 300.0))
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(RichText::new("Enter user credentials details:").strong());
-                        ui.add_space(4.0);
+                        ui.label(RichText::new("Enter user credentials details:").strong().size(13.5));
+                        ui.add_space(6.0);
 
-                        ui.horizontal(|ui| {
-                            ui.label("Profile name:");
-                            ui.add(TextEdit::singleline(&mut self.new_cred_name).desired_width(180.0).hint_text("e.g. Root VPS"));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Username:");
-                            ui.add(TextEdit::singleline(&mut self.new_cred_user).desired_width(180.0).hint_text("e.g. root / admin"));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Password:");
-                            ui.add(TextEdit::singleline(&mut self.new_cred_password).password(true).desired_width(180.0));
+                        egui::Grid::new("new_cred_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                            ui.label(RichText::new("Profile name:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
+                            ui.add(TextEdit::singleline(&mut self.new_cred_name).desired_width(260.0).margin(Margin::symmetric(8.0, 5.0)).hint_text("e.g. Root VPS"));
+                            ui.end_row();
+
+                            ui.label(RichText::new("Username:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
+                            ui.add(TextEdit::singleline(&mut self.new_cred_user).desired_width(260.0).margin(Margin::symmetric(8.0, 5.0)).hint_text("e.g. root / admin"));
+                            ui.end_row();
+
+                            ui.label(RichText::new("Password:").size(12.5).color(Color32::from_rgb(226, 232, 240)));
+                            ui.add(TextEdit::singleline(&mut self.new_cred_password).password(true).desired_width(260.0).margin(Margin::symmetric(8.0, 5.0)).hint_text("Password"));
+                            ui.end_row();
                         });
                     });
                     ui.add_space(6.0);
@@ -6478,7 +6599,7 @@ impl eframe::App for RustyBoxApp {
             let mut close_dialog = false;
             egui::Window::new("⚙ RustyBox Configuration & Preferences")
                 .open(&mut open)
-                .default_size(Vec2::new(640.0, 480.0))
+                .default_size(Vec2::new(760.0, 540.0))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.settings_tab, 0, "📁 General");
@@ -6980,5 +7101,24 @@ demouser1@vultr:~$
 
         let win_ps = "PS D:\\temp\\RustyBox> Get-ChildItem\n";
         assert_eq!(extract_cwd_from_screen(win_ps), Some("D:\\temp\\RustyBox".to_string()));
+    }
+
+    #[test]
+    fn test_open_tab_remembers_sftp_path() {
+        let mut tab = OpenTab {
+            id: "test-tab-1".to_string(),
+            title: "SSH: Web Server".to_string(),
+            session: PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap(),
+            session_def: None,
+            custom_cmd: None,
+            workdir: Some("/home/ubuntu".to_string()),
+            telemetry: TabTelemetry::new_local(),
+            last_synced_cwd: None,
+            last_sftp_path: None,
+        };
+
+        assert_eq!(tab.last_sftp_path, None);
+        tab.last_sftp_path = Some("/etc/nginx/sites-available".to_string());
+        assert_eq!(tab.last_sftp_path.as_deref(), Some("/etc/nginx/sites-available"));
     }
 }

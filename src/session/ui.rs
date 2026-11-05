@@ -500,14 +500,14 @@ impl NewSessionDialog {
 
 /// Crisp RustyBox square checkbox with vector checkmark and clean spacing (never circular, never overlaps label)
 pub fn rusty_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
-    let font_id = FontId::proportional(12.0);
+    let font_id = FontId::proportional(12.5);
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         font_id.clone(),
         Color32::from_rgb(230, 237, 243),
     );
-    let box_sz = 14.0;
-    let gap = 7.0;
+    let box_sz = 16.0;
+    let gap = 8.0;
     let total_w = box_sz + gap + galley.size().x + 2.0;
     let total_h = galley.size().y.max(box_sz + 4.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(total_w, total_h), Sense::click());
@@ -552,7 +552,7 @@ pub fn rusty_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egu
     resp
 }
 
-/// Centered, balanced RustyBox OK / Cancel footer button pair (identical 96x29 geometry, never misaligned)
+/// Centered, balanced RustyBox OK / Cancel footer button pair
 pub fn rusty_ok_cancel_buttons(
     ui: &mut egui::Ui,
     ok_label: &str,
@@ -560,19 +560,22 @@ pub fn rusty_ok_cancel_buttons(
 ) -> (bool, bool) {
     let mut ok_clicked = false;
     let mut cancel_clicked = false;
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let total_w = 202.0;
+        let btn_w = 115.0;
+        let btn_h = 32.0;
+        let spacing = 16.0;
+        let total_w = btn_w * 2.0 + spacing;
         let pad = ((ui.available_width() - total_w) * 0.5).max(0.0);
         ui.add_space(pad);
 
         let ok_btn = egui::Button::new(
             RichText::new(ok_label)
-                .size(12.5)
+                .size(13.0)
                 .strong()
                 .color(Color32::WHITE),
         )
-        .min_size(vec2(96.0, 29.0))
+        .min_size(vec2(btn_w, btn_h))
         .fill(Color32::from_rgb(35, 134, 54))
         .stroke(Stroke::new(1.0, Color32::from_rgb(63, 185, 80)));
 
@@ -580,15 +583,17 @@ pub fn rusty_ok_cancel_buttons(
             ok_clicked = true;
         }
 
+        ui.add_space(spacing);
+
         let cancel_btn = egui::Button::new(
             RichText::new(cancel_label)
-                .size(12.5)
+                .size(13.0)
                 .strong()
                 .color(Color32::from_rgb(240, 246, 252)),
         )
-        .min_size(vec2(96.0, 29.0))
-        .fill(Color32::from_rgb(48, 54, 61))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(248, 81, 73)));
+        .min_size(vec2(btn_w, btn_h))
+        .fill(Color32::from_rgb(55, 65, 81))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(107, 114, 128)));
 
         if ui.add(cancel_btn).clicked() {
             cancel_clicked = true;
@@ -760,19 +765,19 @@ pub fn render_new_session_dialog(
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_size(Vec2::new(820.0, 530.0))
+        .default_size(Vec2::new(880.0, 580.0))
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            ui.set_min_width(796.0);
-            ui.set_max_width(796.0);
+            ui.set_min_width(856.0);
+            ui.set_max_width(856.0);
 
             // 1. RUSTYBOX TOP PROTOCOL SELECTOR STRIP (9 Protocols with Vector Icons)
             egui::Frame::none()
-                .fill(Color32::from_rgb(13, 17, 23))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                .rounding(Rounding::same(6.0))
-                .inner_margin(Margin::symmetric(8.0, 6.0))
+                .fill(Color32::from_rgb(15, 20, 30))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                .rounding(Rounding::same(8.0))
+                .inner_margin(Margin::symmetric(10.0, 8.0))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     let protocols: &[(&str, usize, Color32)] = &[
@@ -791,12 +796,12 @@ pub fn render_new_session_dialog(
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let item_w = ((ui.available_width() - 6.0 * (protocols.len() as f32 - 1.0))
                             / protocols.len() as f32)
-                            .max(58.0);
+                            .max(62.0);
 
                         for &(label, tab_id, accent) in protocols {
                             let is_sel = dialog.protocol_tab == tab_id;
                             let (r, resp) =
-                                ui.allocate_exact_size(vec2(item_w, 50.0), Sense::click());
+                                ui.allocate_exact_size(vec2(item_w, 54.0), Sense::click());
                             if resp.hovered() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
@@ -807,51 +812,51 @@ pub fn render_new_session_dialog(
                             let p = ui.painter();
                             p.rect(
                                 r,
-                                Rounding::same(5.0),
+                                Rounding::same(6.0),
                                 if is_sel {
-                                    Color32::from_rgba_unmultiplied(31, 111, 235, 60)
+                                    Color32::from_rgba_unmultiplied(37, 99, 235, 80)
                                 } else if resp.hovered() {
-                                    Color32::from_rgb(33, 38, 45)
+                                    Color32::from_rgb(33, 42, 60)
                                 } else {
-                                    Color32::from_rgb(22, 27, 34)
+                                    Color32::from_rgb(20, 26, 38)
                                 },
                                 Stroke::new(
                                     if is_sel { 1.5 } else { 1.0 },
                                     if is_sel {
                                         Color32::from_rgb(56, 189, 248)
                                     } else {
-                                        Color32::from_rgb(48, 54, 61)
+                                        Color32::from_rgb(51, 65, 85)
                                     },
                                 ),
                             );
 
-                            paint_protocol_icon(p, pos2(r.center().x, r.top() + 16.0), label, accent);
+                            paint_protocol_icon(p, pos2(r.center().x, r.top() + 17.0), label, accent);
 
                             p.text(
-                                pos2(r.center().x, r.bottom() - 10.0),
+                                pos2(r.center().x, r.bottom() - 11.0),
                                 Align2::CENTER_CENTER,
                                 label,
-                                FontId::proportional(11.5),
+                                FontId::proportional(12.0),
                                 if is_sel {
                                     Color32::WHITE
                                 } else {
-                                    Color32::from_rgb(201, 209, 217)
+                                    Color32::from_rgb(226, 232, 240)
                                 },
                             );
                         }
                     });
                 });
 
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
             match dialog.protocol_tab {
                 0 => {
-                    // 2. RUSTYBOX BASIC SSH SETTINGS BOX (Full Width)
+                    // 2. RUSTYBOX BASIC SSH SETTINGS BOX (Spacious, Clear & High Contrast)
                     egui::Frame::none()
-                        .fill(Color32::from_rgb(22, 27, 34))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
-                        .rounding(Rounding::same(6.0))
-                        .inner_margin(Margin::symmetric(12.0, 9.0))
+                        .fill(Color32::from_rgb(18, 24, 38))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .rounding(Rounding::same(8.0))
+                        .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
@@ -867,84 +872,91 @@ pub fn render_new_session_dialog(
 
                                 ui.label(
                                     RichText::new("Basic SSH settings")
-                                        .size(12.5)
+                                        .size(13.5)
                                         .strong()
                                         .color(Color32::from_rgb(251, 191, 36)),
                                 );
                             });
-                            ui.add_space(5.0);
-                            // Row 1: Target host, Port, Session name & Folder
+                            ui.add_space(8.0);
+
+                            // Row 1: Target host, Port & Session name
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                ui.label("Remote host *");
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.label(RichText::new("Remote host *").size(12.5).strong().color(Color32::from_rgb(226, 232, 240)));
                                 ui.add(
                                     TextEdit::singleline(&mut dialog.ssh_host)
-                                        .desired_width(180.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
-                                        .hint_text("51.79.157.8"),
+                                        .desired_width(260.0)
+                                        .margin(Margin::symmetric(9.0, 6.0))
+                                        .hint_text("e.g. 51.79.157.8 or domain.com"),
                                 );
-                                ui.add_space(4.0);
-                                ui.label("Port");
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("Port:").size(12.5).strong().color(Color32::from_rgb(226, 232, 240)));
                                 ui.add(
                                     egui::DragValue::new(&mut dialog.ssh_port)
                                         .range(1..=65535)
                                         .speed(1),
                                 );
-                                ui.add_space(6.0);
-                                ui.label("Session name:");
+                                ui.add_space(8.0);
+                                ui.label(RichText::new("Session name:").size(12.5).strong().color(Color32::from_rgb(226, 232, 240)));
                                 ui.add(
                                     TextEdit::singleline(&mut dialog.session_name)
-                                        .desired_width(170.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
-                                        .hint_text("e.g. dev-vn"),
-                                );
-                                ui.add_space(4.0);
-                                ui.label("Folder:");
-                                ui.add(
-                                    TextEdit::singleline(&mut dialog.folder_name)
-                                        .desired_width(130.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
-                                        .hint_text("Servers"),
+                                        .desired_width(220.0)
+                                        .margin(Margin::symmetric(9.0, 6.0))
+                                        .hint_text("e.g. Production Web"),
                                 );
                             });
 
-                            ui.add_space(6.0);
+                            ui.add_space(8.0);
 
-                            // Row 2: Credentials (Username, Password, Saved Users, Save Checkbox)
+                            // Row 2: Folder, Username & Password
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                rusty_checkbox(ui, &mut dialog.specify_username, "Username:");
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.label(RichText::new("Folder:").size(12.5).strong().color(Color32::from_rgb(226, 232, 240)));
+                                ui.add(
+                                    TextEdit::singleline(&mut dialog.folder_name)
+                                        .desired_width(170.0)
+                                        .margin(Margin::symmetric(9.0, 6.0))
+                                        .hint_text("Servers"),
+                                );
+                                ui.add_space(6.0);
+                                rusty_checkbox(ui, &mut dialog.specify_username, "Specify username:");
                                 ui.add_enabled(
                                     dialog.specify_username,
                                     TextEdit::singleline(&mut dialog.ssh_user)
-                                        .desired_width(100.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
-                                        .hint_text("ruby / root"),
+                                        .desired_width(130.0)
+                                        .margin(Margin::symmetric(9.0, 6.0))
+                                        .hint_text("root / ubuntu"),
                                 );
-
-                                ui.add_space(4.0);
-                                ui.label("Password:");
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("Password:").size(12.5).strong().color(Color32::from_rgb(226, 232, 240)));
                                 ui.add(
                                     TextEdit::singleline(&mut dialog.password)
                                         .password(true)
-                                        .desired_width(140.0)
-                                        .margin(Margin::symmetric(7.0, 4.0))
+                                        .desired_width(160.0)
+                                        .margin(Margin::symmetric(9.0, 6.0))
                                         .hint_text("SSH password"),
                                 );
+                            });
 
-                                rusty_checkbox(ui, &mut dialog.save_password, "Save password");
+                            ui.add_space(8.0);
 
-                                // RustyBox Credentials / User+Key button right next to credentials
-                                if ui.add(egui::Button::new(RichText::new("👤🔑 Manage").size(11.5)))
+                            // Row 3: Password Vault, Credentials Manager, Saved Users
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                rusty_checkbox(ui, &mut dialog.save_password, "Save password in Vault");
+
+                                ui.add_space(8.0);
+                                if ui.add(egui::Button::new(RichText::new("👤🔑 Manage Credentials").size(12.0)))
                                     .on_hover_text("Manage credentials & add new user profile")
                                     .clicked()
                                 {
                                     dialog.request_open_passwords = true;
                                 }
 
+                                ui.add_space(6.0);
                                 egui::ComboBox::from_id_salt("ssh_cred_picker_main")
-                                    .selected_text(if dialog.ssh_user.is_empty() { "Saved users..." } else { &dialog.ssh_user })
-                                    .width(120.0)
+                                    .selected_text(if dialog.ssh_user.is_empty() { "Saved user profiles..." } else { &dialog.ssh_user })
+                                    .width(160.0)
                                     .show_ui(ui, |ui| {
                                         if dialog.available_credentials.is_empty() {
                                             ui.label(RichText::new("No saved credentials").italics().color(Color32::GRAY));

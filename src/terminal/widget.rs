@@ -28,6 +28,8 @@ pub enum TerminalAction {
     OpenSearch,
     RestartTab,
     CloseTab,
+    NextTab,
+    PrevTab,
 }
 
 impl<'a> TerminalWidget<'a> {
@@ -897,7 +899,9 @@ impl<'a> TerminalWidget<'a> {
                                 }
                             }
                             Key::Tab => {
-                                if shift {
+                                if ctrl {
+                                    action = if shift { TerminalAction::PrevTab } else { TerminalAction::NextTab };
+                                } else if shift {
                                     input_bytes.extend_from_slice(b"\x1b[Z"); // Shift+Tab (Backtab)
                                 } else {
                                     input_bytes.extend_from_slice(b"\t");
@@ -923,14 +927,18 @@ impl<'a> TerminalWidget<'a> {
                                 }
                             }
                             Key::PageUp => {
-                                if shift {
+                                if ctrl {
+                                    action = TerminalAction::PrevTab;
+                                } else if shift {
                                     scroll_delta_lines += (rows as isize / 2).max(5);
                                 } else {
                                     input_bytes.extend_from_slice(b"\x1b[5~");
                                 }
                             }
                             Key::PageDown => {
-                                if shift {
+                                if ctrl {
+                                    action = TerminalAction::NextTab;
+                                } else if shift {
                                     scroll_delta_lines -= (rows as isize / 2).max(5);
                                 } else {
                                     input_bytes.extend_from_slice(b"\x1b[6~");
