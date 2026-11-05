@@ -2288,6 +2288,13 @@ impl eframe::App for RustyBoxApp {
                         for t in TerminalTheme::all() {
                             if ui.selectable_label(self.theme == *t, t.name()).clicked() {
                                 self.theme = *t;
+                                if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                                    if let Some(ref mut s) = tab.session_def {
+                                        s.terminal_color_scheme = t.name().to_string();
+                                    }
+                                }
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                ui.ctx().request_repaint();
                                 ui.close_menu();
                             }
                         }
@@ -2643,13 +2650,24 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                         .show(ui, |ui| {
                             ui.set_height(toolbar_h);
+                            let prev_theme = self.theme;
                             egui::ComboBox::from_id_salt("toolbar_theme_select")
                                 .selected_text(RichText::new(self.theme.name()).size(11.0))
                                 .show_ui(ui, |ui| {
                                     for t in TerminalTheme::all() {
-                                        ui.selectable_value(&mut self.theme, *t, t.name());
+                                        if ui.selectable_value(&mut self.theme, *t, t.name()).clicked() {
+                                            if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                                                if let Some(ref mut s) = tab.session_def {
+                                                    s.terminal_color_scheme = t.name().to_string();
+                                                }
+                                            }
+                                        }
                                     }
                                 });
+                            if self.theme != prev_theme {
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                ui.ctx().request_repaint();
+                            }
                         });
 
                     ui.add_space(5.0);
@@ -4153,7 +4171,17 @@ impl eframe::App for RustyBoxApp {
                 let eff_theme = tab
                     .session_def
                     .as_ref()
-                    .and_then(|s| TerminalTheme::from_name(&s.terminal_color_scheme))
+                    .and_then(|s| {
+                        let scheme = s.terminal_color_scheme.trim();
+                        if scheme.is_empty()
+                            || scheme.eq_ignore_ascii_case("default")
+                            || scheme.eq_ignore_ascii_case("rustybox dark (default)")
+                        {
+                            None
+                        } else {
+                            TerminalTheme::from_name(scheme)
+                        }
+                    })
                     .unwrap_or(current_theme);
                 let eff_font = tab
                     .session_def
@@ -6677,7 +6705,15 @@ impl eframe::App for RustyBoxApp {
                             ui.horizontal(|ui| {
                                 ui.label("Terminal Color Scheme:");
                                 for t in crate::terminal::vt_screen::TerminalTheme::all() {
-                                    ui.selectable_value(&mut self.theme, *t, t.name());
+                                    if ui.selectable_value(&mut self.theme, *t, t.name()).clicked() {
+                                        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+                                            if let Some(ref mut s) = tab.session_def {
+                                                s.terminal_color_scheme = t.name().to_string();
+                                            }
+                                        }
+                                        let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                        ui.ctx().request_repaint();
+                                    }
                                 }
                             });
                             ui.add_space(6.0);

@@ -1192,8 +1192,11 @@ pub fn render_new_session_dialog(
                                             .show_ui(ui, |ui| {
                                                 for scheme in &[
                                                     "RustyBox Dark (Default)",
-                                                    "Solarized Dark",
                                                     "Dracula Pro",
+                                                    "Solarized Dark",
+                                                    "Solarized Light",
+                                                    "Monokai Classic",
+                                                    "Nord Arctic",
                                                     "Matrix Green",
                                                 ] {
                                                     ui.selectable_value(
@@ -1911,11 +1914,12 @@ fn render_session_child_popups(ctx: &egui::Context, dialog: &mut NewSessionDialo
                     ui.label(RichText::new("Select terminal color palette").strong());
                     for scheme in &[
                         "RustyBox Dark (Default)",
-                        "Solarized Dark",
                         "Dracula Pro",
-                        "Matrix Green",
+                        "Solarized Dark",
+                        "Solarized Light",
                         "Monokai Classic",
                         "Nord Arctic",
+                        "Matrix Green",
                     ] {
                         ui.radio_value(&mut dialog.terminal_color_scheme, (*scheme).to_string(), *scheme);
                     }
