@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +21,25 @@ pub struct FileEntry {
     pub permissions: String,
 }
 
+#[derive(Clone)]
+pub struct RemoteSessionState {
+    pub label: String,
+    pub config: SftpTargetConfig,
+    pub client: Arc<Mutex<RemoteSftpClient>>,
+    pub is_connected: bool,
+    pub is_loading: bool,
+    pub current_path: PathBuf,
+    pub path_input: String,
+    pub path_history: Vec<PathBuf>,
+    pub remote_raw_entries: Vec<FileEntry>,
+    pub remote_home_dir: Option<PathBuf>,
+    pub last_synced_terminal_cwd: Option<PathBuf>,
+    pub selected_file: Option<PathBuf>,
+    pub remote_disk_stats: Option<(u64, u64, f32)>,
+    pub error_message: Option<String>,
+    pub status_message: Option<String>,
+}
+
 pub struct FileExplorer {
     pub current_path: PathBuf,
     pub path_input: String,
@@ -28,7 +48,7 @@ pub struct FileExplorer {
     pub selected_file: Option<PathBuf>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
-    // Remote SFTP State
+    // Remote SFTP State & Multi-Server Pool
     pub is_remote: bool,
     pub is_loading: bool,
     pub remote_label: Option<String>,
@@ -37,6 +57,7 @@ pub struct FileExplorer {
     pub remote_raw_entries: Vec<FileEntry>,
     pub remote_home_dir: Option<PathBuf>,
     pub last_synced_terminal_cwd: Option<PathBuf>,
+    pub remote_sessions: HashMap<String, RemoteSessionState>,
     // View & RustyBox SFTP options
     pub show_hidden: bool,
     pub sort_ascending: bool,
@@ -46,11 +67,13 @@ pub struct FileExplorer {
     // Modal quick editor
     pub editor_open: bool,
     pub editor_file_path: Option<PathBuf>,
+    pub editor_remote_label: Option<String>,
     pub editor_content: String,
     pub editor_status: Option<String>,
     // Modal Chmod (RustyBox TFORMCHMOD)
     pub chmod_open: bool,
     pub chmod_target: Option<PathBuf>,
+    pub chmod_remote_label: Option<String>,
     pub chmod_u_r: bool,
     pub chmod_u_w: bool,
     pub chmod_u_x: bool,
@@ -88,6 +111,7 @@ impl FileExplorer {
             remote_raw_entries: Vec::new(),
             remote_home_dir: None,
             last_synced_terminal_cwd: None,
+            remote_sessions: HashMap::new(),
             show_hidden: true,
             sort_ascending: true,
             follow_terminal_folder: false,
@@ -95,10 +119,12 @@ impl FileExplorer {
             active_remote_label: None,
             editor_open: false,
             editor_file_path: None,
+            editor_remote_label: None,
             editor_content: String::new(),
             editor_status: None,
             chmod_open: false,
             chmod_target: None,
+            chmod_remote_label: None,
             chmod_u_r: true,
             chmod_u_w: true,
             chmod_u_x: true,
@@ -129,39 +155,114 @@ impl FileExplorer {
         }
     }
 
+    pub fn save_active_remote_state(&mut self) {
+        if !self.is_remote {
+            return;
+        }
+        let Some(ref label) = self.remote_label else {
+            return;
+        };
+        if let Some(sess) = self.remote_sessions.get_mut(label) {
+            sess.is_loading = self.is_loading;
+            sess.current_path = self.current_path.clone();
+            sess.path_input = self.path_input.clone();
+            sess.path_history = self.path_history.clone();
+            sess.remote_raw_entries = self.remote_raw_entries.clone();
+            sess.remote_home_dir = self.remote_home_dir.clone();
+            sess.last_synced_terminal_cwd = self.last_synced_terminal_cwd.clone();
+            sess.selected_file = self.selected_file.clone();
+            sess.remote_disk_stats = self.remote_disk_stats;
+            sess.error_message = self.error_message.clone();
+            sess.status_message = self.status_message.clone();
+        }
+    }
+
+    pub fn load_active_remote_state(&mut self, label: &str) {
+        if let Some(sess) = self.remote_sessions.get(label).cloned() {
+            self.is_remote = true;
+            self.remote_label = Some(label.to_string());
+            self.active_remote_label = Some(label.to_string());
+            self.remote_client = Some(sess.client);
+            self.is_loading = sess.is_loading;
+            self.current_path = sess.current_path;
+            self.path_input = sess.path_input;
+            self.path_history = sess.path_history;
+            self.remote_raw_entries = sess.remote_raw_entries;
+            self.remote_home_dir = sess.remote_home_dir;
+            self.last_synced_terminal_cwd = sess.last_synced_terminal_cwd;
+            self.selected_file = sess.selected_file;
+            self.remote_disk_stats = sess.remote_disk_stats;
+            self.error_message = sess.error_message;
+            self.status_message = sess.status_message;
+            self.apply_remote_filter_and_sort();
+        }
+    }
+
     pub fn connect_remote(&mut self, cfg: SftpTargetConfig) {
         let label = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
         if self.is_remote && self.remote_label.as_deref() == Some(&label) {
             return;
         }
 
-        self.is_remote = true;
-        self.is_loading = true;
-        self.remote_label = Some(label.clone());
-        self.active_remote_label = Some(label);
-        self.error_message = None;
-        self.entries.clear();
-        self.remote_raw_entries.clear();
-        self.last_synced_terminal_cwd = None;
+        // Persist the outgoing remote session state before switching
+        self.save_active_remote_state();
 
-        let client_arc = if let Some(ref c) = self.remote_client {
-            c.clone()
+        if let Some(existing) = self.remote_sessions.get_mut(&label) {
+            // If credentials changed (e.g., Vault unlocked) and previous connection attempt failed, retry connect
+            if !existing.is_connected && !existing.is_loading && existing.config != cfg {
+                existing.config = cfg.clone();
+                existing.is_loading = true;
+                existing.error_message = None;
+                existing.client.lock().connect(cfg);
+            }
+            self.load_active_remote_state(&label);
+            return;
+        }
+
+        let default_dir = if cfg.user == "root" {
+            PathBuf::from("/root")
         } else {
-            let c = Arc::new(Mutex::new(RemoteSftpClient::new()));
-            self.remote_client = Some(c.clone());
-            c
+            PathBuf::from(format!("/home/{}", cfg.user))
+        };
+        let path_input = Self::format_display_path(&default_dir);
+
+        let mut client_inner = RemoteSftpClient::new();
+        client_inner.connect(cfg.clone());
+        let client_arc = Arc::new(Mutex::new(client_inner));
+
+        let new_session = RemoteSessionState {
+            label: label.clone(),
+            config: cfg,
+            client: client_arc,
+            is_connected: false,
+            is_loading: true,
+            current_path: default_dir.clone(),
+            path_input,
+            path_history: vec![default_dir.clone()],
+            remote_raw_entries: Vec::new(),
+            remote_home_dir: Some(default_dir),
+            last_synced_terminal_cwd: None,
+            selected_file: None,
+            remote_disk_stats: None,
+            error_message: None,
+            status_message: None,
         };
 
-        client_arc.lock().connect(cfg);
+        self.remote_sessions.insert(label.clone(), new_session);
+        self.load_active_remote_state(&label);
     }
 
     pub fn disconnect_remote(&mut self) {
-        if let Some(ref client) = self.remote_client {
+        if let Some(label) = self.remote_label.take() {
+            if let Some(sess) = self.remote_sessions.remove(&label) {
+                sess.client.lock().disconnect();
+            }
+        } else if let Some(ref client) = self.remote_client {
             client.lock().disconnect();
         }
+        self.remote_client = None;
         self.is_remote = false;
         self.is_loading = false;
-        self.remote_label = None;
         self.active_remote_label = None;
         self.remote_disk_stats = None;
         self.remote_raw_entries.clear();
@@ -212,6 +313,7 @@ impl FileExplorer {
         self.show_hidden = !self.show_hidden;
         if self.is_remote && !self.remote_raw_entries.is_empty() {
             self.apply_remote_filter_and_sort();
+            self.save_active_remote_state();
         } else {
             self.refresh();
         }
@@ -221,80 +323,106 @@ impl FileExplorer {
         self.sort_ascending = !self.sort_ascending;
         if self.is_remote && !self.remote_raw_entries.is_empty() {
             self.apply_remote_filter_and_sort();
+            self.save_active_remote_state();
         } else {
             self.refresh();
         }
     }
 
     pub fn poll(&mut self) {
-        let events: Vec<SftpEvent> = if let Some(ref client) = self.remote_client {
-            let mut evts = Vec::new();
-            let c = client.lock();
-            while let Some(evt) = c.try_recv() {
-                evts.push(evt);
-            }
-            evts
-        } else {
-            Vec::new()
-        };
+        self.save_active_remote_state();
 
-        for evt in events {
-            match evt {
-                SftpEvent::Connected { target, initial_dir } => {
-                    self.is_remote = true;
-                    self.remote_label = Some(target.clone());
-                    self.active_remote_label = Some(target);
-                    let init_path = PathBuf::from(&initial_dir);
-                    self.remote_home_dir = Some(init_path.clone());
-                    self.current_path = init_path;
-                    self.path_input = Self::format_display_path(&self.current_path);
-                    if !self.path_history.contains(&self.current_path) {
-                        self.path_history.insert(0, self.current_path.clone());
-                    }
+        let mut opened_editor: Option<(String, PathBuf, String)> = None;
+        let mut editor_saved_target: Option<String> = None;
+
+        for (label, sess) in self.remote_sessions.iter_mut() {
+            let mut events = Vec::new();
+            {
+                let c = sess.client.lock();
+                while let Some(evt) = c.try_recv() {
+                    events.push(evt);
                 }
-                SftpEvent::ConnectionFailed(err) => {
-                    self.error_message = Some(format!("SFTP Error: {}", err));
-                    self.is_loading = false;
-                }
-                SftpEvent::DirListed { dir, entries } => {
-                    self.current_path = PathBuf::from(&dir);
-                    self.path_input = Self::format_display_path(&self.current_path);
-                    self.remote_raw_entries = entries;
-                    self.apply_remote_filter_and_sort();
-                    self.is_loading = false;
-                    self.error_message = None;
-                    if !self.path_history.contains(&self.current_path) {
-                        self.path_history.insert(0, self.current_path.clone());
-                        if self.path_history.len() > 12 {
-                            self.path_history.truncate(12);
+            }
+
+            let mut needs_dir_refresh = false;
+
+            for evt in events {
+                match evt {
+                    SftpEvent::Connected { initial_dir, .. } => {
+                        sess.is_connected = true;
+                        let init_path = PathBuf::from(&initial_dir);
+                        sess.remote_home_dir = Some(init_path.clone());
+                        sess.current_path = init_path.clone();
+                        sess.path_input = Self::format_display_path(&sess.current_path);
+                        if !sess.path_history.contains(&sess.current_path) {
+                            sess.path_history.insert(0, sess.current_path.clone());
                         }
                     }
+                    SftpEvent::ConnectionFailed(err) => {
+                        sess.is_connected = false;
+                        sess.error_message = Some(format!("SFTP Error: {}", err));
+                        sess.is_loading = false;
+                    }
+                    SftpEvent::DirListed { dir, entries } => {
+                        sess.is_connected = true;
+                        sess.current_path = PathBuf::from(&dir);
+                        sess.path_input = Self::format_display_path(&sess.current_path);
+                        sess.remote_raw_entries = entries;
+                        sess.is_loading = false;
+                        sess.error_message = None;
+                        if !sess.path_history.contains(&sess.current_path) {
+                            sess.path_history.insert(0, sess.current_path.clone());
+                            if sess.path_history.len() > 12 {
+                                sess.path_history.truncate(12);
+                            }
+                        }
+                    }
+                    SftpEvent::FileRead { path, content } => {
+                        sess.is_loading = false;
+                        opened_editor = Some((label.clone(), PathBuf::from(path), content));
+                    }
+                    SftpEvent::FileWritten { .. } => {
+                        sess.is_loading = false;
+                        editor_saved_target = Some(label.clone());
+                        needs_dir_refresh = true;
+                    }
+                    SftpEvent::OperationSuccess(msg) => {
+                        sess.status_message = Some(msg);
+                        sess.is_loading = false;
+                        sess.error_message = None;
+                        needs_dir_refresh = true;
+                    }
+                    SftpEvent::OperationError(err) => {
+                        sess.error_message = Some(err);
+                        sess.is_loading = false;
+                    }
+                    SftpEvent::DiskUsage { used, total, pct } => {
+                        sess.remote_disk_stats = Some((used, total, pct));
+                    }
                 }
-                SftpEvent::FileRead { path, content } => {
-                    self.editor_file_path = Some(PathBuf::from(path));
-                    self.editor_content = content;
-                    self.editor_status = None;
-                    self.editor_open = true;
-                    self.is_loading = false;
-                }
-                SftpEvent::FileWritten { .. } => {
-                    self.editor_status = Some("Saved successfully to VPS!".to_string());
-                    self.is_loading = false;
-                    self.refresh();
-                }
-                SftpEvent::OperationSuccess(msg) => {
-                    self.status_message = Some(msg);
-                    self.is_loading = false;
-                    self.error_message = None;
-                    self.refresh();
-                }
-                SftpEvent::OperationError(err) => {
-                    self.error_message = Some(err);
-                    self.is_loading = false;
-                }
-                SftpEvent::DiskUsage { used, total, pct } => {
-                    self.remote_disk_stats = Some((used, total, pct));
-                }
+            }
+
+            if needs_dir_refresh {
+                sess.is_loading = true;
+                let path_str = sess.current_path.to_string_lossy().to_string();
+                sess.client.lock().list_dir(&path_str);
+            }
+        }
+
+        if let Some((label, path, content)) = opened_editor {
+            self.editor_remote_label = Some(label);
+            self.editor_file_path = Some(path);
+            self.editor_content = content;
+            self.editor_status = None;
+            self.editor_open = true;
+        }
+        if let Some(target_label) = editor_saved_target {
+            self.editor_status = Some(format!("Saved successfully to {}!", target_label));
+        }
+
+        if self.is_remote {
+            if let Some(active_label) = self.remote_label.clone() {
+                self.load_active_remote_state(&active_label);
             }
         }
     }
@@ -428,6 +556,7 @@ impl FileExplorer {
                 let path_str = self.current_path.to_string_lossy().to_string();
                 client.lock().list_dir(&path_str);
             }
+            self.save_active_remote_state();
             return;
         }
 
@@ -553,6 +682,7 @@ impl FileExplorer {
                 self.is_loading = true;
                 client.lock().read_file(&path_str);
             }
+            self.save_active_remote_state();
             return;
         }
 
@@ -571,6 +701,7 @@ impl FileExplorer {
 
         match fs::read_to_string(&path) {
             Ok(content) => {
+                self.editor_remote_label = None;
                 self.editor_file_path = Some(path);
                 self.editor_content = content;
                 self.editor_status = None;
@@ -584,12 +715,24 @@ impl FileExplorer {
 
     pub fn save_editor(&mut self) {
         if let Some(ref path) = self.editor_file_path {
+            if let Some(ref target_label) = self.editor_remote_label {
+                let path_str = path.to_string_lossy().to_string();
+                if let Some(sess) = self.remote_sessions.get_mut(target_label) {
+                    sess.is_loading = true;
+                    sess.client.lock().write_file(&path_str, &self.editor_content);
+                }
+                if self.remote_label.as_deref() == Some(target_label.as_str()) {
+                    self.is_loading = true;
+                }
+                return;
+            }
             if self.is_remote {
                 let path_str = path.to_string_lossy().to_string();
                 if let Some(ref client) = self.remote_client {
                     self.is_loading = true;
                     client.lock().write_file(&path_str, &self.editor_content);
                 }
+                self.save_active_remote_state();
                 return;
             }
 
@@ -616,11 +759,13 @@ impl FileExplorer {
                 .unwrap_or(false);
             let path_str = path.to_string_lossy().to_string();
             if let Some(ref client) = self.remote_client {
+                self.is_loading = true;
                 client.lock().delete(&path_str, is_dir);
             }
             if self.selected_file.as_deref() == Some(path) {
                 self.selected_file = None;
             }
+            self.save_active_remote_state();
             return;
         }
 
@@ -648,8 +793,10 @@ impl FileExplorer {
                 format!("{}/{}", curr, name)
             };
             if let Some(ref client) = self.remote_client {
+                self.is_loading = true;
                 client.lock().create_dir(&remote_p);
             }
+            self.save_active_remote_state();
             return;
         }
 
@@ -670,8 +817,10 @@ impl FileExplorer {
                 format!("{}/{}", curr, name)
             };
             if let Some(ref client) = self.remote_client {
+                self.is_loading = true;
                 client.lock().create_file(&remote_p);
             }
+            self.save_active_remote_state();
             return;
         }
 
@@ -696,6 +845,7 @@ impl FileExplorer {
                 self.is_loading = true;
                 client.lock().upload(local_path, remote_p);
             }
+            self.save_active_remote_state();
         }
     }
 
@@ -705,6 +855,7 @@ impl FileExplorer {
             self.is_loading = true;
             client.lock().download(remote_str, local_dest);
         }
+        self.save_active_remote_state();
     }
 
     pub fn parse_permissions_str(perms: &str) -> Option<[bool; 9]> {
@@ -756,6 +907,11 @@ impl FileExplorer {
             }
         }
 
+        self.chmod_remote_label = if self.is_remote {
+            self.remote_label.clone()
+        } else {
+            None
+        };
         self.chmod_target = Some(path);
         self.chmod_open = true;
     }
@@ -773,11 +929,26 @@ impl FileExplorer {
             if self.chmod_o_w { mode |= 0o002; }
             if self.chmod_o_x { mode |= 0o001; }
 
+            if let Some(ref target_label) = self.chmod_remote_label {
+                let path_str = path.to_string_lossy().to_string();
+                if let Some(sess) = self.remote_sessions.get_mut(target_label) {
+                    sess.is_loading = true;
+                    sess.client.lock().chmod(&path_str, mode);
+                }
+                if self.remote_label.as_deref() == Some(target_label.as_str()) {
+                    self.is_loading = true;
+                }
+                self.chmod_open = false;
+                return;
+            }
+
             if self.is_remote {
                 let path_str = path.to_string_lossy().to_string();
                 if let Some(ref client) = self.remote_client {
+                    self.is_loading = true;
                     client.lock().chmod(&path_str, mode);
                 }
+                self.save_active_remote_state();
                 self.chmod_open = false;
                 return;
             }
@@ -1033,6 +1204,88 @@ mod tests {
             assert!(candidates.contains(&home.join(".ssh/id_ed25519")));
             assert!(candidates.contains(&home.join(".ssh/id_rsa")));
         }
+    }
+
+    #[test]
+    fn test_multi_server_sftp_pool_isolated_state_and_tab_switching() {
+        let mut explorer = FileExplorer::new();
+
+        let cfg_a = SftpTargetConfig {
+            host: "198.51.100.10".to_string(),
+            port: 22,
+            user: "root".to_string(),
+            password: Some("pass-a".to_string()),
+            key_path: None,
+        };
+        let cfg_b = SftpTargetConfig {
+            host: "198.51.100.20".to_string(),
+            port: 22,
+            user: "ubuntu".to_string(),
+            password: Some("pass-b".to_string()),
+            key_path: None,
+        };
+
+        // 1. Connect to Server A and simulate browsing /var/log/nginx with an ongoing upload
+        explorer.connect_remote(cfg_a.clone());
+        let client_a = explorer.remote_client.clone().unwrap();
+        explorer.current_path = PathBuf::from("/var/log/nginx");
+        explorer.path_input = "/var/log/nginx/".to_string();
+        explorer.remote_raw_entries = vec![FileEntry {
+            name: "access.log".into(),
+            path: PathBuf::from("/var/log/nginx/access.log"),
+            is_dir: false,
+            is_hidden: false,
+            size: 2048,
+            modified: None,
+            permissions: "-rw-r--r--".into(),
+        }];
+        explorer.apply_remote_filter_and_sort();
+        explorer.selected_file = Some(PathBuf::from("/var/log/nginx/access.log"));
+        explorer.is_loading = true; // Simulate ongoing file transfer on Server A
+
+        // 2. Switch to Server B while Server A is transferring
+        explorer.connect_remote(cfg_b.clone());
+        assert_eq!(explorer.remote_label.as_deref(), Some("ubuntu@198.51.100.20:22"));
+        let client_b = explorer.remote_client.clone().unwrap();
+        assert!(
+            !Arc::ptr_eq(&client_a, &client_b),
+            "Server A and Server B must have independent SFTP worker clients"
+        );
+        assert_eq!(explorer.current_path, PathBuf::from("/home/ubuntu"));
+        assert!(explorer.entries.is_empty());
+
+        // Simulate Server B listing /etc/systemd
+        explorer.current_path = PathBuf::from("/etc/systemd");
+        explorer.remote_raw_entries = vec![FileEntry {
+            name: "system.conf".into(),
+            path: PathBuf::from("/etc/systemd/system.conf"),
+            is_dir: false,
+            is_hidden: false,
+            size: 512,
+            modified: None,
+            permissions: "-rw-r--r--".into(),
+        }];
+        explorer.apply_remote_filter_and_sort();
+        explorer.is_loading = false;
+
+        // 3. Switch back to Server A -> must restore Server A's exact state and client without reconnecting
+        explorer.connect_remote(cfg_a);
+        assert_eq!(explorer.remote_label.as_deref(), Some("root@198.51.100.10:22"));
+        assert!(Arc::ptr_eq(&client_a, explorer.remote_client.as_ref().unwrap()));
+        assert_eq!(explorer.current_path, PathBuf::from("/var/log/nginx"));
+        assert_eq!(explorer.entries.len(), 1);
+        assert_eq!(explorer.entries[0].name, "access.log");
+        assert_eq!(explorer.selected_file, Some(PathBuf::from("/var/log/nginx/access.log")));
+        assert!(explorer.is_loading, "Server A's ongoing transfer state must be preserved");
+
+        // 4. Switch back to Server B -> must restore Server B's exact state (/etc/systemd)
+        explorer.connect_remote(cfg_b);
+        assert_eq!(explorer.remote_label.as_deref(), Some("ubuntu@198.51.100.20:22"));
+        assert!(Arc::ptr_eq(&client_b, explorer.remote_client.as_ref().unwrap()));
+        assert_eq!(explorer.current_path, PathBuf::from("/etc/systemd"));
+        assert_eq!(explorer.entries.len(), 1);
+        assert_eq!(explorer.entries[0].name, "system.conf");
+        assert!(!explorer.is_loading);
     }
 }
 
