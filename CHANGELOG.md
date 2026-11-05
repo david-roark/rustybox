@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-73] - 2026-11-05
+### Fixed & Improved (UI Polish)
+- **Nới rộng kích thước thẻ Recent Connections & Home Cards**:
+  - Tăng chiều cao thẻ kết nối gần đây từ `56px` lên `70px`, nới lỏng giới hạn clip rect; loại bỏ hoàn toàn hiện tượng dòng thứ 3 (thời gian và số lần kết nối `🕒 YYYY-MM-DD HH:mm (Nx)`) bị cấn đáy và cắt ngang nửa dưới chữ số.
+  - Mở rộng chiều rộng thẻ từ `236px` lên `270px` (tổng bề rộng lưới 3 cột đạt `834px`), tăng thêm 34px không gian bề ngang cho mỗi thẻ, giúp tên máy chủ, tài khoản và nhãn thư mục phân loại (`[folder]`) hiển thị trọn vẹn, không bị tràn hay hiển thị dấu ba chấm (`...`).
+
+---
+
 ## [v1.3-72] - 2026-11-05
 ### Fixed & Improved (Windows Experience & UI Polish)
 - **Ẩn hoàn toàn cửa sổ Console phụ trên Windows**:
