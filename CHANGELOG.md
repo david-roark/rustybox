@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-68] - 2026-11-05
+### Added & Improved (PR #3 & UI Polish)
+- **Merge Pull Request #3 from Dtech (SFTP Pool & Transfer Resilience)**:
+  - **Multi-Server SFTP Session Pool**: Quản lý pool SFTP độc lập cho từng server từ xa, cho phép chuyển tab terminal mượt mà không block luồng UI và duy trì ngữ cảnh duyệt file riêng cho từng phiên.
+  - **Transfer Progress & Cancellation**: Theo dõi tiến độ truyền tệp thời gian thực (bytes transferred, speed, ETA) với khả năng hủy bỏ tiến trình truyền tệp bất cứ lúc nào.
+  - **Conflict Resolution & Pre-flight Disk Check**: Tự động phát hiện xung đột tệp tin (Overwrite, Skip, Auto-Rename) và kiểm tra dung lượng ổ đĩa khả dụng trước khi tải xuống nhằm ngăn chặn lỗi tràn đĩa.
+  - **Dynamic Sidebar Resizing**: Cho phép kéo giãn thanh bên trái linh hoạt lên tới 50% chiều rộng màn hình kèm thanh chỉ báo trực quan (splitter handle).
+  - **Remote Editor & Streaming I/O**: Nâng cấp trình biên tập tệp từ xa, giới hạn kích thước tệp an toàn, cải tiến bộ lọc/sắp xếp danh sách và đồng bộ thư mục làm việc theo terminal prompt.
+- **Tối ưu hóa UI/UX Màn hình Home & Form Dialogs**:
+  - **Căn giữa toàn diện màn hình Home**: Căn giữa đối xứng cho Hero Quick Connect, lưới 6 thẻ công cụ (Local Terminal, SSH, SFTP, NetScan, Tunnels, Daemons), thanh Filter và danh sách Recent Connections.
+  - **Cây thư mục Sessions thông minh**: `★ User sessions` mở sẵn mặc định, các thư mục con thu gọn mặc định (`default_open(false)`) chống tràn màn hình; tự động mở rộng khi gõ tìm kiếm.
+  - **Nâng cấp độ tương phản và loại bỏ màn tối scrim**: Cải tiến bộ `Visuals` với màu nền nổi khối `(26, 32, 46)`, viền xanh sáng rõ nét và đổ bóng mềm; loại bỏ lớp scrim đen làm tối các cửa sổ modal.
+  - **Mở rộng kích thước form**: Nới rộng New Session Dialog lên `880x580`, tách trường nhập SSH thành 3 hàng thoáng đãng, nâng cấp checkbox 16px sắc nét; mở rộng các modal Snippets, Tunnels, Settings, Passwords.
+  - **Phím tắt chuyển Tab linh hoạt**: Hỗ trợ đầy đủ `Ctrl+Tab` / `Ctrl+PageDown` (Next Tab) và `Ctrl+Shift+Tab` / `Ctrl+PageUp` (Prev Tab).
+  - **Tinh gọn Sidebar & Home**: Bỏ nút New/Import trùng lặp ở sidebar; bỏ mục Saved Sessions ở Home và giới hạn 5 kết nối gần nhất.
+
+---
+
 ## [v1.3-61] - 2026-11-05
 ### Added
 - **Command Snippets Library (Termius Inspired)**:

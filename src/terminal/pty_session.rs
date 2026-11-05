@@ -639,6 +639,16 @@ impl PtySession {
         }
     }
 
+    pub fn current_cursor_line(&self) -> Option<String> {
+        let p = self.parser.try_lock()?;
+        let screen = p.screen();
+        let (r, c) = screen.cursor_position();
+        if c == 0 {
+            return None;
+        }
+        Some(screen.contents_between(r, 0, r, c))
+    }
+
     pub fn is_alive(&self) -> bool {
         if !self.running.load(Ordering::Relaxed) {
             return false;

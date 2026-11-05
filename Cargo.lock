@@ -2416,6 +2416,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "libc",
  "parking_lot",
  "portable-pty",
  "regex",
