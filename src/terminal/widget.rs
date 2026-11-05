@@ -276,17 +276,51 @@ impl<'a> TerminalWidget<'a> {
                             extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
                         drop(parser);
                         if !text.is_empty() {
-                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                let _ = cb.set_text(&text);
-                            }
-                            ui.output_mut(|o| o.copied_text = text);
+                            copy_text_to_clipboard(ui, &text);
                         }
                     }
                 }
             }
         }
 
-        if response.clicked() && !response.dragged() {
+        if response.triple_clicked() && !response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
+                    let (abs_r, _) = pos_to_abs_cell(pos, scrollback_offset);
+                    let mut parser = self.session.parser.lock();
+                    let (_, screen_cols_nz) = parser.screen().size();
+                    let max_c = (screen_cols_nz.get() as usize).saturating_sub(1);
+                    let start = (abs_r, 0);
+                    let end = (abs_r, max_c);
+                    let text =
+                        extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
+                    drop(parser);
+                    if !text.is_empty() {
+                        copy_text_to_clipboard(ui, &text);
+                    }
+                    selection = Some((start, end));
+                    drag_origin = None;
+                }
+            }
+        } else if response.double_clicked() && !response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
+                    let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
+                    let mut parser = self.session.parser.lock();
+                    let (w_start, w_end) = find_word_bounds_in_row(parser.screen_mut(), abs_r, c);
+                    let start = (abs_r, w_start);
+                    let end = (abs_r, w_end);
+                    let text =
+                        extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
+                    drop(parser);
+                    if !text.is_empty() {
+                        copy_text_to_clipboard(ui, &text);
+                    }
+                    selection = Some((start, end));
+                    drag_origin = None;
+                }
+            }
+        } else if response.clicked() && !response.dragged() {
             if let Some(pos) = response.interact_pointer_pos() {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
@@ -393,17 +427,7 @@ impl<'a> TerminalWidget<'a> {
             self.right_click_paste && !shift_held && !ctrl_held_now && secondary_clicked && pointer_in_terminal;
         let direct_middle_click_paste = middle_clicked && pointer_in_terminal;
         if direct_right_click_paste || direct_middle_click_paste {
-            let text_opt = arboard::Clipboard::new()
-                .ok()
-                .and_then(|mut cb| cb.get_text().ok())
-                .or_else(|| {
-                    let t = ui.output(|o| o.copied_text.clone());
-                    if t.is_empty() {
-                        None
-                    } else {
-                        Some(t)
-                    }
-                });
+            let text_opt = get_clipboard_text(ui, direct_middle_click_paste);
             if let Some(text) = text_opt {
                 if !text.is_empty() {
                     if text.contains('\n') {
@@ -483,10 +507,7 @@ impl<'a> TerminalWidget<'a> {
                                 extract_selection_text_with_scrollback(parser.screen_mut(), s, e);
                             drop(parser);
                             if !text.is_empty() {
-                                if let Ok(mut cb) = arboard::Clipboard::new() {
-                                    let _ = cb.set_text(&text);
-                                }
-                                ui.output_mut(|o| o.copied_text = text);
+                                copy_text_to_clipboard(ui, &text);
                             }
                         }
                         selection = None;
@@ -496,17 +517,7 @@ impl<'a> TerminalWidget<'a> {
                 }
 
                 if ui.button("📋 Paste Clipboard").clicked() {
-                    let text_opt = arboard::Clipboard::new()
-                        .ok()
-                        .and_then(|mut cb| cb.get_text().ok())
-                        .or_else(|| {
-                            let t = ui.output(|o| o.copied_text.clone());
-                            if t.is_empty() {
-                                None
-                            } else {
-                                Some(t)
-                            }
-                        });
+                    let text_opt = get_clipboard_text(ui, false);
 
                     if let Some(text) = text_opt {
                         if !text.is_empty() {
@@ -528,10 +539,9 @@ impl<'a> TerminalWidget<'a> {
                     let mut parser = self.session.parser.lock();
                     let all_text = extract_all_terminal_text(parser.screen_mut());
                     drop(parser);
-                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                        let _ = cb.set_text(&all_text);
+                    if !all_text.is_empty() {
+                        copy_text_to_clipboard(ui, &all_text);
                     }
-                    ui.output_mut(|o| o.copied_text = all_text);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -975,9 +985,7 @@ impl<'a> TerminalWidget<'a> {
                             Key::Insert if shift => {
                                 if !paste_handled {
                                     paste_handled = true;
-                                    let text_opt = arboard::Clipboard::new()
-                                        .ok()
-                                        .and_then(|mut cb| cb.get_text().ok());
+                                    let text_opt = get_clipboard_text(ui, true);
                                     if let Some(text) = text_opt {
                                         if text.contains('\n') {
                                             paste_text_to_check = Some(text);
@@ -1009,10 +1017,7 @@ impl<'a> TerminalWidget<'a> {
                                 };
                                 drop(parser);
                                 if !text.is_empty() {
-                                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                                        let _ = cb.set_text(&text);
-                                    }
-                                    ui.output_mut(|o| o.copied_text = text);
+                                    copy_text_to_clipboard(ui, &text);
                                 }
                                 selection = None;
                                 ui.data_mut(|d| d.insert_temp(sel_id, selection));
@@ -1038,10 +1043,7 @@ impl<'a> TerminalWidget<'a> {
                                 };
                                 drop(parser);
                                 if !text.is_empty() {
-                                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                                        let _ = cb.set_text(&text);
-                                    }
-                                    ui.output_mut(|o| o.copied_text = text);
+                                    copy_text_to_clipboard(ui, &text);
                                 }
                                 selection = None;
                                 ui.data_mut(|d| d.insert_temp(sel_id, selection));
@@ -1050,9 +1052,7 @@ impl<'a> TerminalWidget<'a> {
                                 // Ctrl+Shift+V: Paste from Clipboard
                                 if !paste_handled {
                                     paste_handled = true;
-                                    let text_opt = arboard::Clipboard::new()
-                                        .ok()
-                                        .and_then(|mut cb| cb.get_text().ok());
+                                    let text_opt = get_clipboard_text(ui, false);
                                     if let Some(text) = text_opt {
                                         if text.contains('\n') {
                                             paste_text_to_check = Some(text);
@@ -1088,10 +1088,7 @@ impl<'a> TerminalWidget<'a> {
                                         };
                                         drop(parser);
                                         if !text.is_empty() {
-                                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                                let _ = cb.set_text(&text);
-                                            }
-                                            ui.output_mut(|o| o.copied_text = text);
+                                            copy_text_to_clipboard(ui, &text);
                                         }
                                         // Always clear selection after copying so subsequent Ctrl+C immediately sends SIGINT
                                         selection = None;
@@ -1137,10 +1134,7 @@ impl<'a> TerminalWidget<'a> {
                                 };
                                 drop(parser);
                                 if !text.is_empty() {
-                                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                                        let _ = cb.set_text(&text);
-                                    }
-                                    ui.output_mut(|o| o.copied_text = text);
+                                    copy_text_to_clipboard(ui, &text);
                                 }
                                 // Clear selection after copying so subsequent Ctrl+C sends SIGINT
                                 selection = None;
@@ -1168,10 +1162,7 @@ impl<'a> TerminalWidget<'a> {
                             };
                             drop(parser);
                             if !text.is_empty() {
-                                if let Ok(mut cb) = arboard::Clipboard::new() {
-                                    let _ = cb.set_text(&text);
-                                }
-                                ui.output_mut(|o| o.copied_text = text);
+                                copy_text_to_clipboard(ui, &text);
                             }
                             selection = None;
                             ui.data_mut(|d| d.insert_temp(sel_id, selection));
@@ -1757,6 +1748,159 @@ pub fn extract_all_terminal_text(screen: &mut vt100::Screen) -> String {
     all_text
 }
 
+/// Global persistent clipboard instance preventing X11/Wayland selection loss on drop.
+static GLOBAL_CLIPBOARD: parking_lot::Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
+
+/// Copies `text` to the OS clipboard, updating both `CLIPBOARD` and `PRIMARY` selections on Linux.
+pub fn copy_text_to_clipboard(ui: &Ui, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    ui.output_mut(|o| o.copied_text = text.to_string());
+
+    let mut guard = GLOBAL_CLIPBOARD.lock();
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+    }
+
+    if let Some(cb) = guard.as_mut() {
+        let set_res = {
+            #[cfg(target_os = "linux")]
+            {
+                use arboard::{LinuxClipboardKind, SetExtLinux};
+                let r1 = cb.set().clipboard(LinuxClipboardKind::Clipboard).text(text);
+                let r2 = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+                r1.or(r2)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                cb.set_text(text)
+            }
+        };
+
+        if set_res.is_err() {
+            // Reconnect if clipboard server connection dropped
+            if let Ok(mut new_cb) = arboard::Clipboard::new() {
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::{LinuxClipboardKind, SetExtLinux};
+                    let _ = new_cb.set().clipboard(LinuxClipboardKind::Clipboard).text(text);
+                    let _ = new_cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = new_cb.set_text(text);
+                }
+                *guard = Some(new_cb);
+            }
+        }
+    }
+}
+
+/// Retrieves text from the OS clipboard.
+/// On Linux, `prefer_primary = true` (e.g. for middle-click paste or Shift+Insert) queries `PRIMARY` first,
+/// falling back to `CLIPBOARD`.
+pub fn get_clipboard_text(ui: &Ui, prefer_primary: bool) -> Option<String> {
+    let mut guard = GLOBAL_CLIPBOARD.lock();
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+    }
+
+    let text_opt = if let Some(cb) = guard.as_mut() {
+        #[cfg(target_os = "linux")]
+        {
+            use arboard::{GetExtLinux, LinuxClipboardKind};
+            if prefer_primary {
+                cb.get()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text()
+                    .or_else(|_| cb.get().clipboard(LinuxClipboardKind::Clipboard).text())
+                    .ok()
+            } else {
+                cb.get()
+                    .clipboard(LinuxClipboardKind::Clipboard)
+                    .text()
+                    .or_else(|_| cb.get().clipboard(LinuxClipboardKind::Primary).text())
+                    .ok()
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = prefer_primary;
+            cb.get_text().ok()
+        }
+    } else {
+        None
+    };
+
+    text_opt.filter(|t| !t.is_empty()).or_else(|| {
+        let t = ui.output(|o| o.copied_text.clone());
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    })
+}
+
+/// Finds the column range `(start_c, end_c)` of the word around `col` on absolute row `abs_r`.
+pub fn find_word_bounds_in_row(
+    screen: &mut vt100::Screen,
+    abs_r: usize,
+    col: usize,
+) -> (usize, usize) {
+    let (_screen_rows_nz, screen_cols_nz) = screen.size();
+    let max_c = (screen_cols_nz.get() as usize).saturating_sub(1);
+    let row_str = read_abs_row_string(screen, abs_r, 0, max_c);
+    let chars: Vec<char> = row_str.chars().collect();
+    if chars.is_empty() {
+        return (col, col);
+    }
+    let c = col.min(chars.len().saturating_sub(1));
+    let is_word_char = |ch: char| {
+        ch.is_alphanumeric()
+            || ch == '_'
+            || ch == '-'
+            || ch == '.'
+            || ch == '/'
+            || ch == ':'
+            || ch == '@'
+            || ch == '~'
+    };
+    let target_is_word = is_word_char(chars[c]);
+    let target_is_space = chars[c].is_whitespace();
+
+    let mut start_c = c;
+    while start_c > 0 {
+        let prev = chars[start_c - 1];
+        if target_is_word && is_word_char(prev) {
+            start_c -= 1;
+        } else if target_is_space && prev.is_whitespace() {
+            start_c -= 1;
+        } else if !target_is_word && !target_is_space && !is_word_char(prev) && !prev.is_whitespace() {
+            start_c -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut end_c = c;
+    while end_c + 1 < chars.len() {
+        let next = chars[end_c + 1];
+        if target_is_word && is_word_char(next) {
+            end_c += 1;
+        } else if target_is_space && next.is_whitespace() {
+            end_c += 1;
+        } else if !target_is_word && !target_is_space && !is_word_char(next) && !next.is_whitespace() {
+            end_c += 1;
+        } else {
+            break;
+        }
+    }
+
+    (start_c, end_c)
+}
+
 /// Searches across the entire scrollback history and visible screen for `query` (case-insensitive),
 /// returning a list of `(abs_row, col_start, col_end)` matches and preserving `screen.scrollback()`.
 pub fn search_terminal_buffer(
@@ -2294,5 +2438,35 @@ mod tests {
         assert!(selected.contains("Line 02: normal log output"));
         assert!(selected.contains("Line 03: CRITICAL_TOKEN found"));
         assert!(selected.contains("Line 04: normal log output"));
+    }
+
+    #[test]
+    fn test_find_word_bounds_and_clipboard_helpers() {
+        let rows = std::num::NonZeroU16::new(5).unwrap();
+        let cols = std::num::NonZeroU16::new(60).unwrap();
+        let mut parser = vt100::Parser::new(rows, cols, 100);
+        parser.process(b"curl https://api.example.com/v1 -H 'Auth: Bearer'\r\n");
+
+        // Double-click on "https://api.example.com/v1" (col 5) should select the full URL token
+        let (w_start, w_end) = find_word_bounds_in_row(parser.screen_mut(), 0, 5);
+        let extracted_url =
+            extract_selection_text_with_scrollback(parser.screen_mut(), (0, w_start), (0, w_end));
+        assert_eq!(extracted_url, "https://api.example.com/v1");
+
+        // Double-click on "curl" (col 1) should select "curl"
+        let (c_start, c_end) = find_word_bounds_in_row(parser.screen_mut(), 0, 1);
+        let extracted_cmd =
+            extract_selection_text_with_scrollback(parser.screen_mut(), (0, c_start), (0, c_end));
+        assert_eq!(extracted_cmd, "curl");
+
+        // Test copy_text_to_clipboard and get_clipboard_text with egui context
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                copy_text_to_clipboard(ui, "rustybox_clipboard_test");
+                let retrieved = get_clipboard_text(ui, false);
+                assert_eq!(retrieved, Some("rustybox_clipboard_test".to_string()));
+            });
+        });
     }
 }
