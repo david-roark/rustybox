@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 pub const FONT_NOTO_SANS_MONO: &str = "noto_sans_mono";
+pub const FONT_JETBRAINS_NERD_MONO: &str = "jetbrains_nerd_mono";
 pub const FONT_UBUNTU_MONO: &str = "ubuntu_mono";
 pub const FONT_DEJAVU_SANS_MONO: &str = "dejavu_sans_mono";
 
@@ -18,6 +19,11 @@ pub const AVAILABLE_TERMINAL_FONTS: &[FontOption] = &[
         description: "Full Unicode & Vietnamese diacritics coverage (Default)",
     },
     FontOption {
+        id: FONT_JETBRAINS_NERD_MONO,
+        name: "JetBrains Nerd Mono",
+        description: "Developer-focused monospace font with Nerd Font icons",
+    },
+    FontOption {
         id: FONT_UBUNTU_MONO,
         name: "Ubuntu Mono",
         description: "Crisp and compact monospace font",
@@ -31,6 +37,7 @@ pub const AVAILABLE_TERMINAL_FONTS: &[FontOption] = &[
 
 pub fn terminal_font_display_name(id: &str) -> &'static str {
     match id {
+        FONT_JETBRAINS_NERD_MONO | "JetBrains Nerd Mono" | "JetBrainsMono Nerd Font Mono" | "jetbrains_mono" => "JetBrains Nerd Mono",
         FONT_UBUNTU_MONO | "Ubuntu Mono" => "Ubuntu Mono",
         FONT_DEJAVU_SANS_MONO | "DejaVu Sans Mono" => "DejaVu Sans Mono",
         FONT_NOTO_SANS_MONO | "Noto Sans Mono" => "Noto Sans Mono",
@@ -41,6 +48,9 @@ pub fn terminal_font_display_name(id: &str) -> &'static str {
 
 pub fn get_terminal_font_family(font_id: &str) -> egui::FontFamily {
     match font_id {
+        FONT_JETBRAINS_NERD_MONO | "JetBrains Nerd Mono" | "JetBrainsMono Nerd Font Mono" | "jetbrains_mono" => {
+            egui::FontFamily::Name(Arc::from("JetBrains Nerd Mono"))
+        }
         FONT_UBUNTU_MONO | "Ubuntu Mono" => egui::FontFamily::Name(Arc::from("Ubuntu Mono")),
         FONT_DEJAVU_SANS_MONO | "DejaVu Sans Mono" => egui::FontFamily::Name(Arc::from("DejaVu Sans Mono")),
         FONT_NOTO_SANS_MONO | "Noto Sans Mono" => egui::FontFamily::Name(Arc::from("Noto Sans Mono")),
@@ -53,6 +63,10 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
     fonts.font_data.insert(
         "noto_sans_mono".to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/NotoSansMono.ttf"))),
+    );
+    fonts.font_data.insert(
+        "jetbrains_nerd_mono".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMonoNerdFontMono.ttf"))),
     );
     fonts.font_data.insert(
         "ubuntu_mono".to_owned(),
@@ -72,6 +86,16 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
         egui::FontFamily::Name(Arc::from("Noto Sans Mono")),
         vec![
             "noto_sans_mono".to_owned(),
+            "jetbrains_nerd_mono".to_owned(),
+            "ubuntu_mono".to_owned(),
+            "dejavu_sans_mono".to_owned(),
+        ],
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(Arc::from("JetBrains Nerd Mono")),
+        vec![
+            "jetbrains_nerd_mono".to_owned(),
+            "noto_sans_mono".to_owned(),
             "ubuntu_mono".to_owned(),
             "dejavu_sans_mono".to_owned(),
         ],
@@ -81,6 +105,7 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
         vec![
             "ubuntu_mono".to_owned(),
             "noto_sans_mono".to_owned(),
+            "jetbrains_nerd_mono".to_owned(),
             "dejavu_sans_mono".to_owned(),
         ],
     );
@@ -89,6 +114,7 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
         vec![
             "dejavu_sans_mono".to_owned(),
             "noto_sans_mono".to_owned(),
+            "jetbrains_nerd_mono".to_owned(),
             "ubuntu_mono".to_owned(),
         ],
     );
@@ -96,6 +122,9 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
     // Order egui's default Monospace family based on preferred_mono_font
     let mono = fonts.families.entry(egui::FontFamily::Monospace).or_default();
     let primary = match preferred_mono_font {
+        FONT_JETBRAINS_NERD_MONO | "JetBrains Nerd Mono" | "JetBrainsMono Nerd Font Mono" | "jetbrains_mono" => {
+            "jetbrains_nerd_mono"
+        }
         FONT_UBUNTU_MONO | "Ubuntu Mono" => "ubuntu_mono",
         FONT_DEJAVU_SANS_MONO | "DejaVu Sans Mono" => "dejavu_sans_mono",
         _ => "noto_sans_mono",
@@ -103,6 +132,7 @@ pub fn build_font_definitions(preferred_mono_font: &str) -> egui::FontDefinition
 
     mono.insert(0, "dejavu_sans_mono".to_owned());
     mono.insert(0, "ubuntu_mono".to_owned());
+    mono.insert(0, "jetbrains_nerd_mono".to_owned());
     mono.insert(0, "noto_sans_mono".to_owned());
 
     if let Some(pos) = mono.iter().position(|x| x == primary) {
@@ -129,6 +159,7 @@ mod tests {
     #[test]
     fn test_font_display_names_and_fallbacks() {
         assert_eq!(terminal_font_display_name(FONT_NOTO_SANS_MONO), "Noto Sans Mono");
+        assert_eq!(terminal_font_display_name(FONT_JETBRAINS_NERD_MONO), "JetBrains Nerd Mono");
         assert_eq!(terminal_font_display_name(FONT_UBUNTU_MONO), "Ubuntu Mono");
         assert_eq!(terminal_font_display_name(FONT_DEJAVU_SANS_MONO), "DejaVu Sans Mono");
         assert_eq!(terminal_font_display_name(""), "Default (Global Setting)");
@@ -137,6 +168,10 @@ mod tests {
 
     #[test]
     fn test_get_terminal_font_family() {
+        assert_eq!(
+            get_terminal_font_family("jetbrains_nerd_mono"),
+            egui::FontFamily::Name(Arc::from("JetBrains Nerd Mono"))
+        );
         assert_eq!(
             get_terminal_font_family("ubuntu_mono"),
             egui::FontFamily::Name(Arc::from("Ubuntu Mono"))
@@ -160,6 +195,10 @@ mod tests {
         let defs_noto = build_font_definitions("noto_sans_mono");
         let mono_noto = &defs_noto.families[&egui::FontFamily::Monospace];
         assert_eq!(mono_noto[0], "noto_sans_mono");
+
+        let defs_jetbrains = build_font_definitions("jetbrains_nerd_mono");
+        let mono_jetbrains = &defs_jetbrains.families[&egui::FontFamily::Monospace];
+        assert_eq!(mono_jetbrains[0], "jetbrains_nerd_mono");
 
         let defs_ubuntu = build_font_definitions("ubuntu_mono");
         let mono_ubuntu = &defs_ubuntu.families[&egui::FontFamily::Monospace];
