@@ -30,6 +30,7 @@ pub enum SftpCommand {
     CreateDir(String),
     CreateFile(String),
     Delete(String, bool), // (remote_path, is_dir)
+    Rename(String, String), // (old_path, new_path)
     Chmod(String, u32),
     Upload(PathBuf, String),   // (local_path, remote_path)
     Download(String, PathBuf), // (remote_path, local_path)
@@ -155,6 +156,11 @@ impl RemoteSftpClient {
     pub fn delete(&mut self, path: &str, is_dir: bool) {
         self.is_busy = true;
         let _ = self.cmd_tx.send(SftpCommand::Delete(path.to_string(), is_dir));
+    }
+
+    pub fn rename(&mut self, from_path: String, to_path: String) {
+        self.is_busy = true;
+        let _ = self.cmd_tx.send(SftpCommand::Rename(from_path, to_path));
     }
 
     pub fn chmod(&mut self, path: &str, mode: u32) {
@@ -367,6 +373,21 @@ fn run_sftp_worker(
                         }
                         Err(e) => {
                             let _ = event_tx.send(SftpEvent::OperationError(format!("Delete failed: {}", e)));
+                        }
+                    }
+                }
+            }
+
+            SftpCommand::Rename(from_path, to_path) => {
+                if let Some((_, ref sftp, _)) = current_sess {
+                    let from = Path::new(&from_path);
+                    let to = Path::new(&to_path);
+                    match sftp.rename(from, to, None) {
+                        Ok(_) => {
+                            let _ = event_tx.send(SftpEvent::OperationSuccess("Renamed on VPS".into()));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(SftpEvent::OperationError(format!("Rename failed: {}", e)));
                         }
                     }
                 }

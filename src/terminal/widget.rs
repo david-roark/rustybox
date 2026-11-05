@@ -1,3 +1,4 @@
+use super::highlight::HighlightRule;
 use super::pty_session::PtySession;
 use super::vt_screen::{apply_bold_dim, vt_to_egui_color, TerminalTheme};
 use egui::{
@@ -13,6 +14,8 @@ pub struct TerminalWidget<'a> {
     pub is_active_pane: bool,
     pub backspace_sends_ctrl_h: bool,
     pub right_click_paste: bool,
+    pub highlight_rules: Option<&'a [HighlightRule]>,
+    pub highlight_enabled: bool,
 }
 
 pub enum TerminalAction {
@@ -38,7 +41,15 @@ impl<'a> TerminalWidget<'a> {
             is_active_pane: true,
             backspace_sends_ctrl_h: false,
             right_click_paste: false,
+            highlight_rules: None,
+            highlight_enabled: true,
         }
+    }
+
+    pub fn with_highlight_rules(mut self, rules: Option<&'a [HighlightRule]>, enabled: bool) -> Self {
+        self.highlight_rules = rules;
+        self.highlight_enabled = enabled;
+        self
     }
 
     pub fn with_font_size(mut self, size: f32) -> Self {
@@ -606,7 +617,12 @@ impl<'a> TerminalWidget<'a> {
                 }
 
                 // Precompute syntax highlight colors once per row (UTF-8 char-index accurate)
-                let row_syntax_colors = compute_row_syntax_highlights(&row_str, visible_cols);
+                let row_syntax_colors = compute_row_syntax_highlights_with_rules(
+                    &row_str,
+                    visible_cols,
+                    self.highlight_rules,
+                    self.highlight_enabled,
+                );
                 let row_urls = detect_row_urls(&row_str);
 
                 // Check search highlight occurrences
@@ -1418,60 +1434,128 @@ pub fn format_paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 }
 
 /// Precomputes MobaXterm-style keyword & IPv4 highlight colors once per row using UTF-8 character indices
-fn compute_row_syntax_highlights(row: &str, max_cols: usize) -> Vec<Option<Color32>> {
+#[allow(dead_code)]
+pub fn compute_row_syntax_highlights(row: &str, max_cols: usize) -> Vec<Option<Color32>> {
+    compute_row_syntax_highlights_with_rules(row, max_cols, None, true)
+}
+
+/// Precomputes configurable keyword & IPv4 highlight colors once per row using UTF-8 character indices
+pub fn compute_row_syntax_highlights_with_rules(
+    row: &str,
+    max_cols: usize,
+    custom_rules: Option<&[HighlightRule]>,
+    enabled: bool,
+) -> Vec<Option<Color32>> {
+    let mut colors = vec![None; max_cols];
+    if !enabled || max_cols == 0 {
+        return colors;
+    }
+
     let chars: Vec<char> = row.chars().collect();
     let len = chars.len().min(max_cols);
-    let mut colors = vec![None; max_cols];
     if len == 0 {
         return colors;
     }
 
     let lower_chars: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
 
-    let apply_keywords =
-        |colors: &mut [Option<Color32>], keywords: &[&str], color: Color32| {
-            for kw in keywords {
-                let kw_chars: Vec<char> = kw.chars().collect();
-                let kw_len = kw_chars.len();
-                if kw_len == 0 || kw_len > len {
-                    continue;
-                }
-                let mut i = 0;
-                while i + kw_len <= len {
-                    if lower_chars[i..i + kw_len] == kw_chars[..] {
-                        let before_ok = i == 0 || !lower_chars[i - 1].is_ascii_alphanumeric();
-                        let after_ok = i + kw_len >= lower_chars.len()
-                            || !lower_chars[i + kw_len].is_ascii_alphanumeric();
-                        if before_ok && after_ok {
-                            for slot in &mut colors[i..i + kw_len] {
-                                if slot.is_none() {
-                                    *slot = Some(color);
-                                }
-                            }
-                            i += kw_len;
-                            continue;
-                        }
-                    }
-                    i += 1;
-                }
+    if let Some(rules) = custom_rules {
+        for rule in rules {
+            if !rule.enabled || rule.keyword.trim().is_empty() {
+                continue;
             }
-        };
+            let color = Color32::from_rgb(rule.color_rgb[0], rule.color_rgb[1], rule.color_rgb[2]);
+            let kw = rule.keyword.trim();
+            let kw_chars: Vec<char> = if rule.match_case {
+                kw.chars().collect()
+            } else {
+                kw.to_ascii_lowercase().chars().collect()
+            };
+            let kw_len = kw_chars.len();
+            if kw_len == 0 || kw_len > len {
+                continue;
+            }
 
-    apply_keywords(
-        &mut colors,
-        &["error", "failed", "fatal", "exception", "err"],
-        Color32::from_rgb(255, 90, 90),
-    );
-    apply_keywords(
-        &mut colors,
-        &["success", "ok", "passed", "running", "active"],
-        Color32::from_rgb(80, 230, 120),
-    );
-    apply_keywords(
-        &mut colors,
-        &["warn", "warning"],
-        Color32::from_rgb(255, 210, 60),
-    );
+            let mut i = 0;
+            while i + kw_len <= len {
+                let matches = if rule.match_case {
+                    chars[i..i + kw_len] == kw_chars[..]
+                } else {
+                    lower_chars[i..i + kw_len] == kw_chars[..]
+                };
+
+                if matches {
+                    let before_ok = if rule.whole_word {
+                        i == 0 || (!lower_chars[i - 1].is_ascii_alphanumeric() && lower_chars[i - 1] != '_')
+                    } else {
+                        true
+                    };
+                    let after_ok = if rule.whole_word {
+                        i + kw_len >= lower_chars.len()
+                            || (!lower_chars[i + kw_len].is_ascii_alphanumeric() && lower_chars[i + kw_len] != '_')
+                    } else {
+                        true
+                    };
+
+                    if before_ok && after_ok {
+                        for slot in &mut colors[i..i + kw_len] {
+                            if slot.is_none() {
+                                *slot = Some(color);
+                            }
+                        }
+                        i += kw_len;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+    } else {
+        let apply_keywords =
+            |colors: &mut [Option<Color32>], keywords: &[&str], color: Color32| {
+                for kw in keywords {
+                    let kw_chars: Vec<char> = kw.chars().collect();
+                    let kw_len = kw_chars.len();
+                    if kw_len == 0 || kw_len > len {
+                        continue;
+                    }
+                    let mut i = 0;
+                    while i + kw_len <= len {
+                        if lower_chars[i..i + kw_len] == kw_chars[..] {
+                            let before_ok = i == 0 || (!lower_chars[i - 1].is_ascii_alphanumeric() && lower_chars[i - 1] != '_');
+                            let after_ok = i + kw_len >= lower_chars.len()
+                                || (!lower_chars[i + kw_len].is_ascii_alphanumeric() && lower_chars[i + kw_len] != '_');
+                            if before_ok && after_ok {
+                                for slot in &mut colors[i..i + kw_len] {
+                                    if slot.is_none() {
+                                        *slot = Some(color);
+                                    }
+                                }
+                                i += kw_len;
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+            };
+
+        apply_keywords(
+            &mut colors,
+            &["error", "failed", "fatal", "exception", "err"],
+            Color32::from_rgb(255, 90, 90),
+        );
+        apply_keywords(
+            &mut colors,
+            &["success", "ok", "passed", "running", "active"],
+            Color32::from_rgb(80, 230, 120),
+        );
+        apply_keywords(
+            &mut colors,
+            &["warn", "warning"],
+            Color32::from_rgb(255, 210, 60),
+        );
+    }
 
     // IPv4 tokens (e.g. 192.168.1.1)
     let mut idx = 0;
@@ -1852,6 +1936,46 @@ mod tests {
         // "10.20.30.40" at 56..67 -> cyan
         for idx in 56..67 {
             assert_eq!(highlights[idx], Some(Color32::from_rgb(80, 210, 245)));
+        }
+    }
+
+    #[test]
+    fn test_custom_highlight_rules_and_toggle() {
+        let mut custom_rules = vec![
+            HighlightRule::new("critical", 255, 0, 0),
+            HighlightRule::new("timeout", 216, 112, 240),
+        ];
+        custom_rules.push(HighlightRule {
+            id: "disabled_rule".to_string(),
+            keyword: "ignored".to_string(),
+            color_rgb: [100, 100, 100],
+            enabled: false,
+            whole_word: true,
+            match_case: false,
+        });
+
+        let line = "Connection TIMEOUT: CRITICAL alert, ignored text";
+        let cols = line.chars().count();
+
+        // 1. With rules enabled
+        let highlights = compute_row_syntax_highlights_with_rules(line, cols, Some(&custom_rules), true);
+        // "TIMEOUT" at index 11..18 -> magenta
+        for i in 11..18 {
+            assert_eq!(highlights[i], Some(Color32::from_rgb(216, 112, 240)));
+        }
+        // "CRITICAL" at index 20..28 -> red
+        for i in 20..28 {
+            assert_eq!(highlights[i], Some(Color32::from_rgb(255, 0, 0)));
+        }
+        // "ignored" is disabled -> None
+        for i in 36..43 {
+            assert_eq!(highlights[i], None);
+        }
+
+        // 2. With global toggle disabled
+        let disabled_hl = compute_row_syntax_highlights_with_rules(line, cols, Some(&custom_rules), false);
+        for h in disabled_hl {
+            assert_eq!(h, None);
         }
     }
 

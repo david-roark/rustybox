@@ -4,3 +4,4 @@ pub mod session;
 pub mod sftp;
 pub mod terminal;
 pub mod tunneling;
+pub mod snippets;

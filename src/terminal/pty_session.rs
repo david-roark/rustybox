@@ -100,6 +100,7 @@ pub struct PtySession {
     pub child: Arc<parking_lot::Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
     #[allow(dead_code)]
     pub is_ssh: bool,
+    pub last_osc7_path: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 impl PtySession {
@@ -325,9 +326,12 @@ impl PtySession {
         )));
         let running = Arc::new(AtomicBool::new(true));
         let title = Arc::new(parking_lot::Mutex::new(initial_title.to_string()));
+        let last_osc7_path = Arc::new(parking_lot::Mutex::new(None));
 
         let parser_clone = Arc::clone(&parser);
         let running_clone = Arc::clone(&running);
+        let title_clone = Arc::clone(&title);
+        let last_osc7_path_clone = Arc::clone(&last_osc7_path);
         let has_new_data = Arc::new(AtomicBool::new(true));
         let has_new_data_clone = Arc::clone(&has_new_data);
         let suppress_terminal_queries = Arc::new(AtomicBool::new(false));
@@ -519,6 +523,43 @@ impl PtySession {
                             };
                             prev_tail = combined[combined.len() - tail_len..].to_vec();
 
+                            // Scan for OSC 7 working directory notification (\x1b]7;file://... or \x1b]7;...)
+                            if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b]7;") {
+                                let slice = &combined[pos + 4..];
+                                if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27) {
+                                    if let Ok(s) = std::str::from_utf8(&slice[..end]) {
+                                        let path_str = if let Some(stripped) = s.strip_prefix("file://") {
+                                            if let Some(slash_idx) = stripped.find('/') {
+                                                &stripped[slash_idx..]
+                                            } else {
+                                                stripped
+                                            }
+                                        } else {
+                                            s
+                                        };
+                                        if !path_str.is_empty() {
+                                            *last_osc7_path_clone.lock() = Some(path_str.to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Scan for OSC 0 / OSC 2 window title notification (\x1b]0;... or \x1b]2;...)
+                            for prefix in [b"\x1b]0;", b"\x1b]2;"] {
+                                if let Some(pos) = combined.windows(4).position(|w| w == prefix) {
+                                    let slice = &combined[pos + 4..];
+                                    if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27) {
+                                        if let Ok(s) = std::str::from_utf8(&slice[..end]) {
+                                            let clean = s.trim();
+                                            if !clean.is_empty() {
+                                                *title_clone.lock() = clean.to_string();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             let mut p = parser_clone.lock();
                             p.process(chunk);
                             has_new_data_clone.store(true, Ordering::Relaxed);
@@ -540,6 +581,7 @@ impl PtySession {
             has_new_data,
             child: child_holder,
             is_ssh,
+            last_osc7_path,
         })
     }
 

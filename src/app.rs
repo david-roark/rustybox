@@ -143,6 +143,154 @@ pub fn detect_remote_session(title: &str, screen_text: &str, local_host: &str) -
     }
 }
 
+/// Extracts a working directory path from terminal window titles (e.g. OSC 0/2 set by bash `\u@\h: \w` or Windows cmd/PowerShell).
+pub fn extract_cwd_from_title(title: &str) -> Option<String> {
+    let raw = title.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // 1. Windows drive path in title (e.g. "C:\Users\Long" or "cmd - C:\Users\Long\Projects")
+    if let Some(pos) = raw.find(":\\") {
+        if pos > 0 {
+            let drive_char = raw.as_bytes()[pos - 1] as char;
+            if drive_char.is_ascii_alphabetic() {
+                let start = pos - 1;
+                let candidate = raw[start..].split(" - ").next().unwrap_or(&raw[start..]).trim();
+                let clean = candidate.trim_end_matches(['>', '$', '#', ' ']);
+                if !clean.is_empty() {
+                    return Some(clean.to_string());
+                }
+            }
+        }
+    }
+
+    // 2. Unix / SSH path in title (e.g. "user@host: /var/log" or "user@host:/var/log" or "root@srv: ~/app - bash")
+    if let Some((_user_host, rest)) = raw.split_once(':') {
+        let candidate = rest.trim();
+        // Remove trailing shell suffix if present e.g. " - bash" or " (bash)"
+        let candidate = candidate.split(" - ").next().unwrap_or(candidate);
+        let candidate = candidate.split(" (").next().unwrap_or(candidate).trim();
+        if candidate.starts_with('/') || candidate.starts_with('~') {
+            return Some(candidate.to_string());
+        }
+    }
+
+    // 3. Title is direct path
+    if (raw.starts_with('/') || raw.starts_with('~')) && !raw.contains(' ') {
+        return Some(raw.to_string());
+    }
+
+    None
+}
+
+/// Extracts the current working directory from the active shell prompt on the visible terminal screen.
+pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
+    for line in screen_text.lines().rev().take(15) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // 1. Windows CMD / PowerShell: C:\Users\Long\Projects> or PS D:\temp>
+        if let Some(gt_idx) = trimmed.rfind('>') {
+            let before_gt = trimmed[..gt_idx].trim();
+            if let Some(pos) = before_gt.find(":\\") {
+                if pos > 0 {
+                    let drive_char = before_gt.as_bytes()[pos - 1] as char;
+                    if drive_char.is_ascii_alphabetic() {
+                        let path_cand = before_gt[pos - 1..].trim();
+                        let path_cand = path_cand.trim_start_matches("PS ").trim();
+                        if !path_cand.is_empty() {
+                            return Some(path_cand.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Linux / SSH prompt:
+        // Format A: user@host:/path[$#% ] or user@host: /path[$#% ] or user@host:~$
+        if let Some(at_idx) = trimmed.rfind('@') {
+            let after_at = &trimmed[at_idx + 1..];
+            if let Some(colon_idx) = after_at.find(':') {
+                let after_colon = after_at[colon_idx + 1..].trim();
+                let end_idx = after_colon.find(|c: char| c == '$' || c == '#' || c == '%' || c == '>');
+                let candidate = if let Some(e) = end_idx {
+                    after_colon[..e].trim()
+                } else {
+                    after_colon.split_whitespace().next().unwrap_or("").trim()
+                };
+
+                if candidate.starts_with('/') || candidate.starts_with('~') {
+                    if !candidate.contains(['<', '>', '"', '|', '?', '*']) {
+                        return Some(candidate.to_string());
+                    }
+                }
+            }
+        }
+
+        // Format B: [user@host /var/log]# or [user@host ~]$
+        if trimmed.starts_with('[') {
+            if let Some(bracket_end) = trimmed.find(']') {
+                let inside = trimmed[1..bracket_end].trim();
+                if let Some((_user_host, path_cand)) = inside.split_once(' ') {
+                    let path_cand = path_cand.trim();
+                    if path_cand.starts_with('/') || path_cand.starts_with('~') {
+                        return Some(path_cand.to_string());
+                    }
+                }
+            }
+        }
+
+        // Format C: user@host (~/app) $
+        if let Some(paren_start) = trimmed.find('(') {
+            if let Some(paren_end) = trimmed[paren_start + 1..].find(')') {
+                let inside = trimmed[paren_start + 1..paren_start + 1 + paren_end].trim();
+                if inside.starts_with('/') || inside.starts_with('~') {
+                    return Some(inside.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Detects the active terminal tab's current working directory using OSC 7, /proc filesystem, title, or prompt text.
+pub fn detect_terminal_cwd(tab: &OpenTab) -> Option<String> {
+    // 1. Direct OSC 7 path (if shell supports OSC 7)
+    if let Some(ref p) = *tab.session.last_osc7_path.lock() {
+        if !p.trim().is_empty() {
+            return Some(p.trim().to_string());
+        }
+    }
+
+    // 2. If local shell on Unix/WSL, check /proc/{pid}/cwd
+    #[cfg(unix)]
+    if !tab.session.is_ssh {
+        if let Some(pid) = tab.session.child_pid {
+            if let Ok(target) = std::fs::read_link(format!("/proc/{}/cwd", pid)) {
+                if target.is_dir() {
+                    return Some(target.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // 3. Inspect terminal title (set by bash/zsh/fish via OSC 0/2 e.g. "user@host: /path" or "/path")
+    let title = tab.session.title.lock().clone();
+    let clean_title = title.trim();
+    if !clean_title.is_empty() {
+        if let Some(extracted) = extract_cwd_from_title(clean_title) {
+            return Some(extracted);
+        }
+    }
+
+    // 4. Inspect active prompt on the terminal screen
+    let screen_text = tab.session.parser.lock().screen().contents();
+    extract_cwd_from_screen(&screen_text)
+}
+
 #[derive(Clone, Debug)]
 pub struct TabTelemetry {
     pub host: String,
@@ -251,6 +399,7 @@ pub struct OpenTab {
     pub custom_cmd: Option<String>,
     pub workdir: Option<String>,
     pub telemetry: TabTelemetry,
+    pub last_synced_cwd: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -285,6 +434,35 @@ pub struct RustyBoxApp {
     show_network_tools: bool,
     net_tools_tab: usize, // 0: Port Scan, 1: Subnet Scan, 2: Ping, 3: Netstat
     show_tunnels: bool,
+    tunnel_filter_mode: usize,
+    editing_tunnel_idx: Option<usize>,
+    tunnel_ssh_key_path: String,
+    selected_session_fill: String,
+    // Snippets Manager (Termius Snippet Library)
+    snippets: Vec<crate::snippets::Snippet>,
+    show_snippets: bool,
+    snippet_search: String,
+    snippet_category_filter: String,
+    show_snippet_edit: bool,
+    editing_snippet_idx: Option<usize>,
+    snippet_form_name: String,
+    snippet_form_command: String,
+    snippet_form_category: String,
+    snippet_form_desc: String,
+    show_snippet_vars: bool,
+    active_var_snippet: Option<crate::snippets::Snippet>,
+    active_var_fields: Vec<(String, String)>,
+    active_var_is_run: bool,
+    // Auto-Highlight Keyword Rules (ZOC Terminal Feature)
+    highlight_rules: Vec<crate::terminal::HighlightRule>,
+    highlight_rules_enabled: bool,
+    show_highlight_modal: bool,
+    highlight_kw_input: String,
+    highlight_color_idx: usize,
+    highlight_whole_word: bool,
+    highlight_match_case: bool,
+    editing_highlight_idx: Option<usize>,
+    highlight_preview_text: String,
     show_vault: bool,
     show_about: bool,
     show_services_modal: bool,
@@ -471,13 +649,40 @@ impl RustyBoxApp {
             broadcast_rx,
             explorer: FileExplorer::new(),
             network_tools: NetworkTools::new(),
-            tunnel_manager: TunnelManager::new(),
+            tunnel_manager: TunnelManager::with_tunnels(config.tunnels.clone()),
             new_session_dialog: NewSessionDialog::new(),
             show_sftp_sidebar: true,
             sidebar_tab: 0,
             show_network_tools: false,
             net_tools_tab: 0,
             show_tunnels: false,
+            tunnel_filter_mode: 0,
+            editing_tunnel_idx: None,
+            tunnel_ssh_key_path: String::new(),
+            selected_session_fill: String::new(),
+            snippets: config.snippets.clone(),
+            show_snippets: false,
+            snippet_search: String::new(),
+            snippet_category_filter: "All".to_string(),
+            show_snippet_edit: false,
+            editing_snippet_idx: None,
+            snippet_form_name: String::new(),
+            snippet_form_command: String::new(),
+            snippet_form_category: "Docker".to_string(),
+            snippet_form_desc: String::new(),
+            show_snippet_vars: false,
+            active_var_snippet: None,
+            active_var_fields: Vec::new(),
+            active_var_is_run: true,
+            highlight_rules: config.highlight_rules.clone(),
+            highlight_rules_enabled: config.highlight_rules_enabled,
+            show_highlight_modal: false,
+            highlight_kw_input: String::new(),
+            highlight_color_idx: 0,
+            highlight_whole_word: true,
+            highlight_match_case: false,
+            editing_highlight_idx: None,
+            highlight_preview_text: "2026-11-05 14:30:00 [ERROR] Connection failed to 192.168.1.10: Connection refused\n2026-11-05 14:30:05 [WARN] Retry attempt 1/3 failed, retrying in 5s...\n2026-11-05 14:30:10 [SUCCESS] Connection established! Node status is running and active (127.0.0.1:8080).".to_string(),
             show_vault: false,
             show_about: false,
             show_services_modal: false,
@@ -553,10 +758,8 @@ impl RustyBoxApp {
             settings_tab: 0,
             show_import_dialog: false,
             import_raw_text: String::new(),
-            import_file_path: crate::session::import_export::default_ssh_config_path()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            import_default_folder: "SSH Profiles".into(),
+            import_file_path: String::new(),
+            import_default_folder: "Imported".into(),
             import_status_msg: None,
             focus_search: false,
             tokio_runtime,
@@ -628,11 +831,43 @@ impl RustyBoxApp {
                 "vault" => {
                     app.show_vault = true;
                 }
+                "snippets" => {
+                    app.show_snippets = true;
+                }
+                "tunnels" => {
+                    app.show_tunnels = true;
+                }
+                "highlight" => {
+                    app.show_highlight_modal = true;
+                }
+                "diff" => {
+                    app.show_diff = true;
+                    app.diff_text_a = "server_name example.com;\nlisten 80;\nlocation / {\n    proxy_pass http://127.0.0.1:3000;\n}".to_string();
+                    app.diff_text_b = "server_name example.com;\nlisten 443 ssl;\nlocation / {\n    proxy_pass http://127.0.0.1:8080;\n    proxy_set_header Host $host;\n}".to_string();
+                }
+                "sftp" => {
+                    app.show_sftp_sidebar = true;
+                    app.sidebar_tab = 1;
+                }
                 _ => {}
             }
         }
 
         app
+    }
+
+    pub fn execute_terminal_command(&mut self, cmd: &str) {
+        if !self.is_home_active && !self.open_tabs.is_empty() {
+            let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+            let _ = self.open_tabs[idx].session.write_str(cmd);
+        } else {
+            self.spawn_local_terminal("Local Terminal", None, None);
+            self.is_home_active = false;
+            if !self.open_tabs.is_empty() {
+                let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+                let _ = self.open_tabs[idx].session.write_str(cmd);
+            }
+        }
     }
 
     pub fn spawn_local_terminal(
@@ -728,6 +963,7 @@ impl RustyBoxApp {
                     custom_cmd: shell.map(|s| s.to_string()),
                     workdir: workdir.map(|w| w.to_string()),
                     telemetry,
+                    last_synced_cwd: None,
                 };
                 self.open_tabs.push(tab);
                 self.active_tab_idx = self.open_tabs.len() - 1;
@@ -817,6 +1053,7 @@ impl RustyBoxApp {
                         custom_cmd: None,
                         workdir: None,
                         telemetry,
+                        last_synced_cwd: None,
                     };
                     self.open_tabs.push(tab);
                     self.active_tab_idx = self.open_tabs.len() - 1;
@@ -843,6 +1080,13 @@ impl RustyBoxApp {
     pub fn sync_active_tab_sftp(&mut self) {
         if self.is_home_active {
             return;
+        }
+        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
+            tab.last_synced_cwd = None;
+            let is_ssh = tab.session_def.as_ref().map(|s| matches!(s.session_type, SessionType::Ssh { .. })).unwrap_or(false);
+            if !is_ssh && self.explorer.is_remote {
+                self.explorer.disconnect_remote();
+            }
         }
         if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
             if let Some(ref s) = tab.session_def {
@@ -898,6 +1142,7 @@ impl RustyBoxApp {
                 }
             }
         }
+        self.sync_terminal_cwd_if_enabled();
     }
 
     pub fn restart_tab(&mut self, idx: usize) {
@@ -1268,6 +1513,21 @@ impl RustyBoxApp {
         }
     }
 
+    /// Automatically syncs the File / SFTP Explorer path to the active terminal's current directory when "Follow terminal folder" is enabled.
+    pub fn sync_terminal_cwd_if_enabled(&mut self) {
+        if !self.explorer.follow_terminal_folder || self.is_home_active || self.open_tabs.is_empty() {
+            return;
+        }
+        let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+        let tab = &mut self.open_tabs[idx];
+        if let Some(detected_cwd) = detect_terminal_cwd(tab) {
+            if tab.last_synced_cwd.as_deref() != Some(&detected_cwd) {
+                tab.last_synced_cwd = Some(detected_cwd.clone());
+                self.explorer.sync_terminal_cwd(&detected_cwd);
+            }
+        }
+    }
+
     fn handle_quick_connect(&mut self) {
         let input = self.quick_connect_input.trim();
         if input.is_empty() {
@@ -1436,10 +1696,36 @@ impl RustyBoxApp {
                     ui.set_max_width(inner_w - 12.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Option A: Load from File on Disk").strong());
+                        ui.label(RichText::new("Quick actions:").size(11.0).color(Color32::GRAY));
+
+                        if ui.button(RichText::new("📁 Browse MobaXterm File...").color(Color32::from_rgb(251, 146, 60))).clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Select MobaXterm Export File")
+                                .add_filter("MobaXterm Sessions", &["txt", "ini", "mxtpro", "mxtsessions", "csv"])
+                                .add_filter("All Files", &["*"])
+                                .pick_file()
+                            {
+                                let p_str = path.to_string_lossy().to_string();
+                                self.import_file_path = p_str.clone();
+                                self.import_default_folder = "MobaXterm".into();
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        let len = content.len();
+                                        self.import_raw_text = content;
+                                        self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, p_str), false));
+                                    }
+                                    Err(e) => {
+                                        self.import_status_msg = Some((format!("Cannot read '{}': {}", p_str, e), true));
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(ssh_cfg_path) = crate::session::import_export::default_ssh_config_path() {
                             if ui.button(RichText::new("🔑 Load ~/.ssh/config").color(Color32::from_rgb(56, 189, 248))).clicked() {
                                 let p_str = ssh_cfg_path.to_string_lossy().to_string();
                                 self.import_file_path = p_str.clone();
+                                self.import_default_folder = "SSH Profiles".into();
                                 match std::fs::read_to_string(&ssh_cfg_path) {
                                     Ok(content) => {
                                         let len = content.len();
@@ -1456,10 +1742,11 @@ impl RustyBoxApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         let path_w = (ui.available_width() - 175.0).max(140.0);
-                        ui.add(TextEdit::singleline(&mut self.import_file_path).desired_width(path_w));
+                        let hint = egui::WidgetText::from("Select a file or enter path on disk...").color(Color32::from_rgb(120, 130, 150));
+                        ui.add(TextEdit::singleline(&mut self.import_file_path).hint_text(hint).desired_width(path_w));
                         if ui.button("📂 Browse...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("SSH & Session Files", &["config", "txt", "ini", "mxtpro", "csv", "json"])
+                                .add_filter("SSH & Session Files", &["config", "txt", "ini", "mxtpro", "mxtsessions", "csv", "json"])
                                 .add_filter("All Files", &["*"])
                                 .pick_file()
                             {
@@ -1478,14 +1765,18 @@ impl RustyBoxApp {
                             }
                         }
                         if ui.button(RichText::new("📥 Read File").strong()).clicked() {
-                            match std::fs::read_to_string(&self.import_file_path) {
-                                Ok(content) => {
-                                    let len = content.len();
-                                    self.import_raw_text = content;
-                                    self.import_status_msg = Some((format!("Read {} bytes from file.", len), false));
-                                }
-                                Err(e) => {
-                                    self.import_status_msg = Some((format!("Failed to read file: {}", e), true));
+                            if self.import_file_path.trim().is_empty() {
+                                self.import_status_msg = Some(("Please enter or browse for a file path first.".into(), true));
+                            } else {
+                                match std::fs::read_to_string(&self.import_file_path) {
+                                    Ok(content) => {
+                                        let len = content.len();
+                                        self.import_raw_text = content;
+                                        self.import_status_msg = Some((format!("Read {} bytes from file.", len), false));
+                                    }
+                                    Err(e) => {
+                                        self.import_status_msg = Some((format!("Failed to read file: {}", e), true));
+                                    }
                                 }
                             }
                         }
@@ -1648,6 +1939,23 @@ impl eframe::App for RustyBoxApp {
         }
         self.handle_multi_exec_broadcast();
         self.update_telemetry();
+        self.sync_terminal_cwd_if_enabled();
+
+        if let Some(target_dir) = self.explorer.requested_cd_terminal.take() {
+            if !self.is_home_active && !self.open_tabs.is_empty() {
+                let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+                let cmd = format!("cd \"{}\"\n", target_dir);
+                let _ = self.open_tabs[idx].session.write_str(&cmd);
+            }
+        }
+
+        if let Some(paste_path) = self.explorer.requested_terminal_paste.take() {
+            if !self.is_home_active && !self.open_tabs.is_empty() {
+                let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
+                let snippet = format!("{} ", paste_path);
+                let _ = self.open_tabs[idx].session.write_str(&snippet);
+            }
+        }
 
         // Smart Repaint: Repaint immediately only if VISIBLE active terminal(s) have new output
         let visible_has_data = match self.split_mode {
@@ -1718,7 +2026,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-57")
+                                RichText::new("v1.3-61")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -1912,6 +2220,14 @@ impl eframe::App for RustyBoxApp {
                         self.show_services_modal = true;
                         ui.close_menu();
                     }
+                    if ui.button("📋 Command Snippets (DevOps Library)").clicked() {
+                        self.show_snippets = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("🎨 Auto-Highlight Keywords (ZOC Style)").clicked() {
+                        self.show_highlight_modal = true;
+                        ui.close_menu();
+                    }
                     if ui.button("🔀 SSH Tunnels / Port Forwarding").clicked() {
                         self.show_tunnels = true;
                         ui.close_menu();
@@ -2009,6 +2325,12 @@ impl eframe::App for RustyBoxApp {
                 if util_btn(ui, "📁 Files").clicked() {
                     self.show_sftp_sidebar = !self.show_sftp_sidebar;
                     self.sidebar_tab = 1;
+                }
+                if util_btn(ui, "📋 Snippets").clicked() {
+                    self.show_snippets = true;
+                }
+                if util_btn(ui, "🎨 Highlight").clicked() {
+                    self.show_highlight_modal = true;
                 }
                 if util_btn(ui, "🔀 Tunnels").clicked() {
                     self.show_tunnels = true;
@@ -2754,15 +3076,7 @@ impl eframe::App for RustyBoxApp {
                     } else {
                         // SFTP BROWSER
                         if !self.is_home_active && self.explorer.follow_terminal_folder {
-                            if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
-                                if self.explorer.is_remote {
-                                    if let Some(line) = tab.session.current_cursor_line() {
-                                        self.explorer.sync_remote_prompt_cwd(&line);
-                                    }
-                                } else {
-                                    self.explorer.sync_terminal_cwd(tab.session.child_pid);
-                                }
-                            }
+                            self.sync_terminal_cwd_if_enabled();
                         }
                         render_sftp_sidebar(ui, &mut self.explorer);
                     }
@@ -3256,9 +3570,35 @@ impl eframe::App for RustyBoxApp {
                                 if chip(ui, "📥 Import SSH").clicked() {
                                     self.show_import_dialog = true;
                                 }
+                                if chip(ui, "📁 Import MobaXterm").clicked() {
+                                    self.show_import_dialog = true;
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .set_title("Select MobaXterm Export File")
+                                        .add_filter("MobaXterm Sessions", &["txt", "ini", "mxtpro", "mxtsessions", "csv"])
+                                        .add_filter("All Files", &["*"])
+                                        .pick_file()
+                                    {
+                                        let p_str = path.to_string_lossy().to_string();
+                                        self.import_file_path = p_str.clone();
+                                        self.import_default_folder = "MobaXterm".into();
+                                        match std::fs::read_to_string(&path) {
+                                            Ok(content) => {
+                                                let len = content.len();
+                                                self.import_raw_text = content;
+                                                self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, p_str), false));
+                                            }
+                                            Err(e) => {
+                                                self.import_status_msg = Some((format!("Cannot read '{}': {}", p_str, e), true));
+                                            }
+                                        }
+                                    }
+                                }
                                 if chip(ui, "📡 NetScan").clicked() {
                                     self.show_network_tools = true;
                                     self.net_tools_tab = 1;
+                                }
+                                if chip(ui, "📋 Snippets").clicked() {
+                                    self.show_snippets = true;
                                 }
                                 if chip(ui, "🔀 Tunnels").clicked() {
                                     self.show_tunnels = true;
@@ -3282,13 +3622,14 @@ impl eframe::App for RustyBoxApp {
                         } else {
                             egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
                         };
-                        ui.painter().rect(rect, egui::Rounding::same(8.0), bg, border);
+                        ui.painter().with_clip_rect(ui.clip_rect()).rect(rect, egui::Rounding::same(8.0), bg, border);
 
                         ui.allocate_new_ui(
                             egui::UiBuilder::new()
                                 .max_rect(rect.shrink(8.0))
                                 .layout(Layout::left_to_right(Align::Center)),
                             |c_ui| {
+                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(rect.shrink(4.0)));
                                 // Icon badge container
                                 let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
                                 c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
@@ -3393,14 +3734,14 @@ impl eframe::App for RustyBoxApp {
                         } else {
                             egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
                         };
-                        ui.painter().rect(q_rect, 6.0, bg, border);
+                        ui.painter().with_clip_rect(ui.clip_rect()).rect(q_rect, 6.0, bg, border);
 
                         ui.allocate_new_ui(
                             egui::UiBuilder::new()
                                 .max_rect(q_rect.shrink(7.0))
                                 .layout(Layout::left_to_right(Align::Center)),
                             |c_ui| {
-                                c_ui.set_clip_rect(q_rect.shrink(4.0));
+                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(q_rect.shrink(4.0)));
                                 c_ui.label(RichText::new(icon).size(16.0));
                                 c_ui.add_space(6.0);
                                 c_ui.vertical(|v_ui| {
@@ -3716,7 +4057,8 @@ impl eframe::App for RustyBoxApp {
                     .with_theme(eff_theme)
                     .with_search(search_ref)
                     .with_active_pane(is_active)
-                    .with_backspace_ctrl_h(bs_ctrl_h);
+                    .with_backspace_ctrl_h(bs_ctrl_h)
+                    .with_highlight_rules(Some(&self.highlight_rules), self.highlight_rules_enabled);
                 let _ = pane_idx;
                 widget.ui(ui, broadcast_tx)
             };
@@ -4346,110 +4688,294 @@ impl eframe::App for RustyBoxApp {
             self.show_services_modal = open;
         }
 
-        // SSH Tunnels Modal
+        // Modal backdrop scrim (dim workspace when dialog is open)
+        let is_any_modal_open = self.show_snippets
+            || self.show_tunnels
+            || self.show_highlight_modal
+            || self.show_tunnel_edit
+            || self.show_snippet_edit
+            || self.show_snippet_vars
+            || self.show_settings_dialog
+            || self.show_manage_passwords
+            || self.show_vault
+            || self.show_keygen
+            || self.show_pwdgen
+            || self.show_diff;
+
+        if is_any_modal_open {
+            let screen_rect = ctx.screen_rect();
+            ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal_backdrop_scrim")))
+                .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
+        }
+
+        // =========================================================================
+        // SSH TUNNELS / PORT FORWARDING DASHBOARD (Visual Graph Cards like Termius)
+        // =========================================================================
         if self.show_tunnels {
             let mut open = self.show_tunnels;
             let rt_handle = self.tokio_runtime.handle().clone();
             let mut tunnel_to_remove: Option<usize> = None;
+            let mut tunnel_to_start: Option<usize> = None;
+            let mut tunnel_to_stop: Option<usize> = None;
+            let mut tunnel_to_edit: Option<usize> = None;
 
-            egui::Window::new("🔀 SSH Tunnels / Port Forwarding")
+            egui::Window::new("🔀 SSH Tunnels & Port Forwarding Dashboard")
                 .open(&mut open)
-                .default_size(Vec2::new(660.0, 420.0))
+                .default_size(Vec2::new(760.0, 520.0))
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new("Configured SSH Port Forwarding Tunnels:").strong());
-                    ui.add_space(4.0);
-
-                    egui::Frame::none()
-                        .fill(Color32::from_rgb(17, 21, 30))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(45, 53, 72)))
-                        .rounding(3.0)
-                        .inner_margin(8.0)
-                        .show(ui, |ui| {
-                            egui::Grid::new("tunnels_grid")
-                                .striped(true)
-                                .min_col_width(70.0)
-                                .spacing(vec2(12.0, 6.0))
-                                .show(ui, |ui| {
-                                    ui.label(RichText::new("Status").strong());
-                                    ui.label(RichText::new("Tunnel Name").strong());
-                                    ui.label(RichText::new("Local Port").strong());
-                                    ui.label(RichText::new("Remote Target").strong());
-                                    ui.label(RichText::new("SSH Gateway").strong());
-                                    ui.label(RichText::new("Actions").strong());
-                                    ui.end_row();
-
-                                    for (idx, tunnel) in self.tunnel_manager.tunnels.iter().enumerate() {
-                                        let is_running = self.tunnel_manager.active_states[idx]
-                                            .load(std::sync::atomic::Ordering::Relaxed);
-
-                                        if is_running {
-                                            ui.label(RichText::new("🟢 Running").color(Color32::from_rgb(46, 160, 67)).strong());
-                                        } else {
-                                            ui.label(RichText::new("⚪ Stopped").weak());
-                                        }
-
-                                        ui.label(&tunnel.name);
-                                        ui.label(format!(":{}", tunnel.local_port));
-                                        ui.label(format!("{}:{}", tunnel.remote_host, tunnel.remote_port));
-                                        ui.label(&tunnel.ssh_server);
-
-                                        ui.horizontal(|ui| {
-                                            if is_running {
-                                                if ui.small_button("⏹ Stop").clicked() {
-                                                    self.tunnel_manager.stop_tunnel(idx);
-                                                }
-                                            } else {
-                                                if ui.small_button("▶ Start").clicked() {
-                                                    self.tunnel_manager.start_tunnel(idx, &rt_handle);
-                                                }
-                                            }
-                                            if ui.small_button("🗑").on_hover_text("Delete Tunnel").clicked() {
-                                                tunnel_to_remove = Some(idx);
-                                            }
-                                        });
-                                        ui.end_row();
-                                    }
-                                });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Visual SSH Port Forwarding (Local, Remote & Dynamic SOCKS5)").size(13.0).color(Color32::from_rgb(148, 163, 184)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button(RichText::new("➕ New SSH Tunnel").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
+                                self.editing_tunnel_idx = None;
+                                self.new_tunnel_name = "New Port Forward".to_string();
+                                self.new_tunnel_local_port = 8080;
+                                self.new_tunnel_remote_host = "127.0.0.1".to_string();
+                                self.new_tunnel_remote_port = 80;
+                                self.tunnel_ssh_srv = "127.0.0.1".to_string();
+                                self.tunnel_ssh_port = 22;
+                                self.tunnel_ssh_user = "root".to_string();
+                                self.tunnel_ssh_key_path.clear();
+                                self.selected_session_fill.clear();
+                                self.tunnel_edit_mode = 0;
+                                self.show_tunnel_edit = true;
+                            }
                         });
+                    });
 
-                    if let Some(idx) = tunnel_to_remove {
-                        self.tunnel_manager.remove_tunnel(idx);
-                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Filter Mode:").strong().size(11.5));
+                        let filter_chip = |ui: &mut egui::Ui, label: &str, mode_idx: usize, current: &mut usize| {
+                            let is_sel = *current == mode_idx;
+                            let bg = if is_sel { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(22, 28, 40) };
+                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(45, 55, 75)) };
+                            let btn = egui::Button::new(RichText::new(label).size(11.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(201, 209, 217) }))
+                                .fill(bg)
+                                .stroke(stroke)
+                                .rounding(4.0);
+                            if ui.add(btn).clicked() {
+                                *current = mode_idx;
+                            }
+                        };
+
+                        filter_chip(ui, "All Tunnels", 0, &mut self.tunnel_filter_mode);
+                        filter_chip(ui, "Local Forward (-L)", 1, &mut self.tunnel_filter_mode);
+                        filter_chip(ui, "Remote Forward (-R)", 2, &mut self.tunnel_filter_mode);
+                        filter_chip(ui, "Dynamic SOCKS5 (-D)", 3, &mut self.tunnel_filter_mode);
+                    });
 
                     ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(RichText::new("➕ New SSH tunnel").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
-                            self.show_tunnel_edit = true;
-                        }
-                    });
+                    ui.add_space(6.0);
+
+                    let list_h = (ui.available_height() - 20.0).max(180.0);
+                    ScrollArea::vertical()
+                        .id_salt("tunnels_card_scroll")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 10.0;
+
+                            if self.tunnel_manager.tunnels.is_empty() {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(40.0);
+                                    ui.label(RichText::new("No SSH tunnels configured yet.").size(14.0).weak());
+                                    ui.label("Click '➕ New SSH Tunnel' above to forward local or remote ports securely.");
+                                });
+                            }
+
+                            for (idx, tunnel) in self.tunnel_manager.tunnels.iter().enumerate() {
+                                let matches_mode = match self.tunnel_filter_mode {
+                                    1 => tunnel.mode == crate::tunneling::TunnelMode::LocalForward,
+                                    2 => tunnel.mode == crate::tunneling::TunnelMode::RemoteForward,
+                                    3 => tunnel.mode == crate::tunneling::TunnelMode::DynamicSocks5,
+                                    _ => true,
+                                };
+                                if !matches_mode {
+                                    continue;
+                                }
+
+                                let is_running = self.tunnel_manager.is_running(idx);
+                                let card_border = if is_running {
+                                    egui::Stroke::new(1.2, Color32::from_rgb(34, 197, 94))
+                                } else {
+                                    egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68))
+                                };
+
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(17, 21, 31))
+                                    .stroke(card_border)
+                                    .rounding(6.0)
+                                    .inner_margin(10.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            if is_running {
+                                                ui.label(RichText::new("🟢 Active").color(Color32::from_rgb(34, 197, 94)).strong());
+                                            } else {
+                                                ui.label(RichText::new("⚪ Inactive").color(Color32::from_rgb(148, 163, 184)));
+                                            }
+
+                                            ui.label(RichText::new(&tunnel.name).strong().size(13.5).color(Color32::WHITE));
+
+                                            let (mode_badge, mode_color) = match tunnel.mode {
+                                                crate::tunneling::TunnelMode::LocalForward => ("Local Forward (-L)", Color32::from_rgb(56, 189, 248)),
+                                                crate::tunneling::TunnelMode::RemoteForward => ("Remote Forward (-R)", Color32::from_rgb(251, 191, 36)),
+                                                crate::tunneling::TunnelMode::DynamicSocks5 => ("Dynamic SOCKS5 (-D)", Color32::from_rgb(192, 132, 252)),
+                                            };
+                                            ui.label(RichText::new(format!("[{}]", mode_badge)).size(11.0).color(mode_color));
+
+                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                if ui.button("🗑 Delete").clicked() {
+                                                    tunnel_to_remove = Some(idx);
+                                                }
+                                                if ui.button("✏ Edit").clicked() {
+                                                    tunnel_to_edit = Some(idx);
+                                                }
+                                                if is_running {
+                                                    if ui.button(RichText::new("⏹ Stop").color(Color32::from_rgb(248, 113, 113)).strong()).clicked() {
+                                                        tunnel_to_stop = Some(idx);
+                                                    }
+                                                } else {
+                                                    if ui.button(RichText::new("▶ Start").color(Color32::from_rgb(74, 222, 128)).strong()).clicked() {
+                                                        tunnel_to_start = Some(idx);
+                                                    }
+                                                }
+                                            });
+                                        });
+
+                                        ui.add_space(6.0);
+
+                                        egui::Frame::none()
+                                            .fill(Color32::from_rgb(12, 15, 23))
+                                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 52)))
+                                            .rounding(4.0)
+                                            .inner_margin(8.0)
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    match tunnel.mode {
+                                                        crate::tunneling::TunnelMode::LocalForward => {
+                                                            ui.label(RichText::new(format!("💻 Local :{}", tunnel.local_port)).strong().color(Color32::from_rgb(56, 189, 248)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new(format!("🔐 Gateway {}@{}:{}", tunnel.ssh_user, tunnel.ssh_server, tunnel.ssh_port)).color(Color32::from_rgb(163, 230, 53)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new(format!("🌐 Remote {}:{}", tunnel.remote_host, tunnel.remote_port)).strong().color(Color32::from_rgb(251, 191, 36)));
+                                                        }
+                                                        crate::tunneling::TunnelMode::RemoteForward => {
+                                                            ui.label(RichText::new(format!("🌐 Remote :{}", tunnel.remote_port)).strong().color(Color32::from_rgb(251, 191, 36)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new(format!("🔐 Gateway {}@{}:{}", tunnel.ssh_user, tunnel.ssh_server, tunnel.ssh_port)).color(Color32::from_rgb(163, 230, 53)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new(format!("💻 Local {}:{}", tunnel.remote_host, tunnel.local_port)).strong().color(Color32::from_rgb(56, 189, 248)));
+                                                        }
+                                                        crate::tunneling::TunnelMode::DynamicSocks5 => {
+                                                            ui.label(RichText::new(format!("💻 SOCKS5 127.0.0.1:{}", tunnel.local_port)).strong().color(Color32::from_rgb(192, 132, 252)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new(format!("🔐 Gateway {}@{}:{}", tunnel.ssh_user, tunnel.ssh_server, tunnel.ssh_port)).color(Color32::from_rgb(163, 230, 53)));
+                                                            ui.label(RichText::new("───➔").weak());
+                                                            ui.label(RichText::new("🌐 Dynamic Internet Target").strong().color(Color32::from_rgb(56, 189, 248)));
+                                                        }
+                                                    }
+                                                });
+                                            });
+
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            let msg = &self.tunnel_manager.status_messages[idx];
+                                            ui.label(RichText::new(format!("Status: {}", msg)).size(11.0).color(if is_running { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(148, 163, 184) }));
+                                            ui.separator();
+                                            let hint = match tunnel.mode {
+                                                crate::tunneling::TunnelMode::LocalForward => format!("Target app: Connect client to 127.0.0.1:{}", tunnel.local_port),
+                                                crate::tunneling::TunnelMode::RemoteForward => format!("Remote clients access port :{} on {}", tunnel.remote_port, tunnel.ssh_server),
+                                                crate::tunneling::TunnelMode::DynamicSocks5 => format!("Configure browser proxy: SOCKS5 127.0.0.1:{}", tunnel.local_port),
+                                            };
+                                            ui.label(RichText::new(hint).size(10.5).color(Color32::from_rgb(120, 135, 155)));
+                                        });
+                                    });
+                            }
+                        });
                 });
+
+            if let Some(idx) = tunnel_to_start {
+                self.tunnel_manager.start_tunnel(idx, &rt_handle);
+            }
+            if let Some(idx) = tunnel_to_stop {
+                self.tunnel_manager.stop_tunnel(idx);
+            }
+            if let Some(idx) = tunnel_to_remove {
+                self.tunnel_manager.remove_tunnel(idx);
+                let _ = self.storage.save_tunnels(&self.tunnel_manager.tunnels);
+            }
+            if let Some(idx) = tunnel_to_edit {
+                if idx < self.tunnel_manager.tunnels.len() {
+                    let t = &self.tunnel_manager.tunnels[idx];
+                    self.editing_tunnel_idx = Some(idx);
+                    self.new_tunnel_name = t.name.clone();
+                    self.new_tunnel_local_port = t.local_port;
+                    self.new_tunnel_remote_host = t.remote_host.clone();
+                    self.new_tunnel_remote_port = t.remote_port;
+                    self.tunnel_ssh_srv = t.ssh_server.clone();
+                    self.tunnel_ssh_port = t.ssh_port;
+                    self.tunnel_ssh_user = t.ssh_user.clone();
+                    self.tunnel_ssh_key_path = t.ssh_key_path.clone().unwrap_or_default();
+                    self.tunnel_edit_mode = match t.mode {
+                        crate::tunneling::TunnelMode::LocalForward => 0,
+                        crate::tunneling::TunnelMode::RemoteForward => 1,
+                        crate::tunneling::TunnelMode::DynamicSocks5 => 2,
+                    };
+                    self.show_tunnel_edit = true;
+                }
+            }
+
             self.show_tunnels = open;
         }
 
-        // New SSH tunnel creation dialog (TFormPortForwardingEdit)
+        // New / Edit SSH tunnel creation dialog
         if self.show_tunnel_edit {
             let mut open = self.show_tunnel_edit;
             let mut close_te = false;
             let mut save_te = false;
-            egui::Window::new("New SSH tunnel")
+            egui::Window::new(if self.editing_tunnel_idx.is_some() { "✏ Edit SSH Tunnel" } else { "➕ New SSH Tunnel" })
                 .open(&mut open)
-                .default_size(Vec2::new(580.0, 360.0))
+                .default_size(Vec2::new(600.0, 420.0))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.tunnel_edit_mode, 0, "Local port forwarding");
-                        ui.radio_value(&mut self.tunnel_edit_mode, 1, "Remote port forwarding");
-                        ui.radio_value(&mut self.tunnel_edit_mode, 2, "Dynamic (SOCKS proxy)");
+                        ui.radio_value(&mut self.tunnel_edit_mode, 0, "Local port forwarding (-L)");
+                        ui.radio_value(&mut self.tunnel_edit_mode, 1, "Remote port forwarding (-R)");
+                        ui.radio_value(&mut self.tunnel_edit_mode, 2, "Dynamic SOCKS5 proxy (-D)");
                     });
                     ui.separator();
                     ui.add_space(4.0);
                     let desc = match self.tunnel_edit_mode {
-                        0 => "Local clients ──(127.0.0.1:ForwardedPort)──► SSH Server ──► Remote Server:RemotePort",
-                        1 => "Remote clients ──(SSH Server:ForwardedPort)──► SSH Tunnel ──► Local Target:LocalPort",
-                        _ => "Local apps (SOCKS5 127.0.0.1:ForwardedPort) ──► SSH Server ──► Any Remote Host",
+                        0 => "Local clients ──(127.0.0.1:ForwardedPort)──► SSH Gateway ──► Remote Server:RemotePort",
+                        1 => "Remote clients ──(SSH Server:ForwardedPort)──► SSH Gateway ──► Local Target:LocalPort",
+                        _ => "Local apps (SOCKS5 127.0.0.1:ForwardedPort) ──► SSH Gateway ──► Any Dynamic Internet Host",
                     };
                     ui.label(RichText::new(desc).monospace().size(11.5).color(Color32::from_rgb(56, 189, 248)));
+                    ui.add_space(6.0);
+
+                    // Auto-fill from saved sessions
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Auto-fill from Saved Session:").size(11.5).color(Color32::from_rgb(148, 163, 184)));
+                        let ssh_sessions: Vec<&Session> = self.sessions.iter().filter(|s| matches!(s.session_type, SessionType::Ssh { .. })).collect();
+                        egui::ComboBox::from_id_salt("tunnel_session_picker")
+                            .selected_text(if self.selected_session_fill.is_empty() { "-- Select SSH session --" } else { &self.selected_session_fill })
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for s in &ssh_sessions {
+                                    if ui.selectable_label(self.selected_session_fill == s.name, &s.name).clicked() {
+                                        self.selected_session_fill = s.name.clone();
+                                        if let SessionType::Ssh { ref host, port, ref user, ref key_path, .. } = s.session_type {
+                                            self.tunnel_ssh_srv = host.clone();
+                                            self.tunnel_ssh_port = port;
+                                            self.tunnel_ssh_user = user.clone();
+                                            self.tunnel_ssh_key_path = key_path.clone().unwrap_or_default();
+                                        }
+                                    }
+                                }
+                            });
+                    });
                     ui.add_space(6.0);
 
                     egui::Grid::new("tunnel_edit_grid").num_columns(4).spacing([10.0, 8.0]).show(ui, |ui| {
@@ -4459,26 +4985,34 @@ impl eframe::App for RustyBoxApp {
                         ui.add(egui::DragValue::new(&mut self.new_tunnel_local_port).range(1..=65535));
                         ui.end_row();
 
-                        ui.label("SSH server:");
+                        ui.label("SSH gateway host:");
                         ui.add(TextEdit::singleline(&mut self.tunnel_ssh_srv).desired_width(170.0));
-                        ui.label("SSH port:");
+                        ui.label("SSH gateway port:");
                         ui.add(egui::DragValue::new(&mut self.tunnel_ssh_port).range(1..=65535));
                         ui.end_row();
 
-                        ui.label("SSH login:");
+                        ui.label("SSH gateway user:");
                         ui.add(TextEdit::singleline(&mut self.tunnel_ssh_user).desired_width(170.0));
-                        ui.label("");
-                        ui.label("");
+                        ui.label("SSH private key:");
+                        ui.horizontal(|ui| {
+                            ui.add(TextEdit::singleline(&mut self.tunnel_ssh_key_path).desired_width(120.0));
+                            if ui.small_button("📂").on_hover_text("Browse key file").clicked() {
+                                if let Some(f) = rfd::FileDialog::new().pick_file() {
+                                    self.tunnel_ssh_key_path = f.to_string_lossy().to_string();
+                                }
+                            }
+                        });
                         ui.end_row();
 
                         if self.tunnel_edit_mode != 2 {
-                            ui.label("Remote server:");
+                            ui.label("Remote target host:");
                             ui.add(TextEdit::singleline(&mut self.new_tunnel_remote_host).desired_width(170.0));
-                            ui.label("Remote port:");
+                            ui.label("Remote target port:");
                             ui.add(egui::DragValue::new(&mut self.new_tunnel_remote_port).range(1..=65535));
                             ui.end_row();
                         }
                     });
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(4.0);
@@ -4491,6 +5025,7 @@ impl eframe::App for RustyBoxApp {
                         }
                     });
                 });
+
             if save_te {
                 let name = if self.new_tunnel_name.trim().is_empty() {
                     format!("Tunnel :{}", self.new_tunnel_local_port)
@@ -4498,23 +5033,629 @@ impl eframe::App for RustyBoxApp {
                     self.new_tunnel_name.trim().to_string()
                 };
                 let mode = match self.tunnel_edit_mode {
+                    1 => crate::tunneling::TunnelMode::RemoteForward,
                     2 => crate::tunneling::TunnelMode::DynamicSocks5,
                     _ => crate::tunneling::TunnelMode::LocalForward,
                 };
+                let key_path_opt = if self.tunnel_ssh_key_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.tunnel_ssh_key_path.trim().to_string())
+                };
+
                 let new_cfg = crate::tunneling::TunnelConfig {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: if let Some(idx) = self.editing_tunnel_idx {
+                        self.tunnel_manager.tunnels.get(idx).map(|t| t.id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                    } else {
+                        uuid::Uuid::new_v4().to_string()
+                    },
                     name,
                     mode,
                     local_port: self.new_tunnel_local_port,
                     remote_host: self.new_tunnel_remote_host.trim().to_string(),
                     remote_port: self.new_tunnel_remote_port,
-                    ssh_server: format!("{}@{}:{}", self.tunnel_ssh_user, self.tunnel_ssh_srv, self.tunnel_ssh_port),
+                    ssh_server: self.tunnel_ssh_srv.trim().to_string(),
+                    ssh_port: self.tunnel_ssh_port,
+                    ssh_user: self.tunnel_ssh_user.trim().to_string(),
+                    ssh_key_path: key_path_opt,
                 };
-                self.tunnel_manager.add_tunnel(new_cfg);
+
+                if let Some(idx) = self.editing_tunnel_idx {
+                    self.tunnel_manager.update_tunnel(idx, new_cfg);
+                } else {
+                    self.tunnel_manager.add_tunnel(new_cfg);
+                }
+                let _ = self.storage.save_tunnels(&self.tunnel_manager.tunnels);
                 self.new_tunnel_name.clear();
+                self.editing_tunnel_idx = None;
                 close_te = true;
             }
             self.show_tunnel_edit = open && !close_te;
+        }
+
+        // =========================================================================
+        // COMMAND SNIPPETS MANAGER (DevOps & SysAdmin Library)
+        // =========================================================================
+        if self.show_snippets {
+            let mut open = self.show_snippets;
+            let mut run_snippet: Option<crate::snippets::Snippet> = None;
+            let mut insert_snippet: Option<crate::snippets::Snippet> = None;
+            let mut edit_snippet_idx: Option<usize> = None;
+            let mut delete_snippet_idx: Option<usize> = None;
+
+            egui::Window::new("📋 Command Snippets (DevOps & SysAdmin Library)")
+                .open(&mut open)
+                .default_size(Vec2::new(760.0, 520.0))
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Quick executable DevOps scripts & commands with placeholder variables").size(12.5).color(Color32::from_rgb(148, 163, 184)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button(RichText::new("➕ Add Snippet").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
+                                self.editing_snippet_idx = None;
+                                self.snippet_form_name.clear();
+                                self.snippet_form_command.clear();
+                                self.snippet_form_category = "General".to_string();
+                                self.snippet_form_desc.clear();
+                                self.show_snippet_edit = true;
+                            }
+                        });
+                    });
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🔍").size(14.0));
+                        ui.add(TextEdit::singleline(&mut self.snippet_search).hint_text("Search snippets...").desired_width(190.0));
+
+                        ui.add_space(8.0);
+                        let cat_chip = |ui: &mut egui::Ui, label: &str, current: &mut String| {
+                            let is_sel = current == label;
+                            let bg = if is_sel { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(22, 28, 40) };
+                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(45, 55, 75)) };
+                            let btn = egui::Button::new(RichText::new(label).size(11.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(201, 209, 217) }))
+                                .fill(bg)
+                                .stroke(stroke)
+                                .rounding(4.0);
+                            if ui.add(btn).clicked() {
+                                *current = label.to_string();
+                            }
+                        };
+
+                        cat_chip(ui, "All", &mut self.snippet_category_filter);
+                        cat_chip(ui, "Docker", &mut self.snippet_category_filter);
+                        cat_chip(ui, "Nginx", &mut self.snippet_category_filter);
+                        cat_chip(ui, "System", &mut self.snippet_category_filter);
+                        cat_chip(ui, "Database", &mut self.snippet_category_filter);
+                        cat_chip(ui, "Git", &mut self.snippet_category_filter);
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    let list_h = (ui.available_height() - 20.0).max(180.0);
+                    ScrollArea::vertical()
+                        .id_salt("snippets_scroll_area")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 8.0;
+
+                            let q = self.snippet_search.to_lowercase();
+                            for (idx, snip) in self.snippets.iter().enumerate() {
+                                if self.snippet_category_filter != "All" && snip.category != self.snippet_category_filter {
+                                    continue;
+                                }
+                                if !q.is_empty() && !snip.name.to_lowercase().contains(&q) && !snip.command.to_lowercase().contains(&q) && !snip.category.to_lowercase().contains(&q) {
+                                    continue;
+                                }
+
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(17, 21, 31))
+                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68)))
+                                    .rounding(6.0)
+                                    .inner_margin(8.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let cat_col = match snip.category.as_str() {
+                                                "Docker" => Color32::from_rgb(56, 189, 248),
+                                                "Nginx" => Color32::from_rgb(52, 211, 153),
+                                                "System" => Color32::from_rgb(251, 191, 36),
+                                                "Database" => Color32::from_rgb(249, 115, 22),
+                                                "Git" => Color32::from_rgb(244, 63, 94),
+                                                _ => Color32::from_rgb(192, 132, 252),
+                                            };
+                                            ui.label(RichText::new(format!("[{}]", snip.category)).size(11.0).color(cat_col).strong());
+                                            ui.label(RichText::new(&snip.name).strong().size(13.0).color(Color32::WHITE));
+                                            if !snip.description.is_empty() {
+                                                ui.label(RichText::new(format!("- {}", snip.description)).size(11.0).weak());
+                                            }
+
+                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                if ui.small_button("🗑").on_hover_text("Delete Snippet").clicked() {
+                                                    delete_snippet_idx = Some(idx);
+                                                }
+                                                if ui.small_button("✏").on_hover_text("Edit Snippet").clicked() {
+                                                    edit_snippet_idx = Some(idx);
+                                                }
+                                                if ui.button(RichText::new("📋 Insert").size(11.5)).on_hover_text("Paste into terminal without running").clicked() {
+                                                    insert_snippet = Some(snip.clone());
+                                                }
+                                                if ui.button(RichText::new("▶ Run").strong().size(11.5).color(Color32::from_rgb(74, 222, 128))).on_hover_text("Execute command in active terminal").clicked() {
+                                                    run_snippet = Some(snip.clone());
+                                                }
+                                            });
+                                        });
+
+                                        ui.add_space(4.0);
+                                        egui::Frame::none()
+                                            .fill(Color32::from_rgb(10, 13, 20))
+                                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 48)))
+                                            .rounding(4.0)
+                                            .inner_margin(6.0)
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(RichText::new("$").monospace().size(11.5).color(Color32::from_rgb(110, 120, 140)));
+                                                    ui.label(RichText::new(&snip.command).monospace().size(11.5).color(Color32::from_rgb(220, 230, 242)));
+                                                });
+                                            });
+                                    });
+                            }
+                        });
+                });
+
+            // Action: Run or Insert snippet
+            if let Some(snip) = run_snippet {
+                let vars = crate::snippets::extract_placeholders(&snip.command);
+                if vars.is_empty() {
+                    let cmd_to_run = format!("{}\n", snip.command);
+                    self.execute_terminal_command(&cmd_to_run);
+                    self.status_toast = Some((format!("Executed snippet: {}", snip.name), std::time::Instant::now()));
+                } else {
+                    self.active_var_fields = vars.into_iter().map(|v| (v, String::new())).collect();
+                    self.active_var_snippet = Some(snip);
+                    self.active_var_is_run = true;
+                    self.show_snippet_vars = true;
+                }
+            }
+            if let Some(snip) = insert_snippet {
+                let vars = crate::snippets::extract_placeholders(&snip.command);
+                if vars.is_empty() {
+                    let cmd_to_insert = format!("{} ", snip.command);
+                    self.execute_terminal_command(&cmd_to_insert);
+                    self.status_toast = Some((format!("Inserted snippet: {}", snip.name), std::time::Instant::now()));
+                } else {
+                    self.active_var_fields = vars.into_iter().map(|v| (v, String::new())).collect();
+                    self.active_var_snippet = Some(snip);
+                    self.active_var_is_run = false;
+                    self.show_snippet_vars = true;
+                }
+            }
+            if let Some(idx) = delete_snippet_idx {
+                if idx < self.snippets.len() {
+                    self.snippets.remove(idx);
+                    let _ = self.storage.save_snippets(&self.snippets);
+                }
+            }
+            if let Some(idx) = edit_snippet_idx {
+                if idx < self.snippets.len() {
+                    let s = &self.snippets[idx];
+                    self.editing_snippet_idx = Some(idx);
+                    self.snippet_form_name = s.name.clone();
+                    self.snippet_form_command = s.command.clone();
+                    self.snippet_form_category = s.category.clone();
+                    self.snippet_form_desc = s.description.clone();
+                    self.show_snippet_edit = true;
+                }
+            }
+
+            self.show_snippets = open;
+        }
+
+        // Snippet Add / Edit Dialog
+        if self.show_snippet_edit {
+            let mut open = self.show_snippet_edit;
+            let mut close_edit = false;
+            let mut save_snippet = false;
+
+            egui::Window::new(if self.editing_snippet_idx.is_some() { "✏ Edit Snippet" } else { "➕ Add New Snippet" })
+                .open(&mut open)
+                .collapsible(false)
+                .default_size(Vec2::new(520.0, 360.0))
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("Configure Reusable Command Template").strong());
+                    ui.add_space(4.0);
+
+                    egui::Grid::new("snippet_edit_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                        ui.label("Name:");
+                        ui.add(TextEdit::singleline(&mut self.snippet_form_name).desired_width(320.0));
+                        ui.end_row();
+
+                        ui.label("Category:");
+                        ui.horizontal(|ui| {
+                            ui.add(TextEdit::singleline(&mut self.snippet_form_category).desired_width(180.0));
+                            ui.label("(e.g. Docker, Nginx, System, Database, Git)");
+                        });
+                        ui.end_row();
+
+                        ui.label("Description:");
+                        ui.add(TextEdit::singleline(&mut self.snippet_form_desc).desired_width(320.0));
+                        ui.end_row();
+
+                        ui.label("Command:");
+                        ui.add(
+                            TextEdit::multiline(&mut self.snippet_form_command)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(320.0)
+                                .desired_rows(4),
+                        );
+                        ui.end_row();
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Tip: Insert {{variable_name}} to prompt for dynamic arguments at runtime!").size(11.0).color(Color32::from_rgb(56, 189, 248)));
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("💾 Save Snippet").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
+                            save_snippet = true;
+                        }
+                        if ui.button("✖ Cancel").clicked() {
+                            close_edit = true;
+                        }
+                    });
+                });
+
+            if save_snippet {
+                let name = if self.snippet_form_name.trim().is_empty() {
+                    "Untitled Snippet".to_string()
+                } else {
+                    self.snippet_form_name.trim().to_string()
+                };
+                let category = if self.snippet_form_category.trim().is_empty() {
+                    "General".to_string()
+                } else {
+                    self.snippet_form_category.trim().to_string()
+                };
+                let snip = crate::snippets::Snippet {
+                    id: if let Some(idx) = self.editing_snippet_idx {
+                        self.snippets.get(idx).map(|s| s.id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                    } else {
+                        uuid::Uuid::new_v4().to_string()
+                    },
+                    name,
+                    command: self.snippet_form_command.trim().to_string(),
+                    category,
+                    description: self.snippet_form_desc.trim().to_string(),
+                };
+
+                if let Some(idx) = self.editing_snippet_idx {
+                    if idx < self.snippets.len() {
+                        self.snippets[idx] = snip;
+                    }
+                } else {
+                    self.snippets.push(snip);
+                }
+                let _ = self.storage.save_snippets(&self.snippets);
+                self.editing_snippet_idx = None;
+                close_edit = true;
+            }
+            self.show_snippet_edit = open && !close_edit;
+        }
+
+        // Snippet Variable Filler Dialog
+        if self.show_snippet_vars {
+            let mut open = self.show_snippet_vars;
+            let mut close_vars = false;
+            let mut submit_vars = false;
+            let active_snip = self.active_var_snippet.clone();
+
+            if let Some(ref snip) = active_snip {
+                egui::Window::new(format!("📝 Fill Parameters - {}", snip.name))
+                    .open(&mut open)
+                    .collapsible(false)
+                    .default_size(Vec2::new(480.0, 260.0))
+                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                    .show(ctx, |ui| {
+                        ui.label(RichText::new("Provide values for command template:").strong());
+                        ui.add_space(4.0);
+
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(10, 13, 20))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 52)))
+                            .rounding(4.0)
+                            .inner_margin(6.0)
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(&snip.command).monospace().size(11.5).color(Color32::from_rgb(56, 189, 248)));
+                            });
+
+                        ui.add_space(6.0);
+                        egui::Grid::new("snippet_var_fields_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                            for (var_name, var_val) in &mut self.active_var_fields {
+                                ui.label(RichText::new(format!("{{{{{}}}}}:", var_name)).strong().color(Color32::from_rgb(251, 191, 36)));
+                                ui.add(TextEdit::singleline(var_val).desired_width(260.0));
+                                ui.end_row();
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            let action_label = if self.active_var_is_run { "▶ Run Command" } else { "📋 Insert Command" };
+                            if ui.button(RichText::new(action_label).strong().color(Color32::from_rgb(74, 222, 128))).clicked() {
+                                submit_vars = true;
+                            }
+                            if ui.button("✖ Cancel").clicked() {
+                                close_vars = true;
+                            }
+                        });
+                    });
+
+                if submit_vars {
+                    let replaced_cmd = crate::snippets::replace_placeholders(&snip.command, &self.active_var_fields);
+                    if self.active_var_is_run {
+                        let cmd_to_run = format!("{}\n", replaced_cmd);
+                        self.execute_terminal_command(&cmd_to_run);
+                        self.status_toast = Some((format!("Executed snippet: {}", snip.name), std::time::Instant::now()));
+                    } else {
+                        let cmd_to_insert = format!("{} ", replaced_cmd);
+                        self.execute_terminal_command(&cmd_to_insert);
+                        self.status_toast = Some((format!("Inserted snippet: {}", snip.name), std::time::Instant::now()));
+                    }
+                    close_vars = true;
+                }
+            }
+            self.show_snippet_vars = open && !close_vars;
+        }
+
+        // =========================================================================
+        // AUTO-HIGHLIGHT KEYWORD RULES DIALOG (ZOC Terminal Feature)
+        // =========================================================================
+        if self.show_highlight_modal {
+            let mut open = self.show_highlight_modal;
+            let mut delete_rule_idx: Option<usize> = None;
+            let mut reset_defaults = false;
+
+            egui::Window::new("🎨 Auto-Highlight Keywords (ZOC Style)")
+                .open(&mut open)
+                .default_size(Vec2::new(720.0, 560.0))
+                .min_width(660.0)
+                .max_width(740.0)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let prev_enabled = self.highlight_rules_enabled;
+                        ui.checkbox(&mut self.highlight_rules_enabled, RichText::new("Enable Real-Time Auto-Highlight in Terminal").strong());
+                        if prev_enabled != self.highlight_rules_enabled {
+                            let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                        }
+
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("🔄 Reset Default Rules").on_hover_text("Reset to standard Error, Warn, Success & Info rules").clicked() {
+                                reset_defaults = true;
+                            }
+                        });
+                    });
+
+                    ui.label(RichText::new("Automatically highlights critical log phrases (errors, warnings, successes, IPs) in real-time without modifying server shells.").size(12.0).color(Color32::from_rgb(148, 163, 184)));
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // Add / Edit Rule Row
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(17, 21, 31))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68)))
+                        .rounding(6.0)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(if self.editing_highlight_idx.is_some() { "✏ Edit Keyword:" } else { "➕ Add Keyword:" }).strong().color(Color32::from_rgb(56, 189, 248)));
+                                ui.add(TextEdit::singleline(&mut self.highlight_kw_input).hint_text("e.g. TIMEOUT, CRITICAL...").desired_width(140.0));
+
+                                ui.label("Color:");
+                                egui::ComboBox::from_id_salt("hl_color_picker")
+                                    .selected_text(match self.highlight_color_idx {
+                                        0 => "🔴 Red (Error)",
+                                        1 => "🟡 Yellow (Warn)",
+                                        2 => "🟢 Green (Success)",
+                                        3 => "🔵 Cyan (Notice)",
+                                        4 => "🟣 Magenta (Special)",
+                                        _ => "⚪ White",
+                                    })
+                                    .width(130.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.highlight_color_idx, 0, "🔴 Red (Error)");
+                                        ui.selectable_value(&mut self.highlight_color_idx, 1, "🟡 Yellow (Warn)");
+                                        ui.selectable_value(&mut self.highlight_color_idx, 2, "🟢 Green (Success)");
+                                        ui.selectable_value(&mut self.highlight_color_idx, 3, "🔵 Cyan (Notice)");
+                                        ui.selectable_value(&mut self.highlight_color_idx, 4, "🟣 Magenta (Special)");
+                                    });
+
+                                let btn_label = if self.editing_highlight_idx.is_some() { "💾 Update" } else { "➕ Add Rule" };
+                                if ui.button(RichText::new(btn_label).strong().color(Color32::from_rgb(74, 222, 128))).clicked() {
+                                    let kw = self.highlight_kw_input.trim();
+                                    if !kw.is_empty() {
+                                        let rgb = match self.highlight_color_idx {
+                                            0 => [255, 90, 90],
+                                            1 => [255, 210, 60],
+                                            2 => [80, 230, 120],
+                                            3 => [80, 210, 245],
+                                            4 => [216, 112, 240],
+                                            _ => [240, 240, 240],
+                                        };
+                                        if let Some(idx) = self.editing_highlight_idx {
+                                            if idx < self.highlight_rules.len() {
+                                                self.highlight_rules[idx].keyword = kw.to_string();
+                                                self.highlight_rules[idx].color_rgb = rgb;
+                                                self.highlight_rules[idx].whole_word = self.highlight_whole_word;
+                                                self.highlight_rules[idx].match_case = self.highlight_match_case;
+                                            }
+                                            self.editing_highlight_idx = None;
+                                        } else {
+                                            let mut r = crate::terminal::HighlightRule::new(kw, rgb[0], rgb[1], rgb[2]);
+                                            r.whole_word = self.highlight_whole_word;
+                                            r.match_case = self.highlight_match_case;
+                                            self.highlight_rules.push(r);
+                                        }
+                                        let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                                        self.highlight_kw_input.clear();
+                                    }
+                                }
+                                if self.editing_highlight_idx.is_some() {
+                                    if ui.button("✖ Cancel").clicked() {
+                                        self.editing_highlight_idx = None;
+                                        self.highlight_kw_input.clear();
+                                    }
+                                }
+                            });
+
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Options:").size(11.0).weak());
+                                ui.checkbox(&mut self.highlight_whole_word, "Match whole word only").on_hover_text("Avoid matching inside other words (e.g. 'error' won't match inside 'terror')");
+                                ui.checkbox(&mut self.highlight_match_case, "Match case sensitive").on_hover_text("Match exact casing only");
+                            });
+                        });
+
+                    ui.add_space(8.0);
+
+                    // Rules List
+                    ui.label(RichText::new("Configured Keyword Rules:").strong().size(12.5));
+                    let list_h = 170.0;
+                    ScrollArea::vertical()
+                        .id_salt("highlight_rules_scroll")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            egui::Grid::new("hl_rules_grid")
+                                .striped(true)
+                                .min_col_width(50.0)
+                                .spacing(vec2(10.0, 6.0))
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("Active").strong());
+                                    ui.label(RichText::new("Color").strong());
+                                    ui.label(RichText::new("Keyword").strong());
+                                    ui.label(RichText::new("Matching Mode").strong());
+                                    ui.label(RichText::new("Actions").strong());
+                                    ui.end_row();
+
+                                    let mut state_changed = false;
+                                    for (idx, rule) in self.highlight_rules.iter_mut().enumerate() {
+                                        let mut active = rule.enabled;
+                                        if ui.checkbox(&mut active, "").changed() {
+                                            rule.enabled = active;
+                                            state_changed = true;
+                                        }
+
+                                        let col = Color32::from_rgb(rule.color_rgb[0], rule.color_rgb[1], rule.color_rgb[2]);
+                                        ui.horizontal(|ui| {
+                                            let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
+                                            ui.painter().rect_filled(rect, 3.0, col);
+                                        });
+
+                                        ui.label(RichText::new(&rule.keyword).strong().color(col));
+
+                                        let mode_desc = match (rule.whole_word, rule.match_case) {
+                                            (true, true) => "Whole Word + Case Sensitive",
+                                            (true, false) => "Whole Word (Any Case)",
+                                            (false, true) => "Substring + Case Sensitive",
+                                            (false, false) => "Substring (Any Case)",
+                                        };
+                                        ui.label(RichText::new(mode_desc).size(11.0).color(Color32::from_rgb(148, 163, 184)));
+
+                                        ui.horizontal(|ui| {
+                                            if ui.small_button("✏ Edit").clicked() {
+                                                self.editing_highlight_idx = Some(idx);
+                                                self.highlight_kw_input = rule.keyword.clone();
+                                                self.highlight_whole_word = rule.whole_word;
+                                                self.highlight_match_case = rule.match_case;
+                                                self.highlight_color_idx = match rule.color_rgb {
+                                                    [255, 90, 90] => 0,
+                                                    [255, 210, 60] => 1,
+                                                    [80, 230, 120] => 2,
+                                                    [80, 210, 245] => 3,
+                                                    [216, 112, 240] => 4,
+                                                    _ => 0,
+                                                };
+                                            }
+                                            if ui.small_button("🗑").on_hover_text("Delete keyword").clicked() {
+                                                delete_rule_idx = Some(idx);
+                                            }
+                                        });
+                                        ui.end_row();
+                                    }
+
+                                    if state_changed {
+                                        let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                                    }
+                                });
+                        });
+
+                    if let Some(idx) = delete_rule_idx {
+                        if idx < self.highlight_rules.len() {
+                            self.highlight_rules.remove(idx);
+                            let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                        }
+                    }
+
+                    if reset_defaults {
+                        self.highlight_rules = crate::terminal::highlight::default_highlight_rules();
+                        let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                    }
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // Real-Time Live Preview Pane
+                    ui.label(RichText::new("🔬 Real-Time Terminal Rendering Preview:").strong().size(12.0).color(Color32::from_rgb(56, 189, 248)));
+                    ui.add_space(2.0);
+
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(10, 13, 20))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 48)))
+                        .rounding(4.0)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            for line in self.highlight_preview_text.lines() {
+                                let highlights = crate::terminal::widget::compute_row_syntax_highlights_with_rules(
+                                    line,
+                                    line.chars().count(),
+                                    Some(&self.highlight_rules),
+                                    self.highlight_rules_enabled,
+                                );
+                                ui.horizontal(|ui| {
+                                    let chars: Vec<char> = line.chars().collect();
+                                    let mut i = 0;
+                                    while i < chars.len() {
+                                        let color = highlights.get(i).copied().flatten().unwrap_or(Color32::from_rgb(201, 209, 217));
+                                        let mut j = i + 1;
+                                        while j < chars.len() && highlights.get(j).copied().flatten() == highlights.get(i).copied().flatten() {
+                                            j += 1;
+                                        }
+                                        let chunk: String = chars[i..j].iter().collect();
+                                        ui.label(RichText::new(chunk).monospace().size(12.0).color(color));
+                                        i = j;
+                                    }
+                                });
+                            }
+                        });
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Edit test log:").size(11.0).weak());
+                        ui.add(TextEdit::multiline(&mut self.highlight_preview_text).desired_rows(2).desired_width(560.0));
+                    });
+                });
+
+            self.show_highlight_modal = open;
         }
 
         // KEYGEN DIALOG (RustyBox KeyGen)
@@ -5420,6 +6561,17 @@ impl eframe::App for RustyBoxApp {
                             });
                             ui.add_space(6.0);
                             ui.checkbox(&mut self.paste_protection_enabled, "Display confirmation dialog when pasting multiple lines");
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                let mut hl_en = self.highlight_rules_enabled;
+                                if ui.checkbox(&mut hl_en, "Enable Auto-Highlight Keywords in Terminal (ZOC Style)").changed() {
+                                    self.highlight_rules_enabled = hl_en;
+                                    let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
+                                }
+                                if ui.button("🎨 Configure Highlight Rules...").clicked() {
+                                    self.show_highlight_modal = true;
+                                }
+                            });
                         }
                         2 => {
                             // X11 Tab
@@ -5814,5 +6966,43 @@ demouser1@vultr:~$
 
         let local_linux_screen = "longkaka@LONG-PC:~$ ls\n";
         assert!(detect_remote_session("", local_linux_screen, "LONG-PC").is_none());
+    }
+
+    #[test]
+    fn test_extract_cwd_from_title() {
+        // Unix bash style title
+        assert_eq!(extract_cwd_from_title("root@51.79.157.8: /var/log"), Some("/var/log".to_string()));
+        assert_eq!(extract_cwd_from_title("user@host: ~/projects/rustybox"), Some("~/projects/rustybox".to_string()));
+        assert_eq!(extract_cwd_from_title("admin@remote: /etc/nginx - bash"), Some("/etc/nginx".to_string()));
+        assert_eq!(extract_cwd_from_title("/home/deploy/app"), Some("/home/deploy/app".to_string()));
+
+        // Windows title
+        assert_eq!(extract_cwd_from_title("cmd.exe - C:\\Users\\Long\\Downloads"), Some("C:\\Users\\Long\\Downloads".to_string()));
+        assert_eq!(extract_cwd_from_title("D:\\temp\\RustyBox"), Some("D:\\temp\\RustyBox".to_string()));
+    }
+
+    #[test]
+    fn test_extract_cwd_from_screen() {
+        // Linux / SSH prompt format A
+        let screen_a = "total 12\ndrwxr-xr-x 2 root root 4096 Nov 5 10:00 .\nroot@ubuntu-srv:/var/www/html# ";
+        assert_eq!(extract_cwd_from_screen(screen_a), Some("/var/www/html".to_string()));
+
+        let screen_b = "deploy@vps:~/my-website$ ls\nindex.html package.json\ndeploy@vps:~/my-website$ ";
+        assert_eq!(extract_cwd_from_screen(screen_b), Some("~/my-website".to_string()));
+
+        // Linux prompt format B: [user@host /opt/docker]#
+        let screen_c = "[root@centos /opt/docker]# ";
+        assert_eq!(extract_cwd_from_screen(screen_c), Some("/opt/docker".to_string()));
+
+        // Linux prompt format C: user@host (~/app) $
+        let screen_d = "developer@srv (~/app) $ ";
+        assert_eq!(extract_cwd_from_screen(screen_d), Some("~/app".to_string()));
+
+        // Windows Command Prompt / PowerShell
+        let win_cmd = "Microsoft Windows [Version 10.0.19045.5011]\n\nC:\\Users\\Long\\Projects> ";
+        assert_eq!(extract_cwd_from_screen(win_cmd), Some("C:\\Users\\Long\\Projects".to_string()));
+
+        let win_ps = "PS D:\\temp\\RustyBox> Get-ChildItem\n";
+        assert_eq!(extract_cwd_from_screen(win_ps), Some("D:\\temp\\RustyBox".to_string()));
     }
 }
