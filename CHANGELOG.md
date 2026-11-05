@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-57] - 2026-11-05
+### Fixed & Improved (PR #2)
+- **Fix Ctrl+C egui RwLock UI Freeze Deadlock**:
+  - Tách luồng đọc `ui.input` trước khi xử lý phím, giải quyết triệt để lỗi `"unknown is not responding"` / UI freeze khi nhấn `Ctrl+C`.
+  - Phân tách rõ ràng giữa Copy Text và `SIGINT` (`\x03`): Khi có vùng bôi đen thì `Ctrl+C` copy và xóa bôi đen; khi không có vùng chọn thì gửi ngay tín hiệu ngắt `SIGINT` cho các tiến trình con (`docker compose logs`, `ping`, `tail -f`).
+  - Lọc nhiễu click chuột (< 5px) tránh việc vô tình tạo vùng chọn rỗng chặn `Ctrl+C`.
+- **Terminal Focus Locking & Split-Pane Focus Routing**:
+  - Khóa các phím `Tab`, `Escape`, `Arrow` vào terminal widget bằng `EventFilter`, chấm dứt việc nhấn `Tab` autocompletion trong shell làm nhảy focus ra ngoài giao diện.
+  - Theo dõi chính xác tiêu điểm (active tab) khi chuyển đổi và click giữa các ô trong chế độ chia màn hình (`Split Horizontal`, `Vertical`, `2x2 Grid`).
+- **Scrollback Navigation & Full History Search**:
+  - Lưu trữ bộ đệm cuộn 2.000 dòng với thanh cuộn dọc tương tác bên phải và nhãn hiển thị vị trí cuộn trôi nổi.
+  - Hỗ trợ cuộn qua chuột, phím `Shift+PageUp/PageDown`, `Shift+Up/Down`.
+  - Bôi đen chọn text xuyên trang cuộn (`cross-page selection`) với cơ chế tự động cuộn ở biên trên/dưới.
+  - Tìm kiếm toàn diện lịch sử terminal bằng phím `Ctrl+F` kèm nút điều hướng `▲ Prev` / `▼ Next`.
+- **VT100 Emulation & SSH Capabilities**:
+  - Hỗ trợ đầy đủ `DECCKM` (Application Cursor Mode `\x1bOA`..`\x1bOF`) phục vụ mượt mà cho `vim`, `less`, `htop`, `tmux`.
+  - Hỗ trợ Bracketed Paste (`\x1b[200~...\x1b[201~`) bảo vệ việc dán mã lệnh nhiều dòng.
+  - Chuẩn giao thức chuột TUI (`SGR 1006` / `X10`) và nhận diện URL `http://` / `https://` với `Ctrl+Click` để mở trình duyệt.
+  - Render chuẩn ký tự độ rộng kép (Wide Characters / Emoji / CJK) và các thuộc tính text `bold`, `dim`, `inverse`, `underline`.
+  - Kết nối toàn bộ tùy chọn cấu hình SSH nâng cao (`ssh_compression`, `tunnel_x11`, `ssh_keepalive`, `use_ssh_gateway`, `remote_command`, `log_terminal_output`) vào `PtySession`.
+
 ## [v1.3-56] - 2026-11-04
 ### Added
 - **OpenSSH Profile Import (`~/.ssh/config`) (PR #1)**:
