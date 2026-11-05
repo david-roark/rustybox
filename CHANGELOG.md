@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-56] - 2026-11-04
+### Added
+- **OpenSSH Profile Import (`~/.ssh/config`) (PR #1)**:
+  - Phân tích cú pháp chỉ thị chuẩn OpenSSH (`Host`, `HostName` hỗ trợ mở rộng `%h`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `ForwardX11`, `Compression`).
+  - Hỗ trợ khối cấu hình mặc định toàn cục `Host *`, nhiều alias trên cùng một dòng, và thứ tự ưu tiên first-match.
+  - Bổ sung nút bấm 1-click `🔑 Load ~/.ssh/config` trong hộp thoại Import và tự động nạp nội dung khi chọn tệp qua `📂 Browse...`.
+  - Thêm phím tắt / nút bấm `📥 Import` trực quan trên Main Toolbar, Sidebar Sessions, hộp thoại New Session và Home Dashboard.
+- **Home Dashboard: Recent Connections & Saved Sessions (PR #1)**:
+  - Theo dõi thời điểm kết nối gần nhất (`last_connected_at`) và số lượt kết nối (`connect_count`) cho mỗi session (tương thích ngược hoàn toàn).
+  - Tự động ghi nhận lịch sử kết nối khi khởi chạy bất kỳ terminal nào và tự động lưu phiên `Quick Connect`.
+  - Thanh tìm kiếm thời gian thực `🔍 Filter Connections` hỗ trợ lọc theo tên, host, user, hoặc folder.
+  - Mục **🕒 Recent Connections** hiển thị các máy chủ vừa kết nối (sắp xếp mới nhất lên đầu, kèm timestamp và số lần truy cập).
+  - Mục **📂 Saved Sessions** hiển thị danh bạ máy chủ lưu trữ kèm context menu chuột phải (Connect, Edit, Clear from Recent, Delete).
+
 ## [v1.3-55] - 2026-11-04
 ### Added
 - **Automated Stress Testing & Simulation Suite**:
