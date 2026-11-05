@@ -38,12 +38,22 @@ impl TerminalTheme {
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
+        let trimmed = name.trim();
         for t in Self::all() {
-            if t.name() == name {
+            if t.name().eq_ignore_ascii_case(trimmed) {
                 return Some(*t);
             }
         }
-        None
+        match trimmed.to_ascii_lowercase().as_str() {
+            "rustyboxdark" | "rustybox dark" | "default" => Some(TerminalTheme::RustyBoxDark),
+            "dracula pro" | "dracula" => Some(TerminalTheme::Dracula),
+            "solarizeddark" | "solarized dark" => Some(TerminalTheme::SolarizedDark),
+            "solarizedlight" | "solarized light" => Some(TerminalTheme::SolarizedLight),
+            "monokai" => Some(TerminalTheme::Monokai),
+            "nord" => Some(TerminalTheme::Nord),
+            "matrix" | "matrix green" => Some(TerminalTheme::Matrix),
+            _ => None,
+        }
     }
 
     pub fn default_bg(&self) -> Color32 {
@@ -118,5 +128,63 @@ pub fn ansi_256_to_color32(idx: u8, _theme: TerminalTheme) -> Color32 {
             let gray = 8 + (idx - 232) * 10;
             Color32::from_rgb(gray, gray, gray)
         }
+    }
+}
+
+/// Adjusts a terminal foreground color for VT100 `bold` (brightened) and `dim` (faint) attributes.
+pub fn apply_bold_dim(color: Color32, bold: bool, dim: bool) -> Color32 {
+    if bold && !dim {
+        Color32::from_rgba_unmultiplied(
+            color.r().saturating_add(36),
+            color.g().saturating_add(36),
+            color.b().saturating_add(36),
+            color.a(),
+        )
+    } else if dim && !bold {
+        Color32::from_rgba_unmultiplied(
+            ((color.r() as u16 * 2) / 3) as u8,
+            ((color.g() as u16 * 2) / 3) as u8,
+            ((color.b() as u16 * 2) / 3) as u8,
+            color.a(),
+        )
+    } else {
+        color
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_terminal_theme_from_name_aliases() {
+        assert_eq!(
+            TerminalTheme::from_name("RustyBox Dark (Default)"),
+            Some(TerminalTheme::RustyBoxDark)
+        );
+        assert_eq!(
+            TerminalTheme::from_name("Dracula Pro"),
+            Some(TerminalTheme::Dracula)
+        );
+        assert_eq!(
+            TerminalTheme::from_name("solarized dark"),
+            Some(TerminalTheme::SolarizedDark)
+        );
+        assert_eq!(
+            TerminalTheme::from_name("Matrix Green"),
+            Some(TerminalTheme::Matrix)
+        );
+    }
+
+    #[test]
+    fn test_apply_bold_dim_color_adjustments() {
+        let base = Color32::from_rgb(120, 150, 180);
+        let bold_c = apply_bold_dim(base, true, false);
+        assert!(bold_c.r() > base.r() && bold_c.g() > base.g() && bold_c.b() > base.b());
+
+        let dim_c = apply_bold_dim(base, false, true);
+        assert!(dim_c.r() < base.r() && dim_c.g() < base.g() && dim_c.b() < base.b());
+
+        assert_eq!(apply_bold_dim(base, false, false), base);
     }
 }

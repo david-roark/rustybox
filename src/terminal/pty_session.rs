@@ -1,12 +1,93 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::thread;
 use std::time::Duration;
+
+#[derive(Clone, Debug, Default)]
+pub struct SshSpawnConfig {
+    pub compression: bool,
+    pub keepalive: bool,
+    pub tunnel_x11: bool,
+    pub remote_command: Option<String>,
+    pub do_not_exit_after_cmd: bool,
+    pub gateway_key: Option<String>,
+    pub log_file_path: Option<PathBuf>,
+}
+
+/// Builds deterministic OpenSSH CLI arguments from session configuration.
+pub fn build_ssh_args(
+    host: &str,
+    port: u16,
+    user: &str,
+    key_path: Option<&str>,
+    jump_host: Option<&str>,
+    cfg: &SshSpawnConfig,
+) -> Vec<String> {
+    let mut args = vec![
+        "-t".to_string(),
+        "-p".to_string(),
+        port.to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+    ];
+
+    if cfg.compression {
+        args.push("-C".to_string());
+    }
+    if cfg.tunnel_x11 {
+        args.push("-X".to_string());
+    }
+    if cfg.keepalive {
+        args.push("-o".to_string());
+        args.push("ServerAliveInterval=30".to_string());
+        args.push("-o".to_string());
+        args.push("ServerAliveCountMax=3".to_string());
+    }
+
+    if let Some(key) = key_path {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            args.push("-i".to_string());
+            args.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(jh) = jump_host {
+        let trimmed = jh.trim();
+        if !trimmed.is_empty() {
+            if let Some(gw_key) = cfg.gateway_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+                args.push("-o".to_string());
+                args.push(format!("ProxyCommand=ssh -i {} -W %h:%p {}", gw_key, trimmed));
+            } else {
+                args.push("-J".to_string());
+                args.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let target = if user.trim().is_empty() {
+        host.trim().to_string()
+    } else {
+        format!("{}@{}", user.trim(), host.trim())
+    };
+    args.push(target);
+
+    if let Some(cmd) = cfg.remote_command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        if cfg.do_not_exit_after_cmd {
+            args.push(format!("{}; exec ${{SHELL:-/bin/sh}} -l", cmd));
+        } else {
+            args.push(cmd.to_string());
+        }
+    }
+
+    args
+}
 
 pub struct PtySession {
     pub parser: Arc<parking_lot::Mutex<vt100::Parser>>,
@@ -17,14 +98,27 @@ pub struct PtySession {
     pub child_pid: Option<u32>,
     pub has_new_data: Arc<AtomicBool>,
     pub child: Arc<parking_lot::Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
+    #[allow(dead_code)]
+    pub is_ssh: bool,
 }
 
 impl PtySession {
+    #[allow(dead_code)]
     pub fn spawn_local(
         rows: u16,
         cols: u16,
         custom_shell: Option<&str>,
         working_dir: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::spawn_local_with_log(rows, cols, custom_shell, working_dir, None)
+    }
+
+    pub fn spawn_local_with_log(
+        rows: u16,
+        cols: u16,
+        custom_shell: Option<&str>,
+        working_dir: Option<&str>,
+        log_file_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -67,7 +161,16 @@ impl PtySession {
         }
 
         let default_title = if cfg!(target_os = "windows") { "cmd.exe" } else { "Local Shell" };
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, default_title, None, false)?;
+        let sess = Self::spawn_from_pair_and_cmd(
+            pair,
+            cmd,
+            rows,
+            cols,
+            default_title,
+            None,
+            false,
+            log_file_path,
+        )?;
         {
             let shell_name = if cfg!(target_os = "windows") { "cmd.exe" } else { "bash" };
             let banner = format!(
@@ -83,6 +186,7 @@ impl PtySession {
         Ok(sess)
     }
 
+    #[allow(dead_code)]
     pub fn spawn_ssh(
         rows: u16,
         cols: u16,
@@ -92,6 +196,30 @@ impl PtySession {
         key_path: Option<&str>,
         jump_host: Option<&str>,
         password: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::spawn_ssh_with_config(
+            rows,
+            cols,
+            host,
+            port,
+            user,
+            key_path,
+            jump_host,
+            password,
+            &SshSpawnConfig::default(),
+        )
+    }
+
+    pub fn spawn_ssh_with_config(
+        rows: u16,
+        cols: u16,
+        host: &str,
+        port: u16,
+        user: &str,
+        key_path: Option<&str>,
+        jump_host: Option<&str>,
+        password: Option<&str>,
+        cfg: &SshSpawnConfig,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -106,8 +234,10 @@ impl PtySession {
         let mut cmd = CommandBuilder::new("ssh");
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.args(["-p", &port.to_string()]);
-        cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
+
+        for arg in build_ssh_args(host, port, user, key_path, jump_host, cfg) {
+            cmd.arg(arg);
+        }
 
         if let Some(pwd) = password {
             let clean = pwd.trim();
@@ -121,37 +251,39 @@ impl PtySession {
             }
         }
 
-        if let Some(key) = key_path {
-            if !key.trim().is_empty() {
-                cmd.args(["-i", key.trim()]);
-            }
-        }
-
-        if let Some(jh) = jump_host {
-            if !jh.trim().is_empty() {
-                cmd.args(["-J", jh.trim()]);
-            }
-        }
-
-        let target = if user.is_empty() {
-            host.to_string()
-        } else {
-            format!("{}@{}", user, host)
-        };
-        cmd.arg(target);
-
         let default_title = format!("SSH: {}@{}", user, host);
-        let sess = Self::spawn_from_pair_and_cmd(pair, cmd, rows, cols, &default_title, password.map(|p| p.to_string()), true)?;
+        let sess = Self::spawn_from_pair_and_cmd(
+            pair,
+            cmd,
+            rows,
+            cols,
+            &default_title,
+            password.map(|p| p.to_string()),
+            true,
+            cfg.log_file_path.clone(),
+        )?;
         {
+            let comp_badge = if cfg.compression {
+                "\x1b[32m✔\x1b[0m Compression"
+            } else {
+                "\x1b[90m○\x1b[0m Compression"
+            };
+            let x11_badge = if cfg.tunnel_x11 {
+                "\x1b[32m✔\x1b[0m X11 Forward"
+            } else {
+                "\x1b[90m○\x1b[0m X11 Forward"
+            };
             let banner = format!(
                 "\x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n\
                  \x1b[1;37m  Session :\x1b[0m \x1b[1;36m{}@{}:{}\x1b[0m\r\n\
-                 \x1b[32m  ✔\x1b[0m Direct SSH      \x1b[32m✔\x1b[0m Compression\r\n\
-                 \x1b[32m  ✔\x1b[0m SFTP Browser    \x1b[32m✔\x1b[0m X11 Forward\r\n\
+                 \x1b[32m  ✔\x1b[0m Direct SSH      {}\r\n\
+                 \x1b[32m  ✔\x1b[0m SFTP Browser    {}\r\n\
                  \x1b[38;5;75m────────────────────────────────────────────────────\x1b[0m\r\n",
                 if user.is_empty() { "root" } else { user },
                 host,
-                port
+                port,
+                comp_badge,
+                x11_badge
             );
             let mut p = sess.parser.lock();
             p.process(banner.as_bytes());
@@ -167,6 +299,7 @@ impl PtySession {
         initial_title: &str,
         auto_password: Option<String>,
         is_ssh: bool,
+        log_file_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let child = pair
             .slave
@@ -199,6 +332,16 @@ impl PtySession {
         let has_new_data_clone = Arc::clone(&has_new_data);
         let suppress_terminal_queries = Arc::new(AtomicBool::new(false));
         let suppress_terminal_queries_clone = Arc::clone(&suppress_terminal_queries);
+        let mut log_file = log_file_path.and_then(|path| {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        });
 
         thread::Builder::new()
             .name("pty-reader".into())
@@ -234,6 +377,10 @@ impl PtySession {
                         }
                         Ok(n) => {
                             let chunk = &buf[..n];
+                            if let Some(ref mut f) = log_file {
+                                let _ = f.write_all(chunk);
+                                let _ = f.flush();
+                            }
 
                             // ConPTY / VT terminal query handling & auto-reply
                             // ConPTY on Windows blocks startup and resize waiting for CPR (\x1b[6n)
@@ -392,9 +539,11 @@ impl PtySession {
             child_pid: pid,
             has_new_data,
             child: child_holder,
+            is_ssh,
         })
     }
 
+    #[allow(dead_code)]
     pub fn write_str(&mut self, s: &str) -> std::io::Result<()> {
         let mut w = self.writer.lock();
         w.write_all(s.as_bytes())?;
@@ -407,21 +556,30 @@ impl PtySession {
         w.flush()
     }
 
-    /// Send SIGINT (Ctrl+C) to child process group
+    /// Send SIGINT (Ctrl+C) to the foreground process group via PTY master (\x03)
     pub fn send_sigint(&mut self) -> std::io::Result<()> {
-        // 1. Send \x03 to PTY master
-        let _ = self.write_bytes(b"\x03");
+        self.write_bytes(b"\x03")
+    }
 
-        // 2. On Unix/Linux, also send SIGINT to child PID via kill command to guarantee interruption
-        #[cfg(not(target_os = "windows"))]
-        if let Some(pid) = self.child_pid {
-            let _ = std::process::Command::new("kill")
-                .args(["-2", &pid.to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        Ok(())
+    /// Pastes text into the PTY, snapping scrollback to 0 and wrapping in Bracketed Paste
+    /// (`\x1b[200~...\x1b[201~`) if the active shell/TUI has enabled bracketed paste mode.
+    pub fn paste_text(&mut self, text: &str) -> std::io::Result<Vec<u8>> {
+        let bracketed = {
+            let mut p = self.parser.lock();
+            p.screen_mut().set_scrollback(0);
+            p.screen().bracketed_paste()
+        };
+        let bytes = if bracketed {
+            let mut out = Vec::with_capacity(text.len() + 12);
+            out.extend_from_slice(b"\x1b[200~");
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+            out
+        } else {
+            text.as_bytes().to_vec()
+        };
+        self.write_bytes(&bytes)?;
+        Ok(bytes)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -527,5 +685,174 @@ mod tests {
         assert!(!is_ssh_password_prompt(b"root@ubuntu:~# "));
         assert!(!is_ssh_password_prompt(b"Last login: Sun Nov  1 10:00:00 2026\n"));
         assert!(!is_ssh_password_prompt(b"Please enter your choice [1-5]: "));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_send_sigint_interrupts_foreground_process() {
+        let mut sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+            .expect("Failed to spawn local PTY session");
+        std::thread::sleep(Duration::from_millis(120));
+
+        // Start a foreground loop simulating `docker logs -f` that traps SIGINT or exits on Ctrl+C,
+        // then run an echo command after Ctrl+C to prove the shell recovered control.
+        sess.write_str("sh -c 'trap \"echo SIGINT_CAUGHT; exit 0\" INT; echo STREAM_READY; while :; do sleep 1; done'\n")
+            .expect("Failed to write command");
+
+        let mut ready = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("STREAM_READY") {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "Foreground streaming process did not start");
+
+        // Send Ctrl+C (SIGINT)
+        sess.send_sigint().expect("Failed to send SIGINT");
+
+        let mut interrupted = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("SIGINT_CAUGHT") {
+                interrupted = true;
+                break;
+            }
+        }
+        assert!(
+            interrupted,
+            "Foreground process was not interrupted by Ctrl+C (send_sigint)"
+        );
+        assert!(
+            sess.is_alive(),
+            "Parent shell should remain alive after interrupting foreground command"
+        );
+        sess.kill();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_pty_ctrl_c_cancels_partial_input_and_resize_updates_screen() {
+        let mut sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+            .expect("Failed to spawn local PTY session");
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Resize terminal to 40x120 and verify parser size updates
+        sess.resize(40, 120);
+        {
+            let p = sess.parser.lock();
+            let (r, c) = p.screen().size();
+            assert_eq!(r.get(), 40);
+            assert_eq!(c.get(), 120);
+        }
+
+        // Write a partial command WITHOUT newline, then send Ctrl+C to cancel it, then run echo
+        sess.write_str("echo SHOULD_NOT_RUN_")
+            .expect("Failed to write partial command");
+        std::thread::sleep(Duration::from_millis(50));
+        sess.send_sigint().expect("Failed to send SIGINT");
+        std::thread::sleep(Duration::from_millis(50));
+        sess.write_str("echo AFTER_SIGINT_OK\n")
+            .expect("Failed to write post-sigint command");
+
+        let mut found_after = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            let contents = sess.parser.lock().screen().contents();
+            if contents.contains("AFTER_SIGINT_OK") {
+                found_after = true;
+                break;
+            }
+        }
+        assert!(found_after, "Command after Ctrl+C did not execute");
+        sess.kill();
+    }
+
+    #[test]
+    fn test_build_ssh_args_advanced_options() {
+        let cfg = SshSpawnConfig {
+            compression: true,
+            keepalive: true,
+            tunnel_x11: true,
+            remote_command: Some("tmux attach || tmux new".to_string()),
+            do_not_exit_after_cmd: true,
+            gateway_key: None,
+            log_file_path: None,
+        };
+        let args = build_ssh_args(
+            "10.0.0.5",
+            2222,
+            "deploy",
+            Some("/home/user/.ssh/id_ed25519"),
+            Some("bastion@1.2.3.4:22"),
+            &cfg,
+        );
+        assert!(args.contains(&"-C".to_string()));
+        assert!(args.contains(&"-X".to_string()));
+        assert!(args.contains(&"ServerAliveInterval=30".to_string()));
+        assert!(args.contains(&"-J".to_string()));
+        assert!(args.contains(&"bastion@1.2.3.4:22".to_string()));
+        assert!(args.contains(&"deploy@10.0.0.5".to_string()));
+        assert_eq!(
+            args.last().unwrap(),
+            "tmux attach || tmux new; exec ${SHELL:-/bin/sh} -l"
+        );
+
+        // With gateway_key set, ProxyCommand should be used instead of -J
+        let cfg_gw_key = SshSpawnConfig {
+            gateway_key: Some("/home/user/.ssh/bastion_key".to_string()),
+            ..cfg
+        };
+        let args_gw = build_ssh_args(
+            "10.0.0.5",
+            22,
+            "root",
+            None,
+            Some("ops@bastion.local:22"),
+            &cfg_gw_key,
+        );
+        assert!(args_gw
+            .iter()
+            .any(|a| a.starts_with("ProxyCommand=ssh -i /home/user/.ssh/bastion_key")));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_paste_text_bracketed_and_output_logging() {
+        let log_path = std::env::temp_dir().join(format!(
+            "rustybox_pty_log_{}.log",
+            uuid::Uuid::new_v4()
+        ));
+        let mut sess =
+            PtySession::spawn_local_with_log(24, 80, Some("/bin/sh"), None, Some(log_path.clone()))
+                .expect("Failed to spawn local PTY with log");
+        std::thread::sleep(Duration::from_millis(80));
+
+        // Enable bracketed paste mode (\x1b[?2004h) on parser and verify paste_text wraps with \x1b[200~..\x1b[201~
+        sess.parser.lock().process(b"\x1b[?2004h");
+        let sent = sess
+            .paste_text("echo LOG_TEST_OK\n")
+            .expect("Failed to paste text");
+        assert!(sent.starts_with(b"\x1b[200~"));
+        assert!(sent.ends_with(b"\x1b[201~"));
+
+        // Also send plain newline command so shell executes and writes to log file
+        sess.write_str("\necho LOG_FILE_VERIFIED\n").unwrap();
+        let mut logged = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(40));
+            if let Ok(data) = std::fs::read_to_string(&log_path) {
+                if data.contains("LOG_FILE_VERIFIED") {
+                    logged = true;
+                    break;
+                }
+            }
+        }
+        sess.kill();
+        let _ = std::fs::remove_file(&log_path);
+        assert!(logged, "Session output was not written to log_file_path");
     }
 }
