@@ -2396,7 +2396,11 @@ impl eframe::App for RustyBoxApp {
 
         // 5. LEFT SIDEBAR (Sessions Tree & SFTP Explorer)
         if self.show_sftp_sidebar {
-            egui::SidePanel::left("left_sidebar")
+            let max_sidebar_w = (ctx.screen_rect().width() * 0.50).max(280.0);
+            ctx.style_mut(|s| {
+                s.interaction.resize_grab_radius_side = 8.0;
+            });
+            let sidebar_resp = egui::SidePanel::left("left_sidebar")
                 .frame(
                     egui::Frame::none()
                         .fill(Color32::from_rgb(14, 18, 25))
@@ -2405,7 +2409,7 @@ impl eframe::App for RustyBoxApp {
                 )
                 .resizable(true)
                 .default_width(260.0)
-                .width_range(180.0..=450.0)
+                .width_range(180.0..=max_sidebar_w)
                 .show(ctx, |ui| {
                     // Modern segmented pill switcher
                     egui::Frame::none()
@@ -2763,6 +2767,23 @@ impl eframe::App for RustyBoxApp {
                         render_sftp_sidebar(ui, &mut self.explorer);
                     }
                 });
+
+            // Visual splitter handle & cursor feedback on right border of sidebar
+            let r_edge = sidebar_resp.response.rect.right();
+            let splitter_rect = egui::Rect::from_min_max(
+                pos2(r_edge - 4.0, sidebar_resp.response.rect.top()),
+                pos2(r_edge + 4.0, sidebar_resp.response.rect.bottom()),
+            );
+            let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+            let is_splitter_hovered = mouse_pos.map_or(false, |p| splitter_rect.contains(p));
+            if is_splitter_hovered {
+                ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sidebar_splitter_indicator")));
+                painter.line_segment(
+                    [pos2(r_edge, sidebar_resp.response.rect.top()), pos2(r_edge, sidebar_resp.response.rect.bottom())],
+                    egui::Stroke::new(2.0, Color32::from_rgb(56, 189, 248)),
+                );
+            }
         }
 
         // 6. CENTER WORKSPACE (Tabs Header, Search Bar & Terminals Grid)
