@@ -476,6 +476,7 @@ pub struct RustyBoxApp {
     theme: TerminalTheme,
     ui_scale: f32,
     font_size: f32,
+    terminal_font_family: String,
     search_open: bool,
     search_query: String,
     // Multi-line paste confirmation (MobaXterm TFORMCHECKCLIPBOARD)
@@ -569,39 +570,17 @@ pub struct RustyBoxApp {
 
 impl RustyBoxApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Configure embedded Unicode fonts for full Vietnamese diacritics & international symbols
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "noto_sans_mono".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSansMono.ttf"))),
-        );
-        fonts.font_data.insert(
-            "ubuntu_mono".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/UbuntuMono.ttf"))),
-        );
-        fonts.font_data.insert(
-            "dejavu_sans_mono".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSansMono.ttf"))),
-        );
-        fonts.font_data.insert(
-            "dejavu_sans".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSans.ttf"))),
-        );
-
-        // Prioritize Noto Sans Mono & Ubuntu Mono for complete Vietnamese Unicode coverage in Terminal
-        let mono = fonts.families.entry(egui::FontFamily::Monospace).or_default();
-        mono.insert(0, "dejavu_sans_mono".to_owned());
-        mono.insert(0, "ubuntu_mono".to_owned());
-        mono.insert(0, "noto_sans_mono".to_owned());
-
-        // Put DejaVu Sans at top of Proportional family for crisp UI text
-        let prop = fonts.families.entry(egui::FontFamily::Proportional).or_default();
-        prop.insert(0, "dejavu_sans".to_owned());
-
-        cc.egui_ctx.set_fonts(fonts);
-
         let storage = StorageManager::new();
         let config = storage.load_config();
+        let terminal_font_family = if !config.terminal_font_family.is_empty() {
+            config.terminal_font_family.clone()
+        } else {
+            "noto_sans_mono".to_string()
+        };
+
+        // Configure embedded Unicode fonts for full Vietnamese diacritics & international symbols
+        crate::terminal::fonts::setup_terminal_fonts(&cc.egui_ctx, &terminal_font_family);
+
         let mut sessions = config.sessions.clone();
         let credentials = config.credentials.clone();
         let ui_scale = if config.ui_scale >= 0.7 && config.ui_scale <= 2.5 { config.ui_scale } else { 1.0 };
@@ -697,6 +676,7 @@ impl RustyBoxApp {
             theme,
             ui_scale,
             font_size,
+            terminal_font_family,
             search_open: false,
             search_query: String::new(),
             pending_paste_text: None,
@@ -1951,16 +1931,16 @@ impl eframe::App for RustyBoxApp {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Equals)) {
             self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Minus)) {
             self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Num0)
             || i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0)) {
             self.ui_scale = 1.0;
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
         }
 
         // Global Keyboard Shortcuts
@@ -2224,6 +2204,17 @@ impl eframe::App for RustyBoxApp {
                         ui.close_menu();
                     }
                     ui.separator();
+                    ui.menu_button("🔤 Terminal Font", |ui| {
+                        for opt in crate::terminal::fonts::AVAILABLE_TERMINAL_FONTS {
+                            let is_selected = self.terminal_font_family == opt.id;
+                            if ui.selectable_label(is_selected, opt.name).clicked() {
+                                self.terminal_font_family = opt.id.to_string();
+                                crate::terminal::fonts::setup_terminal_fonts(ui.ctx(), &self.terminal_font_family);
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                     if ui.button("➕ Increase Font Size\tCtrl++").clicked() {
                         self.font_size = (self.font_size + 1.0).min(28.0);
                         ui.close_menu();
@@ -2260,17 +2251,17 @@ impl eframe::App for RustyBoxApp {
                     ui.menu_button("🔍 UI Font & Zoom Scale", |ui| {
                         if ui.button("➕ Zoom In UI (+10%)\tCtrl+Shift++").clicked() {
                             self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                             ui.close_menu();
                         }
                         if ui.button("➖ Zoom Out UI (-10%)\tCtrl+Shift+-").clicked() {
                             self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                             ui.close_menu();
                         }
                         if ui.button("↺ Reset Zoom (100%)\tCtrl+0").clicked() {
                             self.ui_scale = 1.0;
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                             ui.close_menu();
                         }
                         ui.separator();
@@ -2278,7 +2269,7 @@ impl eframe::App for RustyBoxApp {
                             let label = format!("{:.0}%{}", scale * 100.0, if (self.ui_scale - scale).abs() < 0.02 { "  ✓" } else { "" });
                             if ui.selectable_label((self.ui_scale - scale).abs() < 0.02, label).clicked() {
                                 self.ui_scale = scale;
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 ui.close_menu();
                             }
                         }
@@ -2293,7 +2284,7 @@ impl eframe::App for RustyBoxApp {
                                         s.terminal_color_scheme = t.name().to_string();
                                     }
                                 }
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 ui.ctx().request_repaint();
                                 ui.close_menu();
                             }
@@ -2612,18 +2603,18 @@ impl eframe::App for RustyBoxApp {
                                 ui.label(RichText::new("UI:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
                                 if ui.small_button("➖").on_hover_text("Zoom out UI font (Ctrl+Shift+-)").clicked() && self.ui_scale > 0.75 {
                                     self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 }
                                 let pct = (self.ui_scale * 100.0).round() as i32;
                                 if ui.button(RichText::new(format!("{}%", pct)).size(11.0).strong())
                                     .on_hover_text("Click to reset UI Zoom to 100%")
                                     .clicked() {
                                     self.ui_scale = 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 }
                                 if ui.small_button("➕").on_hover_text("Zoom in UI font (Ctrl+Shift++)").clicked() && self.ui_scale < 2.0 {
                                     self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 }
 
                                 ui.separator();
@@ -2632,12 +2623,12 @@ impl eframe::App for RustyBoxApp {
                                 ui.label(RichText::new("Term:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
                                 if ui.small_button("➖").on_hover_text("Decrease terminal font size (Ctrl+-)").clicked() && self.font_size > 8.0 {
                                     self.font_size -= 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 }
                                 ui.label(RichText::new(format!("{:.0}px", self.font_size)).size(11.0).strong());
                                 if ui.small_button("➕").on_hover_text("Increase terminal font size (Ctrl++)").clicked() && self.font_size < 32.0 {
                                     self.font_size += 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 }
                             });
                         });
@@ -2665,7 +2656,7 @@ impl eframe::App for RustyBoxApp {
                                     }
                                 });
                             if self.theme != prev_theme {
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                 ui.ctx().request_repaint();
                             }
                         });
@@ -4189,6 +4180,13 @@ impl eframe::App for RustyBoxApp {
                     .map(|s| s.terminal_font_size as f32)
                     .filter(|&sz| sz >= 9.0 && (font_sz - 14.0).abs() < 0.1)
                     .unwrap_or(font_sz);
+                let eff_font_family = tab
+                    .session_def
+                    .as_ref()
+                    .map(|s| s.terminal_font_family.as_str())
+                    .filter(|f| !f.is_empty())
+                    .map(crate::terminal::fonts::get_terminal_font_family)
+                    .unwrap_or(egui::FontFamily::Monospace);
                 let bs_ctrl_h = tab
                     .session_def
                     .as_ref()
@@ -4197,6 +4195,7 @@ impl eframe::App for RustyBoxApp {
 
                 let widget = TerminalWidget::new(&tab.id, &mut tab.session)
                     .with_font_size(eff_font)
+                    .with_font_family(eff_font_family)
                     .with_theme(eff_theme)
                     .with_search(search_ref)
                     .with_active_pane(is_active)
@@ -6698,10 +6697,44 @@ impl eframe::App for RustyBoxApp {
                             ui.label(RichText::new("Default Terminal Settings").strong());
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
+                                ui.label("Terminal Font:");
+                                let prev_font = self.terminal_font_family.clone();
+                                egui::ComboBox::from_id_salt("global_settings_terminal_font")
+                                    .selected_text(crate::terminal::fonts::terminal_font_display_name(&self.terminal_font_family))
+                                    .width(220.0)
+                                    .show_ui(ui, |ui| {
+                                        for opt in crate::terminal::fonts::AVAILABLE_TERMINAL_FONTS {
+                                            let is_selected = self.terminal_font_family == opt.id;
+                                            if ui.selectable_label(is_selected, format!("{} — {}", opt.name, opt.description)).clicked() {
+                                                self.terminal_font_family = opt.id.to_string();
+                                            }
+                                        }
+                                    });
+                                if self.terminal_font_family != prev_font {
+                                    crate::terminal::fonts::setup_terminal_fonts(ui.ctx(), &self.terminal_font_family);
+                                }
+                            });
+                            ui.horizontal(|ui| {
                                 ui.label("Default Terminal Font Size:");
                                 ui.add(egui::DragValue::new(&mut self.font_size).range(9.0..=28.0).speed(0.5));
                                 ui.label("px");
                             });
+                            ui.add_space(2.0);
+                            ui.group(|ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Font Preview:").weak().size(11.0));
+                                    ui.label(RichText::new(format!("({} @ {:.0}px)", crate::terminal::fonts::terminal_font_display_name(&self.terminal_font_family), self.font_size)).weak().size(11.0));
+                                });
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new("The quick brown fox jumps over the lazy dog\n0123456789 |-> != == <= >= && ||\nTiếng Việt: Thử nghiệm font chữ hiển thị chuẩn Unicode tiếng Việt (á, ế, ơ, ư, ộ, ễ)")
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(self.font_size.min(16.0))
+                                        .color(Color32::from_rgb(56, 189, 248))
+                                );
+                            });
+                            ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 ui.label("Terminal Color Scheme:");
                                 for t in crate::terminal::vt_screen::TerminalTheme::all() {
@@ -6711,7 +6744,7 @@ impl eframe::App for RustyBoxApp {
                                                 s.terminal_color_scheme = t.name().to_string();
                                             }
                                         }
-                                        let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                                        let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                                         ui.ctx().request_repaint();
                                     }
                                 }
@@ -6800,7 +6833,7 @@ impl eframe::App for RustyBoxApp {
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("💾 Save Preferences").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
                             let _ = self.storage.save_sessions(&self.sessions);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
                             close_dialog = true;
                         }
                         if ui.button("Close").clicked() {

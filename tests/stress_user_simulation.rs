@@ -84,6 +84,7 @@ fn test_stress_session_crud_100_cycles() {
             do_not_exit_after_cmd: false,
             ssh_compression: true,
             terminal_font_size: 14,
+            terminal_font_family: String::new(),
             terminal_color_scheme: "RustyBoxDark".into(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,

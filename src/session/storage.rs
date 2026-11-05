@@ -24,6 +24,10 @@ fn default_font_size() -> f32 {
     14.0
 }
 
+fn default_terminal_font_family() -> String {
+    "noto_sans_mono".to_string()
+}
+
 fn default_theme_name() -> String {
     "RustyBox Dark (Default)".to_string()
 }
@@ -149,6 +153,8 @@ pub struct RustyBoxConfig {
     pub ui_scale: f32,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    #[serde(default = "default_terminal_font_family")]
+    pub terminal_font_family: String,
     #[serde(default = "default_theme_name")]
     pub theme_name: String,
     #[serde(default = "default_true")]
@@ -176,6 +182,7 @@ impl Default for RustyBoxConfig {
             version: default_version(),
             ui_scale: default_ui_scale(),
             font_size: default_font_size(),
+            terminal_font_family: default_terminal_font_family(),
             theme_name: default_theme_name(),
             paste_protection_enabled: true,
             quick_macros: default_quick_macros(),
@@ -331,10 +338,18 @@ impl StorageManager {
         self.save_config(&cfg)
     }
 
-    pub fn save_preferences(&self, ui_scale: f32, font_size: f32, theme_name: &str, paste_protection: bool) -> Result<(), String> {
+    pub fn save_preferences(
+        &self,
+        ui_scale: f32,
+        font_size: f32,
+        terminal_font_family: &str,
+        theme_name: &str,
+        paste_protection: bool,
+    ) -> Result<(), String> {
         let mut cfg = self.load_config();
         cfg.ui_scale = ui_scale;
         cfg.font_size = font_size;
+        cfg.terminal_font_family = terminal_font_family.to_string();
         cfg.theme_name = theme_name.to_string();
         cfg.paste_protection_enabled = paste_protection;
         self.save_config(&cfg)
@@ -760,13 +775,15 @@ mod tests {
         let cfg = storage.load_config();
         assert_eq!(cfg.ui_scale, 1.0);
         assert_eq!(cfg.font_size, 14.0);
+        assert_eq!(cfg.terminal_font_family, "noto_sans_mono");
 
         // Update preferences
-        storage.save_preferences(1.25, 16.0, "Dracula", false).unwrap();
+        storage.save_preferences(1.25, 16.0, "ubuntu_mono", "Dracula", false).unwrap();
 
         let loaded = storage.load_config();
         assert_eq!(loaded.ui_scale, 1.25);
         assert_eq!(loaded.font_size, 16.0);
+        assert_eq!(loaded.terminal_font_family, "ubuntu_mono");
         assert_eq!(loaded.theme_name, "Dracula");
         assert_eq!(loaded.paste_protection_enabled, false);
 

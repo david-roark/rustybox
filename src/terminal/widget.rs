@@ -8,6 +8,7 @@ use egui::{
 pub struct TerminalWidget<'a> {
     session: &'a mut PtySession,
     pub font_size: f32,
+    pub font_family: FontFamily,
     pub search_query: Option<&'a str>,
     pub theme: TerminalTheme,
     pub tab_id: String,
@@ -37,6 +38,7 @@ impl<'a> TerminalWidget<'a> {
         Self {
             session,
             font_size: 14.0,
+            font_family: FontFamily::Monospace,
             search_query: None,
             theme: TerminalTheme::RustyBoxDark,
             tab_id: tab_id.to_string(),
@@ -46,6 +48,11 @@ impl<'a> TerminalWidget<'a> {
             highlight_rules: None,
             highlight_enabled: true,
         }
+    }
+
+    pub fn with_font_family(mut self, family: FontFamily) -> Self {
+        self.font_family = family;
+        self
     }
 
     pub fn with_highlight_rules(mut self, rules: Option<&'a [HighlightRule]>, enabled: bool) -> Self {
@@ -99,7 +106,7 @@ impl<'a> TerminalWidget<'a> {
         let mut action = TerminalAction::None;
 
         // Dynamic Monospace font setup
-        let font_id = FontId::new(self.font_size, FontFamily::Monospace);
+        let font_id = FontId::new(self.font_size, self.font_family.clone());
         let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M')).max(6.0);
         let row_height = ui.fonts(|f| f.row_height(&font_id)).max(12.0);
 
