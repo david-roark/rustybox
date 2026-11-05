@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-73] - 2026-11-05
+### Fixed & Improved (UI Polish)
+- **Nới rộng kích thước thẻ Recent Connections & Home Cards**:
+  - Tăng chiều cao thẻ kết nối gần đây từ `56px` lên `70px`, nới lỏng giới hạn clip rect; loại bỏ hoàn toàn hiện tượng dòng thứ 3 (thời gian và số lần kết nối `🕒 YYYY-MM-DD HH:mm (Nx)`) bị cấn đáy và cắt ngang nửa dưới chữ số.
+  - Mở rộng chiều rộng thẻ từ `236px` lên `270px` (tổng bề rộng lưới 3 cột đạt `834px`), tăng thêm 34px không gian bề ngang cho mỗi thẻ, giúp tên máy chủ, tài khoản và nhãn thư mục phân loại (`[folder]`) hiển thị trọn vẹn, không bị tràn hay hiển thị dấu ba chấm (`...`).
+
+---
+
+## [v1.3-72] - 2026-11-05
+### Fixed & Improved (Windows Experience & UI Polish)
+- **Ẩn hoàn toàn cửa sổ Console phụ trên Windows**:
+  - Khai báo chỉ thị `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` trong `src/main.rs`.
+  - Chuyển đổi PE Subsystem sang `Windows GUI` thuần túy, loại bỏ hoàn toàn cửa sổ dòng lệnh đen chạy ngầm khi mở file `.exe` từ Windows Explorer.
+- **Tự động mở Maximize khi khởi động**:
+  - Gỡ bỏ giới hạn kích thước cố định `with_inner_size` gây ghi đè cờ phóng to cửa sổ của hệ điều hành.
+  - Bổ sung lệnh gửi viewport command `ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true))` ngay ở khung hình đầu tiên, đảm bảo ứng dụng luôn hiển thị toàn màn hình tối ưu không gian làm việc.
+- **Căn chỉnh hoàn hảo khối Action Cards trên Home Dashboard**:
+  - Điều chỉnh layout con của 6 thẻ công cụ chính từ `Align::Center` sang `Align::Min`, căn thẳng hàng ngang chính xác giữa khung icon badge và dòng tiêu đề.
+  - Chuẩn hóa chiều cao card `card_h` về 68px với khoảng đệm trên/dưới cân đối (10px).
+  - Cố định `item_spacing.x = card_spacing` cho cả 2 hàng Action Cards và khối Recent Connections, loại bỏ hoàn toàn hiện tượng lệch bước ngang.
+
+---
+
 ## [v1.3-68] - 2026-11-05
 ### Added & Improved (PR #3 & UI Polish)
 - **Merge Pull Request #3 from Dtech (SFTP Pool & Transfer Resilience)**:

@@ -516,6 +516,7 @@ pub struct RustyBoxApp {
     last_synced_tab_id: Option<String>,
     last_synced_is_home: bool,
     last_synced_tab_idx: usize,
+    is_maximized_requested: bool,
     connect_as_target: Option<(Session, String)>,
     rename_session_target: Option<(String, String)>,
     rename_folder_target: Option<(String, String)>,
@@ -708,6 +709,7 @@ impl RustyBoxApp {
             last_synced_tab_id: None,
             last_synced_is_home: true,
             last_synced_tab_idx: 0,
+            is_maximized_requested: false,
             connect_as_target: None,
             rename_session_target: None,
             rename_folder_target: None,
@@ -1921,6 +1923,12 @@ impl RustyBoxApp {
 
 impl eframe::App for RustyBoxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Enforce Window Maximized on launch
+        if !self.is_maximized_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            self.is_maximized_requested = true;
+        }
+
         // Enforce UI zoom / font scale factor
         ctx.set_zoom_factor(self.ui_scale);
 
@@ -2117,7 +2125,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-68")
+                                RichText::new("v1.3-73")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -3669,10 +3677,10 @@ impl eframe::App for RustyBoxApp {
                 });
                 ui.add_space(18.0);
 
-                let card_w: f32 = 236.0;
-                let card_h: f32 = 74.0;
+                let card_w: f32 = 270.0;
+                let card_h: f32 = 70.0;
                 let card_spacing: f32 = 12.0;
-                let total_card_grid_w: f32 = card_w * 3.0 + card_spacing * 2.0; // 732.0
+                let total_card_grid_w: f32 = card_w * 3.0 + card_spacing * 2.0; // 834.0
 
                 let avail_w = ui.available_width();
                 let content_w = total_card_grid_w.min((avail_w - 24.0).max(300.0));
@@ -3801,11 +3809,12 @@ impl eframe::App for RustyBoxApp {
 
                         ui.allocate_new_ui(
                             egui::UiBuilder::new()
-                                .max_rect(rect.shrink(8.0))
-                                .layout(Layout::left_to_right(Align::Center)),
+                                .max_rect(rect.shrink(10.0))
+                                .layout(Layout::left_to_right(Align::Min)),
                             |c_ui| {
                                 c_ui.set_clip_rect(c_ui.clip_rect().intersect(rect.shrink(4.0)));
-                                // Icon badge container
+                                c_ui.spacing_mut().item_spacing.x = 10.0;
+                                // Icon badge container - aligned directly with top of card content
                                 let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
                                 c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
                                 c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0, tint));
@@ -3817,15 +3826,15 @@ impl eframe::App for RustyBoxApp {
                                     Color32::WHITE,
                                 );
 
-                                c_ui.add_space(8.0);
-                                c_ui.vertical(|ui| {
+                                c_ui.vertical(|v_ui| {
+                                    v_ui.spacing_mut().item_spacing.y = 3.0;
                                     let tc = if is_hovered {
                                         Color32::from_rgb(56, 189, 248)
                                     } else {
                                         Color32::WHITE
                                     };
-                                    ui.label(RichText::new(title).strong().size(12.5).color(tc));
-                                    ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(148, 163, 184)));
+                                    v_ui.label(RichText::new(title).strong().size(12.5).color(tc));
+                                    v_ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(148, 163, 184)));
                                 });
                             },
                         );
@@ -3834,15 +3843,14 @@ impl eframe::App for RustyBoxApp {
 
                     // Row 1: Local Terminal, SSH Client, SFTP Browser
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = card_spacing;
                         if modern_card(ui, "💻", "Local Terminal", "Interactive shell with ConPTY", Color32::from_rgb(56, 189, 248), card_w, card_h).clicked() {
                             self.spawn_local_terminal("Local Terminal", None, None);
                             self.is_home_active = false;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🌐", "SSH Client", "Key auth & auto-SFTP stream", Color32::from_rgb(96, 165, 250), card_w, card_h).clicked() {
                             self.new_session_dialog.open_for_new();
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "📁", "SFTP Browser", "Dual-pane remote file manager", Color32::from_rgb(52, 211, 153), card_w, card_h).clicked() {
                             self.show_sftp_sidebar = true;
                             self.sidebar_tab = 1;
@@ -3853,15 +3861,14 @@ impl eframe::App for RustyBoxApp {
 
                     // Row 2: Network Scanner, SSH Tunnels, Network Daemons
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = card_spacing;
                         if modern_card(ui, "📡", "Network Scanner", "Subnet IP discovery & Port Scan", Color32::from_rgb(251, 191, 36), card_w, card_h).clicked() {
                             self.show_network_tools = true;
                             self.net_tools_tab = 1;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🔀", "SSH Tunnels", "Local, remote & SOCKS5 proxy", Color32::from_rgb(192, 132, 252), card_w, card_h).clicked() {
                             self.show_tunnels = true;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🕊", "Network Daemons", "Micro HTTP, TFTP & Syslog", Color32::from_rgb(244, 114, 182), card_w, card_h).clicked() {
                             self.show_services_modal = true;
                         }
@@ -3892,7 +3899,7 @@ impl eframe::App for RustyBoxApp {
                             SessionType::Ftp { .. } => "📁",
                             _ => "🔑",
                         };
-                        let (q_rect, q_resp) = ui.allocate_exact_size(vec2(card_w, 56.0), egui::Sense::click());
+                        let (q_rect, q_resp) = ui.allocate_exact_size(vec2(card_w, card_h), egui::Sense::click());
                         let is_h = q_resp.hovered();
                         let bg = if is_h { Color32::from_rgb(26, 36, 54) } else { Color32::from_rgb(18, 23, 33) };
                         let border = if is_h {
@@ -3904,14 +3911,15 @@ impl eframe::App for RustyBoxApp {
 
                         ui.allocate_new_ui(
                             egui::UiBuilder::new()
-                                .max_rect(q_rect.shrink(7.0))
-                                .layout(Layout::left_to_right(Align::Center)),
+                                .max_rect(q_rect.shrink(8.0))
+                                .layout(Layout::left_to_right(Align::Min)),
                             |c_ui| {
-                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(q_rect.shrink(4.0)));
+                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(q_rect.shrink(2.0)));
+                                c_ui.spacing_mut().item_spacing.x = 8.0;
                                 c_ui.label(RichText::new(icon).size(16.0));
-                                c_ui.add_space(6.0);
                                 c_ui.vertical(|v_ui| {
-                                    v_ui.set_max_width((q_rect.width() - 38.0).max(80.0));
+                                    v_ui.spacing_mut().item_spacing.y = 2.0;
+                                    v_ui.set_max_width((q_rect.width() - 32.0).max(80.0));
                                     v_ui.horizontal(|h_ui| {
                                         let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
                                         h_ui.add(egui::Label::new(RichText::new(&s.name).strong().size(11.5).color(title_col)).truncate());
@@ -3981,10 +3989,8 @@ impl eframe::App for RustyBoxApp {
                     } else {
                         for chunk in recent_sessions.chunks(3) {
                             ui.horizontal(|ui| {
-                                for (i, s) in chunk.iter().enumerate() {
-                                    if i > 0 {
-                                        ui.add_space(card_spacing);
-                                    }
+                                ui.spacing_mut().item_spacing.x = card_spacing;
+                                for s in chunk {
                                     let q_resp = render_session_card(ui, s, true);
                                     if q_resp.clicked() {
                                         to_launch_quick = Some((*s).clone());
