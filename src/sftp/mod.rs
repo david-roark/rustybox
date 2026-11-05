@@ -200,6 +200,12 @@ impl FileExplorer {
         self.entries.clear();
         self.entries.extend(dirs);
         self.entries.extend(files);
+
+        if let Some(ref sel) = self.selected_file {
+            if !self.entries.iter().any(|e| &e.path == sel) {
+                self.selected_file = None;
+            }
+        }
     }
 
     pub fn toggle_show_hidden(&mut self) {
@@ -350,6 +356,11 @@ impl FileExplorer {
             .or_else(|| trimmed.strip_suffix('%'))?
             .trim_end();
 
+        // Guard against commands typed after a prompt that also happen to end in $/#!/%
+        if without_sigil.contains("$ ") || without_sigil.contains("# ") || without_sigil.contains("% ") {
+            return None;
+        }
+
         let raw_dir = if let Some(without_bracket) = without_sigil.strip_suffix(']') {
             let (_, dir_part) = without_bracket.rsplit_once(' ')?;
             dir_part.trim()
@@ -358,7 +369,9 @@ impl FileExplorer {
             dir_part.trim()
         };
 
-        if raw_dir.is_empty() {
+        if raw_dir.is_empty()
+            || raw_dir.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '$' | ';' | '|'))
+        {
             return None;
         }
 
@@ -529,7 +542,9 @@ impl FileExplorer {
     }
 
     pub fn open_editor(&mut self, path: PathBuf) {
-        if self.entries.iter().any(|e| e.path == path && e.is_dir) {
+        if self.entries.iter().any(|e| e.path == path && e.is_dir)
+            || self.remote_raw_entries.iter().any(|e| e.path == path && e.is_dir)
+        {
             return;
         }
         if self.is_remote {
@@ -539,6 +554,19 @@ impl FileExplorer {
                 client.lock().read_file(&path_str);
             }
             return;
+        }
+
+        const MAX_EDITOR_BYTES: u64 = 2 * 1024 * 1024;
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.is_dir() {
+                return;
+            }
+            if meta.len() > MAX_EDITOR_BYTES {
+                self.error_message = Some(
+                    "File is too large for Quick Editor (> 2 MB).".to_string(),
+                );
+                return;
+            }
         }
 
         match fs::read_to_string(&path) {
@@ -579,7 +607,13 @@ impl FileExplorer {
 
     pub fn delete_entry(&mut self, path: &Path) {
         if self.is_remote {
-            let is_dir = self.entries.iter().find(|e| e.path == path).map(|e| e.is_dir).unwrap_or(false);
+            let is_dir = self
+                .entries
+                .iter()
+                .find(|e| e.path == path)
+                .or_else(|| self.remote_raw_entries.iter().find(|e| e.path == path))
+                .map(|e| e.is_dir)
+                .unwrap_or(false);
             let path_str = path.to_string_lossy().to_string();
             if let Some(ref client) = self.remote_client {
                 client.lock().delete(&path_str, is_dir);

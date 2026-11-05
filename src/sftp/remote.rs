@@ -238,11 +238,29 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
 
             SftpCommand::ReadFile(remote_path) => {
                 if let Some((_, ref sftp, _)) = current_sess {
-                    match sftp.open(Path::new(&remote_path)) {
-                        Ok(mut file) => {
+                    const MAX_EDITOR_BYTES: u64 = 2 * 1024 * 1024;
+                    let p = Path::new(&remote_path);
+                    if let Ok(stat) = sftp.stat(p) {
+                        if stat.is_dir() {
+                            let _ = event_tx.send(SftpEvent::OperationError("Cannot open directory in Quick Editor".into()));
+                            continue;
+                        }
+                        if stat.size.unwrap_or(0) > MAX_EDITOR_BYTES {
+                            let _ = event_tx.send(SftpEvent::OperationError(
+                                "File is too large for Quick Editor (> 2 MB). Please download it instead.".into(),
+                            ));
+                            continue;
+                        }
+                    }
+                    match sftp.open(p) {
+                        Ok(file) => {
                             let mut buf = Vec::new();
-                            if let Err(e) = file.read_to_end(&mut buf) {
+                            if let Err(e) = file.take(MAX_EDITOR_BYTES + 1).read_to_end(&mut buf) {
                                 let _ = event_tx.send(SftpEvent::OperationError(format!("Read file failed: {}", e)));
+                            } else if buf.len() as u64 > MAX_EDITOR_BYTES {
+                                let _ = event_tx.send(SftpEvent::OperationError(
+                                    "File is too large for Quick Editor (> 2 MB). Please download it instead.".into(),
+                                ));
                             } else {
                                 let content = String::from_utf8_lossy(&buf).to_string();
                                 let _ = event_tx.send(SftpEvent::FileRead {
@@ -304,10 +322,10 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
             SftpCommand::Delete(remote_path, is_dir) => {
                 if let Some((_, ref sftp, _)) = current_sess {
                     let p = Path::new(&remote_path);
-                    let res = if is_dir {
-                        remove_sftp_dir_recursive(sftp, p)
+                    let res: Result<(), String> = if is_dir {
+                        remove_sftp_dir_recursive(sftp, p, 0)
                     } else {
-                        sftp.unlink(p)
+                        sftp.unlink(p).map_err(|e| e.to_string())
                     };
                     match res {
                         Ok(_) => {
@@ -371,6 +389,8 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
                         Ok(mut rf) => match std::fs::File::create(&local_path) {
                             Ok(mut lf) => {
                                 if let Err(e) = std::io::copy(&mut rf, &mut lf) {
+                                    drop(lf);
+                                    let _ = std::fs::remove_file(&local_path);
                                     let _ = event_tx.send(SftpEvent::OperationError(format!("Download stream failed: {}", e)));
                                 } else {
                                     let _ = lf.flush();
@@ -433,24 +453,32 @@ pub fn candidate_ssh_key_paths(explicit_key: Option<&str>) -> Vec<PathBuf> {
     paths
 }
 
-fn remove_sftp_dir_recursive(sftp: &ssh2::Sftp, dir_path: &Path) -> Result<(), ssh2::Error> {
-    if let Ok(entries) = sftp.readdir(dir_path) {
-        for (entry_path, stat) in entries {
-            let name = entry_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if name == "." || name == ".." {
-                continue;
-            }
-            if stat.is_dir() {
-                remove_sftp_dir_recursive(sftp, &entry_path)?;
-            } else {
-                sftp.unlink(&entry_path)?;
-            }
+fn remove_sftp_dir_recursive(sftp: &ssh2::Sftp, dir_path: &Path, depth: u32) -> Result<(), String> {
+    let raw = dir_path.to_string_lossy();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "/" || trimmed == "." || trimmed == ".." {
+        return Err("Refusing to recursively delete root or invalid directory".to_string());
+    }
+    if depth > 32 {
+        return Err("Maximum directory recursion depth (32) exceeded".to_string());
+    }
+    let entries = sftp.readdir(dir_path).map_err(|e| e.to_string())?;
+    for (entry_path, stat) in entries {
+        let name = entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let is_symlink = stat.perm.map(|p| (p & 0o170000) == 0o120000).unwrap_or(false);
+        if stat.is_dir() && !is_symlink {
+            remove_sftp_dir_recursive(sftp, &entry_path, depth + 1)?;
+        } else {
+            sftp.unlink(&entry_path).map_err(|e| e.to_string())?;
         }
     }
-    sftp.rmdir(dir_path)
+    sftp.rmdir(dir_path).map_err(|e| e.to_string())
 }
 
 fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), String> {
