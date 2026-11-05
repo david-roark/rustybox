@@ -402,6 +402,81 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
             });
         }
 
+        if let Some(ref prog) = explorer.transfer_progress.clone() {
+            egui::Frame::none()
+                .fill(Color32::from_rgb(22, 27, 34))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                .rounding(Rounding::same(5.0))
+                .inner_margin(Margin::symmetric(6.0, 5.0))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let icon = if prog.is_upload { "⬆ Uploading" } else { "⬇ Downloading" };
+                            ui.label(RichText::new(format!("{}: {}", icon, prog.file_name)).strong().size(11.0).color(Color32::from_rgb(56, 189, 248)));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("✕ Cancel").on_hover_text("Abort file transfer and remove incomplete file").clicked() {
+                                    explorer.cancel_current_transfer();
+                                }
+                            });
+                        });
+
+                        // Progress bar widget
+                        let bar_h = 10.0;
+                        let (bar_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), bar_h), Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(bar_r, Rounding::same(2.0), Color32::from_rgb(13, 17, 23));
+                        let fill_w = ((prog.percent / 100.0).clamp(0.0, 1.0) * bar_r.width()).max(1.0);
+                        p.rect_filled(
+                            Rect::from_min_size(bar_r.min, vec2(fill_w, bar_r.height())),
+                            Rounding::same(2.0),
+                            Color32::from_rgb(34, 197, 94),
+                        );
+
+                        let trans_mb = prog.transferred_bytes as f64 / (1024.0 * 1024.0);
+                        let total_mb = prog.total_bytes as f64 / (1024.0 * 1024.0);
+                        let speed_kb = prog.bytes_per_sec / 1024.0;
+                        let speed_str = if speed_kb > 1024.0 {
+                            format!("{:.1} MB/s", speed_kb / 1024.0)
+                        } else {
+                            format!("{:.0} KB/s", speed_kb)
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{:.1}% ({:.1}/{:.1} MB)", prog.percent, trans_mb, total_mb)).size(10.0).weak());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(speed_str).size(10.0).color(Color32::from_rgb(139, 148, 158)));
+                            });
+                        });
+                    });
+                });
+        }
+
+        if let Some(ref conflict) = explorer.pending_conflict.clone() {
+            egui::Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(245, 158, 11, 25))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
+                .rounding(Rounding::same(5.0))
+                .inner_margin(Margin::symmetric(6.0, 5.0))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        let action = if conflict.is_upload { "upload destination" } else { "download location" };
+                        ui.label(RichText::new("⚠️ File already exists!").strong().size(11.5).color(Color32::from_rgb(251, 191, 36)));
+                        ui.label(RichText::new(format!("'{}' exists in {}.", conflict.file_name, action)).size(10.5));
+                        ui.horizontal(|ui| {
+                            if ui.button(RichText::new("Overwrite").size(10.5).color(Color32::WHITE)).clicked() {
+                                explorer.resolve_conflict_overwrite();
+                            }
+                            if ui.button(RichText::new("Rename (Keep both)").size(10.5)).clicked() {
+                                explorer.resolve_conflict_rename();
+                            }
+                            if ui.button(RichText::new("Skip").size(10.5)).clicked() {
+                                explorer.resolve_conflict_skip();
+                            }
+                        });
+                    });
+                });
+        }
+
         if let Some(del_target) = explorer.pending_delete.clone() {
             let del_name = del_target
                 .file_name()

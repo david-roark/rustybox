@@ -8,7 +8,15 @@ use parking_lot::Mutex;
 pub mod remote;
 pub mod ui;
 
-use remote::{RemoteSftpClient, SftpEvent, SftpTargetConfig};
+use remote::{RemoteSftpClient, SftpEvent, SftpTargetConfig, TransferProgressInfo};
+
+#[derive(Clone, Debug)]
+pub struct ConflictItem {
+    pub is_upload: bool,
+    pub src_path: PathBuf,
+    pub dest_path: PathBuf,
+    pub file_name: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct FileEntry {
@@ -89,6 +97,9 @@ pub struct FileExplorer {
     pub show_new_file: bool,
     pub new_file_name: String,
     pub pending_delete: Option<PathBuf>,
+    // Transfer progress & Conflict resolution
+    pub transfer_progress: Option<TransferProgressInfo>,
+    pub pending_conflict: Option<ConflictItem>,
 }
 
 impl FileExplorer {
@@ -139,6 +150,8 @@ impl FileExplorer {
             show_new_file: false,
             new_file_name: "new_file.txt".into(),
             pending_delete: None,
+            transfer_progress: None,
+            pending_conflict: None,
         };
         explorer.refresh();
         explorer
@@ -377,6 +390,21 @@ impl FileExplorer {
                             }
                         }
                     }
+                    SftpEvent::TransferProgress(info) => {
+                        sess.is_loading = true;
+                        if self.remote_label.as_deref() == Some(label.as_str()) {
+                            self.transfer_progress = Some(info);
+                        }
+                    }
+                    SftpEvent::TransferFinished(msg) => {
+                        sess.status_message = Some(msg);
+                        sess.is_loading = false;
+                        sess.error_message = None;
+                        if self.remote_label.as_deref() == Some(label.as_str()) {
+                            self.transfer_progress = None;
+                        }
+                        needs_dir_refresh = true;
+                    }
                     SftpEvent::FileRead { path, content } => {
                         sess.is_loading = false;
                         opened_editor = Some((label.clone(), PathBuf::from(path), content));
@@ -395,6 +423,9 @@ impl FileExplorer {
                     SftpEvent::OperationError(err) => {
                         sess.error_message = Some(err);
                         sess.is_loading = false;
+                        if self.remote_label.as_deref() == Some(label.as_str()) {
+                            self.transfer_progress = None;
+                        }
                     }
                     SftpEvent::DiskUsage { used, total, pct } => {
                         sess.remote_disk_stats = Some((used, total, pct));
@@ -832,30 +863,133 @@ impl FileExplorer {
         }
     }
 
-    pub fn upload_file(&mut self, local_path: PathBuf) {
-        if let Some(file_name) = local_path.file_name() {
-            let name_str = file_name.to_string_lossy().to_string();
-            let curr = self.current_path.to_string_lossy().to_string();
-            let remote_p = if curr.ends_with('/') {
-                format!("{}{}", curr, name_str)
-            } else {
-                format!("{}/{}", curr, name_str)
-            };
-            if let Some(ref client) = self.remote_client {
-                self.is_loading = true;
-                client.lock().upload(local_path, remote_p);
-            }
-            self.save_active_remote_state();
+    pub fn cancel_current_transfer(&mut self) {
+        if let Some(ref client) = self.remote_client {
+            client.lock().cancel_transfer();
         }
+        self.transfer_progress = None;
+        self.status_message = Some("Transfer cancelled.".into());
+    }
+
+    pub fn upload_file(&mut self, local_path: PathBuf) {
+        let Some(file_name) = local_path.file_name() else {
+            return;
+        };
+        let name_str = file_name.to_string_lossy().to_string();
+        let curr = self.current_path.to_string_lossy().to_string();
+        let remote_p = if curr.ends_with('/') {
+            format!("{}{}", curr, name_str)
+        } else {
+            format!("{}/{}", curr, name_str)
+        };
+        let remote_path_buf = PathBuf::from(&remote_p);
+
+        // Conflict check: if file already exists in current remote folder, ask user!
+        let exists_remote = self.entries.iter().any(|e| e.name == name_str && !e.is_dir)
+            || self.remote_raw_entries.iter().any(|e| e.name == name_str && !e.is_dir);
+
+        if exists_remote {
+            self.pending_conflict = Some(ConflictItem {
+                is_upload: true,
+                src_path: local_path,
+                dest_path: remote_path_buf,
+                file_name: name_str,
+            });
+            return;
+        }
+
+        self.execute_upload(local_path, remote_p);
+    }
+
+    pub fn execute_upload(&mut self, local_path: PathBuf, remote_p: String) {
+        if let Some(ref client) = self.remote_client {
+            self.is_loading = true;
+            client.lock().upload(local_path, remote_p);
+        }
+        self.save_active_remote_state();
     }
 
     pub fn download_file(&mut self, remote_path: &Path, local_dest: PathBuf) {
+        let name_str = remote_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "downloaded_file".to_string());
+
+        // Conflict check: if local destination already exists, prompt user!
+        if local_dest.exists() {
+            self.pending_conflict = Some(ConflictItem {
+                is_upload: false,
+                src_path: remote_path.to_path_buf(),
+                dest_path: local_dest,
+                file_name: name_str,
+            });
+            return;
+        }
+
+        self.execute_download(remote_path, local_dest);
+    }
+
+    pub fn execute_download(&mut self, remote_path: &Path, local_dest: PathBuf) {
         let remote_str = remote_path.to_string_lossy().to_string();
         if let Some(ref client) = self.remote_client {
             self.is_loading = true;
             client.lock().download(remote_str, local_dest);
         }
         self.save_active_remote_state();
+    }
+
+    pub fn resolve_conflict_overwrite(&mut self) {
+        if let Some(conflict) = self.pending_conflict.take() {
+            if conflict.is_upload {
+                self.execute_upload(conflict.src_path, conflict.dest_path.to_string_lossy().to_string());
+            } else {
+                self.execute_download(&conflict.src_path, conflict.dest_path);
+            }
+        }
+    }
+
+    pub fn resolve_conflict_rename(&mut self) {
+        if let Some(conflict) = self.pending_conflict.take() {
+            let parent = conflict.dest_path.parent().unwrap_or_else(|| Path::new("."));
+            let stem = Path::new(&conflict.file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            let ext = Path::new(&conflict.file_name)
+                .extension()
+                .and_then(|e| e.to_str());
+
+            // Generate unique name like `name (1).ext`
+            let mut counter = 1;
+            loop {
+                let new_name = match ext {
+                    Some(e) => format!("{} ({}).{}", stem, counter, e),
+                    None => format!("{} ({})", stem, counter),
+                };
+                let candidate = parent.join(&new_name);
+
+                let collision = if conflict.is_upload {
+                    self.entries.iter().any(|e| e.name == new_name)
+                        || self.remote_raw_entries.iter().any(|e| e.name == new_name)
+                } else {
+                    candidate.exists()
+                };
+
+                if !collision {
+                    if conflict.is_upload {
+                        self.execute_upload(conflict.src_path, candidate.to_string_lossy().to_string());
+                    } else {
+                        self.execute_download(&conflict.src_path, candidate);
+                    }
+                    break;
+                }
+                counter += 1;
+            }
+        }
+    }
+
+    pub fn resolve_conflict_skip(&mut self) {
+        self.pending_conflict = None;
     }
 
     pub fn parse_permissions_str(perms: &str) -> Option<[bool; 9]> {
@@ -1286,6 +1420,54 @@ mod tests {
         assert_eq!(explorer.entries.len(), 1);
         assert_eq!(explorer.entries[0].name, "system.conf");
         assert!(!explorer.is_loading);
+    }
+
+    #[test]
+    fn test_conflict_detection_and_resolution_rename() {
+        let mut explorer = FileExplorer::new();
+        explorer.is_remote = true;
+        explorer.current_path = PathBuf::from("/var/www");
+        explorer.entries = vec![FileEntry {
+            name: "index.html".into(),
+            path: PathBuf::from("/var/www/index.html"),
+            is_dir: false,
+            is_hidden: false,
+            size: 100,
+            modified: None,
+            permissions: "-rw-r--r--".into(),
+        }];
+
+        // Try uploading a local file also named index.html
+        let temp_dir = std::env::temp_dir();
+        let local_file = temp_dir.join("index.html");
+        let _ = std::fs::write(&local_file, "hello");
+
+        explorer.upload_file(local_file.clone());
+        assert!(explorer.pending_conflict.is_some(), "Collision must be detected for duplicate filename");
+        let conflict = explorer.pending_conflict.as_ref().unwrap();
+        assert_eq!(conflict.file_name, "index.html");
+
+        // Test rename resolution logic
+        explorer.pending_conflict = Some(ConflictItem {
+            is_upload: true,
+            src_path: local_file.clone(),
+            dest_path: PathBuf::from("/var/www/index.html"),
+            file_name: "index.html".into(),
+        });
+        explorer.resolve_conflict_rename();
+        assert!(explorer.pending_conflict.is_none());
+
+        let _ = std::fs::remove_file(&local_file);
+    }
+
+    #[test]
+    fn test_local_disk_available_space_and_safety_buffer() {
+        let temp_dir = std::env::temp_dir();
+        let space_res = crate::sftp::remote::get_local_available_space(&temp_dir);
+        assert!(space_res.is_ok());
+        let avail = space_res.unwrap();
+        assert!(avail > 0);
+        assert_eq!(crate::sftp::remote::OS_SAFETY_BUFFER_BYTES, 1024 * 1024 * 1024);
     }
 }
 
