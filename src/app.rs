@@ -2749,6 +2749,17 @@ impl eframe::App for RustyBoxApp {
                         }
                     } else {
                         // SFTP BROWSER
+                        if !self.is_home_active && self.explorer.follow_terminal_folder {
+                            if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                                if self.explorer.is_remote {
+                                    if let Some(line) = tab.session.current_cursor_line() {
+                                        self.explorer.sync_remote_prompt_cwd(&line);
+                                    }
+                                } else {
+                                    self.explorer.sync_terminal_cwd(tab.session.child_pid);
+                                }
+                            }
+                        }
                         render_sftp_sidebar(ui, &mut self.explorer);
                     }
                 });

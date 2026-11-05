@@ -305,7 +305,7 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
                 if let Some((_, ref sftp, _)) = current_sess {
                     let p = Path::new(&remote_path);
                     let res = if is_dir {
-                        sftp.rmdir(p)
+                        remove_sftp_dir_recursive(sftp, p)
                     } else {
                         sftp.unlink(p)
                     };
@@ -344,12 +344,13 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
 
             SftpCommand::Upload(local_path, remote_path) => {
                 if let Some((_, ref sftp, _)) = current_sess {
-                    match std::fs::read(&local_path) {
-                        Ok(data) => match sftp.create(Path::new(&remote_path)) {
+                    match std::fs::File::open(&local_path) {
+                        Ok(mut lf) => match sftp.create(Path::new(&remote_path)) {
                             Ok(mut rf) => {
-                                if let Err(e) = rf.write_all(&data) {
+                                if let Err(e) = std::io::copy(&mut lf, &mut rf) {
                                     let _ = event_tx.send(SftpEvent::OperationError(format!("Upload write failed: {}", e)));
                                 } else {
+                                    let _ = rf.flush();
                                     let _ = event_tx.send(SftpEvent::OperationSuccess(format!("Uploaded '{}' to VPS", local_path.display())));
                                 }
                             }
@@ -367,21 +368,19 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
             SftpCommand::Download(remote_path, local_path) => {
                 if let Some((_, ref sftp, _)) = current_sess {
                     match sftp.open(Path::new(&remote_path)) {
-                        Ok(mut rf) => {
-                            let mut data = Vec::new();
-                            if let Err(e) = rf.read_to_end(&mut data) {
-                                let _ = event_tx.send(SftpEvent::OperationError(format!("Download read failed: {}", e)));
-                            } else {
-                                match std::fs::write(&local_path, &data) {
-                                    Ok(_) => {
-                                        let _ = event_tx.send(SftpEvent::OperationSuccess(format!("Downloaded to '{}'", local_path.display())));
-                                    }
-                                    Err(e) => {
-                                        let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot write local file: {}", e)));
-                                    }
+                        Ok(mut rf) => match std::fs::File::create(&local_path) {
+                            Ok(mut lf) => {
+                                if let Err(e) = std::io::copy(&mut rf, &mut lf) {
+                                    let _ = event_tx.send(SftpEvent::OperationError(format!("Download stream failed: {}", e)));
+                                } else {
+                                    let _ = lf.flush();
+                                    let _ = event_tx.send(SftpEvent::OperationSuccess(format!("Downloaded to '{}'", local_path.display())));
                                 }
                             }
-                        }
+                            Err(e) => {
+                                let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot write local file: {}", e)));
+                            }
+                        },
                         Err(e) => {
                             let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot open remote file: {}", e)));
                         }
@@ -398,6 +397,60 @@ fn run_sftp_worker(cmd_rx: Receiver<SftpCommand>, event_tx: Sender<SftpEvent>) {
             }
         }
     }
+}
+
+pub fn expand_tilde_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+pub fn candidate_ssh_key_paths(explicit_key: Option<&str>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(k) = explicit_key {
+        let trimmed = k.trim();
+        if !trimmed.is_empty() {
+            paths.push(expand_tilde_path(trimmed));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let ssh_dir = home.join(".ssh");
+        for default_name in ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"] {
+            let p = ssh_dir.join(default_name);
+            if !paths.contains(&p) {
+                paths.push(p);
+            }
+        }
+    }
+    paths
+}
+
+fn remove_sftp_dir_recursive(sftp: &ssh2::Sftp, dir_path: &Path) -> Result<(), ssh2::Error> {
+    if let Ok(entries) = sftp.readdir(dir_path) {
+        for (entry_path, stat) in entries {
+            let name = entry_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name == "." || name == ".." {
+                continue;
+            }
+            if stat.is_dir() {
+                remove_sftp_dir_recursive(sftp, &entry_path)?;
+            } else {
+                sftp.unlink(&entry_path)?;
+            }
+        }
+    }
+    sftp.rmdir(dir_path)
 }
 
 fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), String> {
@@ -427,11 +480,11 @@ fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), S
     // Try authentication
     let mut authenticated = false;
 
-    // 1. Try public key if provided
+    // 1. Try explicit public key if provided (supporting `~/` expansion)
     if let Some(ref key_path) = cfg.key_path {
-        let p = Path::new(key_path);
+        let p = expand_tilde_path(key_path);
         if p.exists() {
-            if sess.userauth_pubkey_file(&cfg.user, None, p, None).is_ok() && sess.authenticated() {
+            if sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
                 authenticated = true;
             }
         }
@@ -452,6 +505,18 @@ fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), S
     if !authenticated {
         if sess.userauth_agent(&cfg.user).is_ok() && sess.authenticated() {
             authenticated = true;
+        }
+    }
+
+    // 4. Fallback: try default OpenSSH keys (~/.ssh/id_ed25519, id_ecdsa, id_rsa, id_dsa)
+    if !authenticated {
+        for p in candidate_ssh_key_paths(cfg.key_path.as_deref()) {
+            if p.exists() {
+                if sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
+                    authenticated = true;
+                    break;
+                }
+            }
         }
     }
 

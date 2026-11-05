@@ -232,15 +232,14 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     }
                 }
                 7 => {
-                    if let Some(ref selected) = explorer.selected_file.clone() {
-                        if selected.is_file() {
-                            explorer.open_editor(selected.clone());
+                    if explorer.can_edit_selected() {
+                        if let Some(selected) = explorer.selected_file.clone() {
+                            explorer.open_editor(selected);
                         }
                     }
                 }
                 8 => {
-                    explorer.show_hidden = !explorer.show_hidden;
-                    explorer.refresh();
+                    explorer.toggle_show_hidden();
                 }
                 9 => {
                     if let Some(ref selected) = explorer.selected_file.clone() {
@@ -457,8 +456,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if hdr_resp.on_hover_text("Click to toggle sort order (A-Z / Z-A)").clicked() {
-                    explorer.sort_ascending = !explorer.sort_ascending;
-                    explorer.refresh();
+                    explorer.toggle_sort_order();
                 }
 
                 let p = ui.painter();
