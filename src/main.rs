@@ -31,7 +31,7 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("RustyBox v1.3-81 - Remote Toolbox & Terminal")
+            .with_title("RustyBox v1.3-82 - Remote Toolbox & Terminal")
             .with_icon(app_icon)
             .with_maximized(true)
             .with_min_inner_size([700.0, 480.0]),

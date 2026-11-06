@@ -147,11 +147,11 @@ impl<'a> TerminalWidget<'a> {
         // Terminal background with selected theme
         painter.rect_filled(rect, 0.0, self.theme.default_bg());
 
-        let term_id = egui::Id::new("terminal_focus").with(&self.tab_id);
-        let sel_id = egui::Id::new("term_selection").with(&self.tab_id);
-        let drag_origin_id = egui::Id::new("term_drag_origin").with(&self.tab_id);
-        let sb_drag_id = egui::Id::new("term_sb_drag").with(&self.tab_id);
-        let init_focus_id = egui::Id::new("term_init_focus").with(&self.tab_id);
+        let term_id = egui::Id::new("terminal_focus").with(self.tab_id.as_str());
+        let sel_id = egui::Id::new("term_selection").with(self.tab_id.as_str());
+        let drag_origin_id = egui::Id::new("term_drag_origin").with(self.tab_id.as_str());
+        let sb_drag_id = egui::Id::new("term_sb_drag").with(self.tab_id.as_str());
+        let init_focus_id = egui::Id::new("term_init_focus").with(self.tab_id.as_str());
 
         let pos_to_screen_cell = |pos: egui::Pos2| -> (usize, usize) {
             let r = (((pos.y - rect.top()) / row_height).floor().max(0.0) as usize)
@@ -168,9 +168,9 @@ impl<'a> TerminalWidget<'a> {
         };
 
         let mut selection: Option<((usize, usize), (usize, usize))> =
-            ui.data(|d| d.get_temp(sel_id));
+            ui.data(|d| d.get_temp::<Option<((usize, usize), (usize, usize))>>(sel_id)).flatten();
         let mut drag_origin: Option<(usize, usize, egui::Pos2)> =
-            ui.data(|d| d.get_temp(drag_origin_id));
+            ui.data(|d| d.get_temp::<Option<(usize, usize, egui::Pos2)>>(drag_origin_id)).flatten();
         let mut dragging_scrollbar: bool = ui.data(|d| d.get_temp(sb_drag_id)).unwrap_or(false);
 
         let (hover_pos, shift_held, ctrl_held_now, middle_clicked, secondary_clicked, primary_clicked) =
@@ -193,8 +193,10 @@ impl<'a> TerminalWidget<'a> {
         // Handle interactive vertical scrollbar click/drag or TUI mouse reporting / text selection
         let tui_captures_mouse = mouse_mode != vt100::MouseProtocolMode::None && !shift_held;
 
+        let interaction_pos = response.interact_pointer_pos().or(hover_pos);
+
         if response.drag_started() {
-            if let Some(pos) = response.interact_pointer_pos() {
+            if let Some(pos) = interaction_pos {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     dragging_scrollbar = true;
                 } else if tui_captures_mouse {
@@ -215,8 +217,10 @@ impl<'a> TerminalWidget<'a> {
                     selection = None;
                 }
             }
-        } else if response.dragged() {
-            if let Some(pos) = hover_pos {
+        }
+
+        if response.dragged() {
+            if let Some(pos) = hover_pos.or(interaction_pos) {
                 if dragging_scrollbar && !alternate_screen && scrollback_len > 0 {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
                     let new_sb = ((1.0 - ratio) * (scrollback_len as f32)).round() as usize;
@@ -224,6 +228,12 @@ impl<'a> TerminalWidget<'a> {
                     parser.screen_mut().set_scrollback(new_sb);
                     scrollback_offset = parser.screen().scrollback();
                 } else if !tui_captures_mouse {
+                    // Fallback in case drag_started was skipped on the initial frame
+                    if drag_origin.is_none() && rect.contains(pos) {
+                        let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
+                        drag_origin = Some((abs_r, c, pos));
+                    }
+
                     if let Some((orig_abs_r, orig_c, orig_pos)) = drag_origin {
                         // Auto-scroll when dragging near top/bottom edge to allow multi-page selection
                         if !alternate_screen && scrollback_len > 0 {
@@ -239,7 +249,7 @@ impl<'a> TerminalWidget<'a> {
                                 scrollback_offset = parser.screen().scrollback();
                             }
                         }
-                        if pos.distance(orig_pos) >= 5.0 || (pos_to_abs_cell(pos, scrollback_offset) != (orig_abs_r, orig_c)) {
+                        if pos.distance(orig_pos) >= 3.0 || (pos_to_abs_cell(pos, scrollback_offset) != (orig_abs_r, orig_c)) {
                             let end_cell = pos_to_abs_cell(pos, scrollback_offset);
                             if (orig_abs_r, orig_c) != end_cell {
                                 selection = Some(((orig_abs_r, orig_c), end_cell));
@@ -286,7 +296,69 @@ impl<'a> TerminalWidget<'a> {
             }
         }
 
-        if response.clicked() && !response.dragged() {
+        // Multi-click selection (MobaXterm style):
+        // Triple-click: Select entire line & copy to clipboard
+        // Double-click: Select word under cursor & copy to clipboard
+        // Single-click without drag: Clear selection / handle scrollbar & TUI clicks
+        if response.triple_clicked() && !tui_captures_mouse {
+            if let Some(pos) = interaction_pos {
+                if rect.contains(pos) && !scrollbar_rect.contains(pos) {
+                    let (abs_r, _) = pos_to_abs_cell(pos, scrollback_offset);
+                    let line = {
+                        let mut parser = self.session.parser.lock();
+                        read_abs_row_string(parser.screen_mut(), abs_r, 0, cols.saturating_sub(1) as usize)
+                    };
+                    let trimmed_end = line.trim_end().chars().count();
+                    if trimmed_end > 0 {
+                        selection = Some(((abs_r, 0), (abs_r, trimmed_end.saturating_sub(1))));
+                        let text = line.trim_end().to_string();
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(&text);
+                        }
+                        ui.output_mut(|o| o.copied_text = text);
+                    }
+                }
+            }
+        } else if response.double_clicked() && !tui_captures_mouse {
+            if let Some(pos) = interaction_pos {
+                if rect.contains(pos) && !scrollbar_rect.contains(pos) {
+                    let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
+                    let line = {
+                        let mut parser = self.session.parser.lock();
+                        read_abs_row_string(parser.screen_mut(), abs_r, 0, cols.saturating_sub(1) as usize)
+                    };
+                    let chars: Vec<char> = line.chars().collect();
+                    if c < chars.len() && !chars[c].is_whitespace() {
+                        let is_word_char = |ch: char| {
+                            ch.is_alphanumeric()
+                                || ch == '_'
+                                || ch == '-'
+                                || ch == '.'
+                                || ch == '/'
+                                || ch == '@'
+                                || ch == ':'
+                                || ch == '~'
+                        };
+                        let mut start_c = c;
+                        while start_c > 0 && is_word_char(chars[start_c - 1]) {
+                            start_c -= 1;
+                        }
+                        let mut end_c = c;
+                        while end_c + 1 < chars.len() && is_word_char(chars[end_c + 1]) {
+                            end_c += 1;
+                        }
+                        let word: String = chars[start_c..=end_c].iter().collect();
+                        selection = Some(((abs_r, start_c), (abs_r, end_c)));
+                        if !word.is_empty() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(&word);
+                            }
+                            ui.output_mut(|o| o.copied_text = word);
+                        }
+                    }
+                }
+            }
+        } else if response.clicked() && !response.dragged() {
             if let Some(pos) = response.interact_pointer_pos() {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
@@ -2080,7 +2152,7 @@ mod tests {
         });
 
         let sel_after_first_ctrl_c: Option<((usize, usize), (usize, usize))> =
-            ctx.data(|d| d.get_temp(sel_id));
+            ctx.data(|d| d.get_temp::<Option<((usize, usize), (usize, usize))>>(sel_id)).flatten();
         assert_eq!(
             sel_after_first_ctrl_c, None,
             "Selection must be cleared after first Ctrl+C copy"

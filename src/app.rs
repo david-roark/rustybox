@@ -2125,7 +2125,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-81")
+                                RichText::new("v1.3-82")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -4201,6 +4201,11 @@ impl eframe::App for RustyBoxApp {
                     .as_ref()
                     .map(|s| s.backspace_sends_ctrl_h)
                     .unwrap_or(false);
+                let rc_paste = tab
+                    .session_def
+                    .as_ref()
+                    .map(|s| s.right_click_paste)
+                    .unwrap_or(false);
 
                 let widget = TerminalWidget::new(&tab.id, &mut tab.session)
                     .with_font_size(eff_font)
@@ -4209,6 +4214,7 @@ impl eframe::App for RustyBoxApp {
                     .with_search(search_ref)
                     .with_active_pane(is_active)
                     .with_backspace_ctrl_h(bs_ctrl_h)
+                    .with_right_click_paste(rc_paste)
                     .with_highlight_rules(Some(&self.highlight_rules), self.highlight_rules_enabled);
                 let _ = pane_idx;
                 widget.ui(ui, broadcast_tx)
