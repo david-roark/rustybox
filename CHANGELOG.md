@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-81] - 2026-11-06
+### Added & Improved (Branding & Application Icon)
+- **Cập nhật Icon 3D Isometric Network Cube to sát viền**:
+  - Chuyển đổi bộ nhận diện sang mẫu **3D Isometric Network Cube & Orbit** mang phong cách hạ tầng mạng và điện toán đám mây.
+  - Phóng to tỷ lệ khối Cube 3D và vòng quỹ đạo node vệ tinh chiếm **88% diện tích khung squircle**, vươn sát mép viền ngoài ("to sát viền") giúp biểu tượng nổi bật và dễ nhận diện ngay cả ở kích thước nhỏ (16px, 24px, 32px).
+  - Tinh chỉnh mặt trái với dấu nhắc lệnh Terminal `>_` to bản, mặt phải với 3 khay máy chủ kèm đèn LED trạng thái (Xanh lá, Cyan, Cam Rust), mặt trên là ma trận mạch mạng.
+  - Cập nhật đồng bộ vào resource PE `.exe` và icon cửa sổ Windows/Taskbar.
+
+---
+
+## [v1.3-80] - 2026-11-06
+### Improved (Sessions Tree Sidebar Polish)
+- **Tối ưu cây thư mục Sessions bên sidebar rộng rãi, thoáng mắt chuẩn MobaXterm**:
+  - **Tăng kích thước & chiều cao hàng thư mục**: Nới lỏng khoảng đệm nút thư mục `button_padding = vec2(6.0, 5.5)` và khoảng cách dọc `item_spacing.y = 4.0`, nâng chiều cao mỗi hàng lên ~27-28px cho hit-box thoải mái, dễ bấm.
+  - **Tăng cỡ chữ thư mục to rõ nét**: Nâng font chữ gốc `★ User sessions` lên **13.5px**, các thư mục con lên **13.0px** đậm nét, tăng khoảng cách giữa icon `📁` và tên thư mục.
+  - **Loại bỏ vạch kẻ dọc phân cấp rườm rà (`indent_has_left_vline = false`)**: Tắt các đường kẻ nối dọc của egui, sử dụng khoảng thụt lề tự nhiên `indent = 16.0` tạo cảm giác thanh thoát, rộng rãi tương tự MobaXterm.
+  - **Mở rộng kích thước thẻ session con**: Tăng chiều cao thẻ session 2 dòng từ 36px lên 38px, font tiêu đề session lên 12.5px cân đối với kích thước hàng thư mục.
+
+---
+
+## [v1.3-79] - 2026-11-06
+### Added (Native Windows Application Icon & Resource Embedding)
+- **Tích hợp Icon ứng dụng riêng biệt, xóa bỏ hoàn toàn chữ "e" mặc định của egui**:
+  - **Window Icon (Title Bar, Taskbar, Alt-Tab)**: Nhúng dữ liệu RGBA độ phân giải cao vào cửa sổ eframe qua `ViewportBuilder::with_icon`, hiển thị sắc nét biểu tượng mạng lưới riêng trên thanh tiêu đề và khi chuyển đổi ứng dụng.
+  - **Windows Executable Resource (.exe File Icon)**: Tạo file `.ico` đa độ phân giải (16px, 24px, 32px, 48px, 64px, 128px, 256px) và tích hợp `build.rs` biên dịch file tài nguyên `rustybox.rc` nhúng trực tiếp vào section `.rsrc` của PE binary thông qua MinGW `windres`. File `.exe` hiển thị icon riêng trực tiếp trên Windows Explorer và Desktop.
+
+---
+
+## [v1.3-78] - 2026-11-06
+### Added & Improved (SFTP Remote Sidebar Parity with MobaXterm)
+- **Nâng cấp toàn diện SFTP Sidebar đạt độ tương đồng 100% với MobaXterm gốc**:
+  - **Đầy đủ 6 cột dữ liệu**: Bổ sung hiển thị trọn vẹn **Name**, **Size (KB)**, **Last modified**, **Owner**, **Group**, và **Access** (UNIX permissions `drwxrwxr-x`, `-rw-r--r--`).
+  - **Tự động ánh xạ UID/GID sang Username/Groupname thật**: SFTP backend worker tự động đọc và cache bảng `/etc/passwd` và `/etc/group` qua SFTP stream khi kết nối, hiển thị tên tài khoản thật (`php`, `root`) thay vì ID số.
+  - **Sắp xếp linh hoạt đa cột (Multi-column sorting)**: Hỗ trợ click header để sort theo bất kỳ cột nào kèm mũi tên chỉ hướng tăng/giảm dần (`▲`/`▼`).
+  - **Hỗ trợ thanh cuộn ngang (Horizontal Scrolling)**: Cho phép kéo ngang xem trọn vẹn các cột Owner/Group/Permissions ngay cả khi thu hẹp bề rộng sidebar.
+
+---
+
+## [v1.3-77] - 2026-11-06
+### Improved (Home Dashboard Balance)
+- **Mở rộng giới hạn Recent Connections từ 5 lên 6 kết nối**:
+  - Tăng giới hạn `recent_sessions.take(5)` lên `take(6)` trong `src/app.rs`.
+  - Kết hợp với cấu trúc chia lưới 3 cột (`chunks(3)`), tạo thành lưới hoàn chỉnh **2 hàng x 3 cột** cân xứng tuyệt đối với 6 thẻ công cụ Action Cards phía trên, loại bỏ hoàn toàn góc trống bất đối xứng.
+
+---
+
 ## [v1.3-76] - 2026-11-06
 ### Fixed & Improved (UI Interaction & Layout Polish)
 - **Khắc phục triệt để lỗi chồng lấn/cấn viền khi rê chuột giữa các thẻ**:
