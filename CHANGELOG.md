@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-74] - 2026-11-05
+### Added & Fixed (Merge PR #4 from david-roark)
+- **Tùy chọn Font chữ Terminal & Nhúng JetBrains Nerd Mono**:
+  - Tích hợp thêm font lập trình **JetBrains Nerd Mono** hỗ trợ đầy đủ các biểu tượng lập trình (Dev icons, Git glyphs).
+  - Bổ sung tùy chọn chọn font chữ terminal trong **Settings**, menu bar (**🔤 Terminal Font**) và hộp thoại cấu hình Session.
+  - Hỗ trợ các bộ font monospace: *Noto Sans Mono* (mặc định phủ đầy đủ tiếng Việt), *JetBrains Nerd Mono*, *Ubuntu Mono*, *DejaVu Sans Mono*.
+- **Đồng bộ Theme Terminal tức thời & Bảng màu ANSI 16 chuẩn**:
+  - Khắc phục hiện tượng chọn theme (Dracula, Nord, Monokai...) không áp dụng vào các session terminal đang mở.
+  - Cài đặt đầy đủ 16 mã màu chuẩn ANSI tương ứng với từng theme giao diện (Dracula, Nord, Solarized Dark/Light, Monokai, Matrix, RustyBox Dark).
+  - Tự động lưu cấu hình font chữ và theme vào preferences, yêu cầu repaint khung hình ngay lập tức khi người dùng thay đổi.
+
+---
+
 ## [v1.3-73] - 2026-11-05
 ### Fixed & Improved (UI Polish)
 - **Nới rộng kích thước thẻ Recent Connections & Home Cards**:
