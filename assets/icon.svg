@@ -1,82 +1,94 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <defs>
-    <radialGradient id="bgGrad" cx="50%" cy="30%" r="80%">
-      <stop offset="0%" stop-color="#161e2e"/>
-      <stop offset="100%" stop-color="#0a0d14"/>
+    <radialGradient id="bgGrad" cx="50%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="50%" stop-color="#0a0f1d"/>
+      <stop offset="100%" stop-color="#020617"/>
     </radialGradient>
-    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#2563eb"/>
+    <linearGradient id="topFace" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#243247"/>
+      <stop offset="100%" stop-color="#131c2b"/>
     </linearGradient>
-    <linearGradient id="rustGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#fb923c"/>
-      <stop offset="100%" stop-color="#ea580c"/>
+    <linearGradient id="leftFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#182234"/>
+      <stop offset="100%" stop-color="#0b101b"/>
     </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="8" result="blur"/>
+    <linearGradient id="rightFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2b3b54"/>
+      <stop offset="100%" stop-color="#141d2c"/>
+    </linearGradient>
+    <filter id="cubeGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
       <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
   </defs>
 
-  <!-- App Icon Base Squircle -->
-  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bgGrad)"/>
-  <rect x="24" y="24" width="464" height="464" rx="104" fill="none" stroke="#334155" stroke-width="3" stroke-opacity="0.6"/>
+  <!-- Squircle Base Container -->
+  <rect x="20" y="20" width="472" height="472" rx="108" fill="url(#bgGrad)"/>
+  <rect x="20" y="20" width="472" height="472" rx="108" fill="none" stroke="#1f293d" stroke-width="3"/>
 
-  <!-- Network Globe Lat/Long Arcs -->
-  <g transform="translate(256, 256)" stroke="#38bdf8" stroke-opacity="0.35" stroke-width="2.5" fill="none">
-    <!-- Outer circle -->
-    <circle r="145" stroke="#38bdf8" stroke-opacity="0.5" stroke-width="3"/>
-    <!-- Equator and parallels -->
-    <line x1="-145" y1="0" x2="145" y2="0" stroke-dasharray="6 6"/>
-    <ellipse rx="145" ry="60"/>
-    <ellipse rx="145" ry="110"/>
-    <!-- Meridians -->
-    <ellipse rx="65" ry="145"/>
-    <ellipse rx="110" ry="145"/>
-    <line x1="0" y1="-145" x2="0" y2="145" stroke-dasharray="6 6"/>
-  </g>
+  <!-- Network Orbit Waves / Outer Radar Rings (Expanding close to edges) -->
+  <ellipse cx="256" cy="272" rx="215" ry="92" fill="none" stroke="#0284c7" stroke-width="2.5" stroke-opacity="0.35" stroke-dasharray="10 8"/>
+  <ellipse cx="256" cy="272" rx="180" ry="76" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-opacity="0.55"/>
 
-  <!-- Connecting Data Lines (Network Paths) -->
-  <g stroke="#60a5fa" stroke-width="3" stroke-linecap="round" opacity="0.85">
-    <line x1="165" y1="180" x2="256" y2="256"/>
-    <line x1="345" y1="185" x2="256" y2="256"/>
-    <line x1="150" y1="310" x2="256" y2="256"/>
-    <line x1="360" y1="315" x2="256" y2="256"/>
-    <line x1="256" y1="140" x2="256" y2="256"/>
-    <line x1="256" y1="370" x2="256" y2="256"/>
-    <line x1="165" y1="180" x2="256" y2="140" stroke-dasharray="4 4" stroke="#fb923c" stroke-width="2.5"/>
-    <line x1="345" y1="185" x2="256" y2="140" stroke-dasharray="4 4" stroke="#fb923c" stroke-width="2.5"/>
-    <line x1="150" y1="310" x2="256" y2="370" stroke-dasharray="4 4" stroke="#fb923c" stroke-width="2.5"/>
-    <line x1="360" y1="315" x2="256" y2="370" stroke-dasharray="4 4" stroke="#fb923c" stroke-width="2.5"/>
-  </g>
+  <!-- Orbiting Data Nodes -->
+  <circle cx="48" cy="272" r="11" fill="#38bdf8" stroke="#ffffff" stroke-width="2" filter="url(#cubeGlow)"/>
+  <circle cx="464" cy="272" r="11" fill="#f97316" stroke="#ffffff" stroke-width="2" filter="url(#cubeGlow)"/>
+  <circle cx="395" cy="225" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+  <circle cx="120" cy="320" r="8" fill="#f97316" filter="url(#cubeGlow)"/>
 
-  <!-- Peripheral Server Nodes -->
-  <g filter="url(#glow)">
-    <circle cx="165" cy="180" r="14" fill="#38bdf8"/>
-    <circle cx="165" cy="180" r="6" fill="#ffffff"/>
+  <!-- LARGE 3D Isometric Network Cube (Centered and scaled up to border)
+       Center = (256, 268)
+       Span: X from 90 to 422 (width = 332px)
+       Span: Y from 78 to 445 (height = 367px)
+  -->
+  <g id="cube">
+    <!-- Top Face: (256, 78) -> (422, 172) -> (256, 266) -> (90, 172) -->
+    <polygon points="256,78 422,172 256,266 90,172" fill="url(#topFace)" stroke="#38bdf8" stroke-width="4" stroke-linejoin="round"/>
+    
+    <!-- Left Face (Terminal Screen): (90, 172) -> (256, 266) -> (256, 442) -> (90, 348) -->
+    <polygon points="90,172 256,266 256,442 90,348" fill="url(#leftFace)" stroke="#38bdf8" stroke-width="4" stroke-linejoin="round"/>
+    
+    <!-- Right Face (Server Port Mesh): (256, 266) -> (422, 172) -> (422, 348) -> (256, 442) -->
+    <polygon points="256,266 422,172 422,348 256,442" fill="url(#rightFace)" stroke="#38bdf8" stroke-width="4" stroke-linejoin="round"/>
 
-    <circle cx="345" cy="185" r="14" fill="#38bdf8"/>
-    <circle cx="345" cy="185" r="6" fill="#ffffff"/>
+    <!-- Top Face: Circuit Matrix Grid & Center Orange Node -->
+    <line x1="173" y1="125" x2="339" y2="219" stroke="#38bdf8" stroke-width="2.5" stroke-opacity="0.6"/>
+    <line x1="339" y1="125" x2="173" y2="219" stroke="#38bdf8" stroke-width="2.5" stroke-opacity="0.6"/>
+    <circle cx="256" cy="172" r="10" fill="#f97316" stroke="#ffffff" stroke-width="2" filter="url(#cubeGlow)"/>
 
-    <circle cx="150" cy="310" r="14" fill="#38bdf8"/>
-    <circle cx="150" cy="310" r="6" fill="#ffffff"/>
+    <!-- Left Face: Big Terminal Prompt >_ -->
+    <!-- Transformed to match 30-deg isometric left plane -->
+    <g transform="matrix(0.866 0.5 0 1 115 235)">
+      <!-- Prompt Chevron > -->
+      <path d="M 12 18 L 32 38 L 12 58" fill="none" stroke="#38bdf8" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Cursor Underscore _ -->
+      <line x1="46" y1="58" x2="80" y2="58" stroke="#f97316" stroke-width="6.5" stroke-linecap="round"/>
+    </g>
 
-    <circle cx="360" cy="315" r="14" fill="#38bdf8"/>
-    <circle cx="360" cy="315" r="6" fill="#ffffff"/>
+    <!-- Right Face: Ethernet / Fiber Ports with LEDs -->
+    <!-- Transformed to match isometric right plane -->
+    <g transform="matrix(0.866 -0.5 0 1 278 355)">
+      <!-- Port 1 -->
+      <rect x="15" y="12" width="28" height="18" rx="4" fill="#0b0f19" stroke="#64748b" stroke-width="2"/>
+      <circle cx="56" cy="21" r="5" fill="#22c55e" stroke="#86efac" stroke-width="1.5" filter="url(#cubeGlow)"/>
+      
+      <!-- Port 2 -->
+      <rect x="15" y="44" width="28" height="18" rx="4" fill="#0b0f19" stroke="#64748b" stroke-width="2"/>
+      <circle cx="56" cy="53" r="5" fill="#38bdf8" stroke="#bae6fd" stroke-width="1.5" filter="url(#cubeGlow)"/>
+      
+      <!-- Port 3 -->
+      <rect x="15" y="76" width="28" height="18" rx="4" fill="#0b0f19" stroke="#64748b" stroke-width="2"/>
+      <circle cx="56" cy="85" r="5" fill="#f97316" stroke="#fed7aa" stroke-width="1.5" filter="url(#cubeGlow)"/>
+    </g>
 
-    <circle cx="256" cy="140" r="15" fill="#f97316"/>
-    <circle cx="256" cy="140" r="6" fill="#ffffff"/>
-
-    <circle cx="256" cy="370" r="15" fill="#f97316"/>
-    <circle cx="256" cy="370" r="6" fill="#ffffff"/>
-  </g>
-
-  <!-- Central Hub Node (RustyBox Terminal Gateway) -->
-  <g filter="url(#glow)">
-    <circle cx="256" cy="256" r="48" fill="#0f172a" stroke="url(#ringGrad)" stroke-width="5"/>
-    <circle cx="256" cy="256" r="40" fill="#1e293b"/>
-    <!-- Terminal prompt >_ in center -->
-    <path d="M 238 244 L 248 256 L 238 268" fill="none" stroke="#38bdf8" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <line x1="256" y1="268" x2="274" y2="268" stroke="#f97316" stroke-width="4.5" stroke-linecap="round"/>
+    <!-- Glowing Corner Vertices (Key connection endpoints) -->
+    <circle cx="256" cy="78" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+    <circle cx="422" cy="172" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+    <circle cx="90" cy="172" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+    <circle cx="256" cy="266" r="10" fill="#f97316" stroke="#ffedd5" stroke-width="2" filter="url(#cubeGlow)"/>
+    <circle cx="256" cy="442" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+    <circle cx="90" cy="348" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
+    <circle cx="422" cy="348" r="8" fill="#38bdf8" filter="url(#cubeGlow)"/>
   </g>
 </svg>
