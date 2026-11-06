@@ -1642,6 +1642,11 @@ impl RustyBoxApp {
             self.keygen_comment.trim().to_string()
         };
         let mut cmd = std::process::Command::new("ssh-keygen");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
         cmd.arg("-t").arg(key_type_arg)
             .arg("-N").arg("")
             .arg("-C").arg(&comment)
@@ -1658,6 +1663,11 @@ impl RustyBoxApp {
                     self.keygen_private = priv_content;
                 }
                 let mut fp_cmd = std::process::Command::new("ssh-keygen");
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    fp_cmd.creation_flags(0x08000000);
+                }
                 fp_cmd.arg("-lf").arg(&pub_file);
                 if let Ok(fp_out) = fp_cmd.output() {
                     self.keygen_fingerprint = String::from_utf8_lossy(&fp_out.stdout).trim().to_string();
@@ -2125,7 +2135,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-84")
+                                RichText::new("v1.3-85")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),

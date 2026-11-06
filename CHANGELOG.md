@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-85] - 2026-11-06
+### Fixed (Windows Process Cleanup & Console Window Suppression)
+- **Triệt tiêu hiện tượng nháy cửa sổ dòng lệnh đen khi tắt tab / thoát ứng dụng**:
+  - Bổ sung cờ `CREATE_NO_WINDOW = 0x08000000` thông qua `std::os::windows::process::CommandExt` cho toàn bộ các lệnh gọi `taskkill.exe` (trong dọn dẹp PTY Session và SSH Tunnels).
+  - Áp dụng cờ ẩn cửa sổ `CREATE_NO_WINDOW` cho `cmd /C start` (mở tệp mặc định) và `ssh-keygen` khi tạo cặp khóa SSH trên Windows.
+  - Đảm bảo toàn bộ quá trình thu hồi tài nguyên và diệt tiến trình con chạy 100% ngầm trong nền, không làm chớp/hiện bất kỳ cửa sổ console `conhost.exe` nào ra màn hình.
+
+---
+
 ## [v1.3-84] - 2026-11-06
 ### Added & Improved (Merge PR #5 & PR #6 from duyvuchatai)
 - **Tích hợp PR #5: Bộ chọn văn bản Terminal, Clipboard Wayland & Cross-Platform Tests**:

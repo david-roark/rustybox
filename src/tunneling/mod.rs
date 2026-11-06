@@ -250,8 +250,12 @@ impl TunnelManager {
         if let Some(pid) = pid_opt {
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
                 let _ = std::process::Command::new("taskkill")
                     .args(["/F", "/PID", &pid.to_string()])
+                    .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .spawn();
             }
             #[cfg(not(target_os = "windows"))]
