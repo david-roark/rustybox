@@ -44,7 +44,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
         let tooltips = [
             "Parent directory (..)",
-            "Upload file to current folder",
+            "Upload file(s) [Right-click: Upload folder]",
             "Download selected file",
             "Refresh folder",
             "Create new folder",
@@ -63,6 +63,11 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
             let resp = ui.interact(r, ui.id().with(("sftp_tool_btn", i)), Sense::click());
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if i == 1 && resp.secondary_clicked() {
+                if let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
+                    explorer.upload_folder(folder);
+                }
             }
 
             let is_active_toggle = i == 8 && explorer.show_hidden;
@@ -211,8 +216,10 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
             match tool {
                 0 => explorer.go_up(),
                 1 => {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        explorer.upload_file(path);
+                    if let Some(files) = rfd::FileDialog::new().set_title("Select File(s) to Upload").pick_files() {
+                        for path in files {
+                            explorer.upload_file(path);
+                        }
                     }
                 }
                 2 => {
@@ -342,6 +349,65 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
         if let Some(target) = jump_to {
             explorer.set_path(target);
         }
+
+        // 2b. MOBAXTERM SFTP CONTROLS (Remote monitoring & Follow terminal folder)
+        ui.add_space(3.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // Mini monitor icon with ECG pulse wave
+            let (mon_icon_rect, _) = ui.allocate_exact_size(vec2(15.0, 14.0), Sense::hover());
+            let p = ui.painter();
+            let scr = Rect::from_min_size(pos2(mon_icon_rect.left(), mon_icon_rect.top() + 1.0), vec2(15.0, 10.0));
+            p.rect(
+                scr,
+                Rounding::same(2.0),
+                Color32::from_rgb(18, 22, 28),
+                Stroke::new(1.0, Color32::from_rgb(75, 85, 99)),
+            );
+            // Monitor stand
+            p.line_segment(
+                [pos2(scr.center().x, scr.bottom()), pos2(scr.center().x, scr.bottom() + 2.0)],
+                Stroke::new(1.2, Color32::from_rgb(107, 114, 128)),
+            );
+            p.line_segment(
+                [pos2(scr.center().x - 3.5, scr.bottom() + 2.0), pos2(scr.center().x + 3.5, scr.bottom() + 2.0)],
+                Stroke::new(1.2, Color32::from_rgb(107, 114, 128)),
+            );
+            // Green pulse line
+            let cy = scr.center().y;
+            let lx = scr.left() + 2.0;
+            let rx = scr.right() - 2.0;
+            let mx = scr.center().x;
+            let s_pulse = Stroke::new(1.1, Color32::from_rgb(52, 211, 153));
+            p.line_segment([pos2(lx, cy), pos2(mx - 3.0, cy)], s_pulse);
+            p.line_segment([pos2(mx - 3.0, cy), pos2(mx - 1.5, cy - 2.5)], s_pulse);
+            p.line_segment([pos2(mx - 1.5, cy - 2.5), pos2(mx + 0.5, cy + 2.5)], s_pulse);
+            p.line_segment([pos2(mx + 0.5, cy + 2.5), pos2(mx + 2.0, cy)], s_pulse);
+            p.line_segment([pos2(mx + 2.0, cy), pos2(rx, cy)], s_pulse);
+
+            let mon_text = if explorer.remote_monitoring_enabled {
+                RichText::new("Remote monitoring").size(11.5).color(Color32::from_rgb(52, 211, 153))
+            } else {
+                RichText::new("Remote monitoring").size(11.5).color(Color32::from_rgb(201, 209, 217))
+            };
+            if ui.add(egui::Label::new(mon_text).sense(Sense::click()))
+                .on_hover_text("Toggle remote host hardware monitoring (CPU, RAM, Network, Disk)")
+                .clicked()
+            {
+                explorer.remote_monitoring_enabled = !explorer.remote_monitoring_enabled;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut explorer.follow_terminal_folder,
+                RichText::new("Follow terminal folder")
+                    .size(11.5)
+                    .color(Color32::from_rgb(201, 209, 217)),
+            )
+            .on_hover_text("Automatically sync SFTP folder when changing directory (cd) in terminal");
+        });
+        ui.add_space(2.0);
 
         // Disk Usage Bar right below the Path Bar (RustyBox style)
         let (used_b, total_b, used_pct) = explorer.disk_usage_stats();
@@ -549,6 +615,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 let mut context_new_file = false;
                 let mut context_refresh = false;
                 let mut context_upload = false;
+                let mut context_upload_folder = false;
                 let mut context_copy_text: Option<String> = None;
                 let mut context_toggle_hidden = false;
                 let mut context_terminal_here: Option<String> = None;
@@ -894,8 +961,17 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                         clicked_dir = Some(path_clone.clone());
                                         ui.close_menu();
                                     }
-                                    if ui.button("📥  Download").clicked() {
+                                    if ui.button("📥  Download folder").clicked() {
                                         context_download = Some(path_clone.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("📤  Upload file(s) here...").clicked() {
+                                        context_upload = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📁  Upload folder here...").clicked() {
+                                        context_upload_folder = true;
                                         ui.close_menu();
                                     }
                                     ui.separator();
@@ -950,6 +1026,15 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                         ui.close_menu();
                                     }
                                     ui.separator();
+                                    if ui.button("📤  Upload file(s)...").clicked() {
+                                        context_upload = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("📁  Upload folder...").clicked() {
+                                        context_upload_folder = true;
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
                                     if ui.button("🗑  Delete").clicked() {
                                         context_del = Some(path_clone.clone());
                                         ui.close_menu();
@@ -1001,8 +1086,12 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                 context_refresh = true;
                                 ui.close_menu();
                             }
-                            if ui.button("📤  Upload to current folder...").clicked() {
+                            if ui.button("📤  Upload file(s)...").clicked() {
                                 context_upload = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("📁  Upload folder...").clicked() {
+                                context_upload_folder = true;
                                 ui.close_menu();
                             }
                             ui.separator();
@@ -1081,6 +1170,11 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         }
                     }
                 }
+                if context_upload_folder {
+                    if let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
+                        explorer.upload_folder(folder);
+                    }
+                }
                 if let Some(text) = context_copy_text {
                     ui.output_mut(|o| o.copied_text = text);
                     explorer.status_message = Some("Copied to clipboard".into());
@@ -1105,27 +1199,6 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     }
                 }
             });
-
-        // 4. RUSTYBOX SFTP FOOTER CONTROLS (Follow terminal folder + Remote monitoring checkboxes)
-        ui.add_space(2.0);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.checkbox(
-                &mut explorer.follow_terminal_folder,
-                RichText::new("Follow terminal folder")
-                    .size(11.5)
-                    .color(Color32::from_rgb(201, 209, 217)),
-            )
-            .on_hover_text("Automatically sync SFTP folder when changing directory (cd) in terminal");
-
-            ui.checkbox(
-                &mut explorer.remote_monitoring_enabled,
-                RichText::new("Remote monitoring")
-                    .size(11.5)
-                    .color(Color32::from_rgb(201, 209, 217)),
-            )
-            .on_hover_text("Display live CPU, RAM, Network, Uptime & HDD bar at bottom of terminal");
-        });
     });
 
     // Modal File Editor

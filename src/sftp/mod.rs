@@ -1100,6 +1100,20 @@ impl FileExplorer {
         self.execute_upload(local_path, remote_p);
     }
 
+    pub fn upload_folder(&mut self, local_path: PathBuf) {
+        let Some(folder_name) = local_path.file_name() else {
+            return;
+        };
+        let name_str = folder_name.to_string_lossy().to_string();
+        let curr = self.current_path.to_string_lossy().to_string();
+        let remote_p = if curr.ends_with('/') {
+            format!("{}{}", curr, name_str)
+        } else {
+            format!("{}/{}", curr, name_str)
+        };
+        self.execute_upload(local_path, remote_p);
+    }
+
     pub fn execute_upload(&mut self, local_path: PathBuf, remote_p: String) {
         if let Some(ref client) = self.remote_client {
             self.is_loading = true;

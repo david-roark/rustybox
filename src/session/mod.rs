@@ -107,6 +107,7 @@ pub struct Session {
     pub name: String,
     pub folder: String,
     pub session_type: SessionType,
+    #[serde(default = "default_true")]
     pub auto_sftp: bool,
     pub created_at: String,
     #[serde(default)]

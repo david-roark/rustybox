@@ -428,6 +428,19 @@ fn run_sftp_worker(
             SftpCommand::Upload(local_path, remote_path) => {
                 cancel_flag.store(false, Ordering::SeqCst);
                 if let Some((ref sess, ref sftp, ..)) = current_sess {
+                    if local_path.is_dir() {
+                        match upload_dir_recursive(sftp, &local_path, &remote_path, &cancel_flag, &event_tx) {
+                            Ok(count) => {
+                                let folder_name = local_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "folder".to_string());
+                                let _ = event_tx.send(SftpEvent::TransferFinished(format!("Uploaded folder '{}' ({} files) to VPS", folder_name, count)));
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(SftpEvent::OperationError(e));
+                            }
+                        }
+                        continue;
+                    }
+
                     let total_bytes = match std::fs::metadata(&local_path) {
                         Ok(m) => m.len(),
                         Err(e) => {
@@ -461,9 +474,10 @@ fn run_sftp_worker(
                     }
 
                     match std::fs::File::open(&local_path) {
-                        Ok(mut lf) => match sftp.create(Path::new(&remote_path)) {
+                        Ok(lf) => match sftp.create(Path::new(&remote_path)) {
                             Ok(mut rf) => {
-                                let mut buffer = [0u8; 64 * 1024];
+                                let mut lf = std::io::BufReader::with_capacity(256 * 1024, lf);
+                                let mut buffer = [0u8; 256 * 1024];
                                 let mut transferred = 0u64;
                                 let start_time = Instant::now();
                                 let mut last_report = Instant::now();
@@ -541,7 +555,23 @@ fn run_sftp_worker(
                 cancel_flag.store(false, Ordering::SeqCst);
                 if let Some((_, ref sftp, ..)) = current_sess {
                     let p = Path::new(&remote_path);
-                    let total_bytes = sftp.stat(p).map(|s| s.size.unwrap_or(0)).unwrap_or(0);
+                    let stat = sftp.stat(p).ok();
+                    let is_remote_dir = stat.as_ref().map(|s| s.is_dir()).unwrap_or(false);
+
+                    if is_remote_dir {
+                        match download_dir_recursive(sftp, p, &local_path, &cancel_flag, &event_tx) {
+                            Ok(count) => {
+                                let folder_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "folder".to_string());
+                                let _ = event_tx.send(SftpEvent::TransferFinished(format!("Downloaded folder '{}' ({} files)", folder_name, count)));
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(SftpEvent::OperationError(e));
+                            }
+                        }
+                        continue;
+                    }
+
+                    let total_bytes = stat.and_then(|s| s.size).unwrap_or(0);
                     let file_name = p
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -564,8 +594,9 @@ fn run_sftp_worker(
 
                     match sftp.open(p) {
                         Ok(mut rf) => match std::fs::File::create(&local_path) {
-                            Ok(mut lf) => {
-                                let mut buffer = [0u8; 64 * 1024];
+                            Ok(lf) => {
+                                let mut lf = std::io::BufWriter::with_capacity(256 * 1024, lf);
+                                let mut buffer = [0u8; 256 * 1024];
                                 let mut transferred = 0u64;
                                 let start_time = Instant::now();
                                 let mut last_report = Instant::now();
@@ -648,6 +679,218 @@ fn run_sftp_worker(
             }
         }
     }
+}
+
+fn upload_dir_recursive(
+    sftp: &ssh2::Sftp,
+    local_dir: &Path,
+    remote_base: &str,
+    cancel_flag: &Arc<AtomicBool>,
+    event_tx: &Sender<SftpEvent>,
+) -> Result<usize, String> {
+    let root_name = local_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "folder".to_string());
+
+    let mut all_dirs = Vec::new();
+    let mut all_files = Vec::new();
+    let mut total_bytes = 0u64;
+
+    for entry in walkdir::WalkDir::new(local_dir).into_iter().filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if let Ok(rel) = p.strip_prefix(local_dir) {
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            if p.is_dir() {
+                all_dirs.push(rel.to_path_buf());
+            } else if p.is_file() {
+                let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                total_bytes += len;
+                all_files.push((p.to_path_buf(), rel.to_path_buf(), len));
+            }
+        }
+    }
+
+    let _ = sftp.mkdir(Path::new(remote_base), 0o755);
+    for d in &all_dirs {
+        let rem = Path::new(remote_base).join(d);
+        let rem_str = rem.to_string_lossy().replace('\\', "/");
+        let _ = sftp.mkdir(Path::new(&rem_str), 0o755);
+    }
+
+    let start_time = Instant::now();
+    let mut last_report = Instant::now();
+    let mut transferred = 0u64;
+    let file_count = all_files.len();
+
+    for (src, rel, _) in all_files {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("Upload cancelled by user.".to_string());
+        }
+        let dest = Path::new(remote_base).join(&rel);
+        let dest_str = dest.to_string_lossy().replace('\\', "/");
+        let display_name = format!("{}/{}", root_name, rel.display().to_string().replace('\\', "/"));
+
+        let lf = std::fs::File::open(&src)
+            .map_err(|e| format!("Cannot read local file '{}': {}", src.display(), e))?;
+        let mut lf = std::io::BufReader::with_capacity(256 * 1024, lf);
+
+        let mut rf = sftp
+            .create(Path::new(&dest_str))
+            .map_err(|e| format!("Cannot create remote file '{}': {}", dest_str, e))?;
+
+        let mut buffer = [0u8; 256 * 1024];
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err("Upload cancelled by user.".to_string());
+            }
+            let n = lf
+                .read(&mut buffer)
+                .map_err(|e| format!("Error reading '{}': {}", src.display(), e))?;
+            if n == 0 {
+                break;
+            }
+            rf.write_all(&buffer[..n])
+                .map_err(|e| format!("Error writing remote '{}': {}", dest_str, e))?;
+            transferred += n as u64;
+
+            if last_report.elapsed() >= Duration::from_millis(150) || transferred == total_bytes {
+                last_report = Instant::now();
+                let elapsed_sec = start_time.elapsed().as_secs_f64().max(0.001);
+                let speed = transferred as f64 / elapsed_sec;
+                let pct = if total_bytes > 0 {
+                    (transferred as f32 / total_bytes as f32) * 100.0
+                } else {
+                    100.0
+                };
+                let _ = event_tx.send(SftpEvent::TransferProgress(TransferProgressInfo {
+                    file_name: display_name.clone(),
+                    is_upload: true,
+                    transferred_bytes: transferred,
+                    total_bytes,
+                    bytes_per_sec: speed,
+                    percent: pct,
+                }));
+            }
+        }
+        let _ = rf.flush();
+    }
+
+    Ok(file_count)
+}
+
+fn collect_remote_entries(
+    sftp: &ssh2::Sftp,
+    remote_dir: &Path,
+    base_dir: &Path,
+    dirs: &mut Vec<PathBuf>,
+    files: &mut Vec<(PathBuf, PathBuf, u64)>,
+) -> Result<(), String> {
+    let list = sftp.readdir(remote_dir).map_err(|e| e.to_string())?;
+    for (p, stat) in list {
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if name == "." || name == ".." {
+            continue;
+        }
+        if let Ok(rel) = p.strip_prefix(base_dir) {
+            let is_symlink = stat.perm.map(|perm| (perm & 0o170000) == 0o120000).unwrap_or(false);
+            if stat.is_dir() && !is_symlink {
+                dirs.push(rel.to_path_buf());
+                let _ = collect_remote_entries(sftp, &p, base_dir, dirs, files);
+            } else {
+                let sz = stat.size.unwrap_or(0);
+                files.push((p.clone(), rel.to_path_buf(), sz));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn download_dir_recursive(
+    sftp: &ssh2::Sftp,
+    remote_dir: &Path,
+    local_dest: &Path,
+    cancel_flag: &Arc<AtomicBool>,
+    event_tx: &Sender<SftpEvent>,
+) -> Result<usize, String> {
+    let root_name = remote_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "folder".to_string());
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    collect_remote_entries(sftp, remote_dir, remote_dir, &mut dirs, &mut files)?;
+
+    let total_bytes: u64 = files.iter().map(|f| f.2).sum();
+    std::fs::create_dir_all(local_dest)
+        .map_err(|e| format!("Cannot create local dir '{}': {}", local_dest.display(), e))?;
+
+    for d in &dirs {
+        let loc = local_dest.join(d);
+        let _ = std::fs::create_dir_all(&loc);
+    }
+
+    let start_time = Instant::now();
+    let mut last_report = Instant::now();
+    let mut transferred = 0u64;
+    let file_count = files.len();
+
+    for (rem_f, rel_f, _) in files {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("Download cancelled by user.".to_string());
+        }
+        let loc_f = local_dest.join(&rel_f);
+        let display_name = format!("{}/{}", root_name, rel_f.display().to_string().replace('\\', "/"));
+
+        let mut rf = sftp
+            .open(&rem_f)
+            .map_err(|e| format!("Cannot open remote file '{}': {}", rem_f.display(), e))?;
+
+        let lf = std::fs::File::create(&loc_f)
+            .map_err(|e| format!("Cannot create local file '{}': {}", loc_f.display(), e))?;
+        let mut lf = std::io::BufWriter::with_capacity(256 * 1024, lf);
+
+        let mut buffer = [0u8; 256 * 1024];
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err("Download cancelled by user.".to_string());
+            }
+            let n = rf
+                .read(&mut buffer)
+                .map_err(|e| format!("Error reading remote '{}': {}", rem_f.display(), e))?;
+            if n == 0 {
+                break;
+            }
+            lf.write_all(&buffer[..n])
+                .map_err(|e| format!("Error writing local '{}': {}", loc_f.display(), e))?;
+            transferred += n as u64;
+
+            if last_report.elapsed() >= Duration::from_millis(150) || transferred == total_bytes {
+                last_report = Instant::now();
+                let elapsed_sec = start_time.elapsed().as_secs_f64().max(0.001);
+                let speed = transferred as f64 / elapsed_sec;
+                let pct = if total_bytes > 0 {
+                    (transferred as f32 / total_bytes as f32) * 100.0
+                } else {
+                    100.0
+                };
+                let _ = event_tx.send(SftpEvent::TransferProgress(TransferProgressInfo {
+                    file_name: display_name.clone(),
+                    is_upload: false,
+                    transferred_bytes: transferred,
+                    total_bytes,
+                    bytes_per_sec: speed,
+                    percent: pct,
+                }));
+            }
+        }
+        let _ = lf.flush();
+    }
+
+    Ok(file_count)
 }
 
 pub fn get_local_available_space(_path: &Path) -> Result<u64, String> {
@@ -752,6 +995,10 @@ fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), S
 
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = tcp.set_write_timeout(Some(Duration::from_secs(15)));
+    let _ = tcp.set_nodelay(true);
+    let sock = socket2::SockRef::from(&tcp);
+    let _ = sock.set_send_buffer_size(1024 * 1024);
+    let _ = sock.set_recv_buffer_size(1024 * 1024);
 
     let mut sess = ssh2::Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
     sess.set_tcp_stream(tcp);
