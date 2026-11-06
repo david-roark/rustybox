@@ -291,18 +291,68 @@ pub fn detect_terminal_cwd(tab: &OpenTab) -> Option<String> {
     extract_cwd_from_screen(&screen_text)
 }
 
+#[cfg(unix)]
+pub fn read_local_disk_pct() -> Option<u32> {
+    use std::ffi::CString;
+    let path = CString::new("/").ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let res = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if res == 0 {
+        let stat = unsafe { stat.assume_init() };
+        let total = stat.f_blocks;
+        let avail = stat.f_bavail;
+        if total > 0 {
+            let used = total.saturating_sub(avail);
+            return Some(((used as f64 / total as f64 * 100.0).round() as u32).min(100));
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+pub fn read_local_disk_pct() -> Option<u32> {
+    None
+}
+
+pub fn read_local_net_bytes() -> Option<(u64, u64)> {
+    let content = std::fs::read_to_string("/proc/net/dev").ok()?;
+    let mut total_rx = 0u64;
+    let mut total_tx = 0u64;
+    for line in content.lines().skip(2) {
+        if let Some((iface, data)) = line.split_once(':') {
+            let iface = iface.trim();
+            if iface == "lo"
+                || iface.starts_with("docker")
+                || iface.starts_with("br-")
+                || iface.starts_with("veth")
+            {
+                continue;
+            }
+            let fields: Vec<&str> = data.split_whitespace().collect();
+            if fields.len() >= 9 {
+                if let (Ok(rx), Ok(tx)) = (fields[0].parse::<u64>(), fields[8].parse::<u64>()) {
+                    total_rx += rx;
+                    total_tx += tx;
+                }
+            }
+        }
+    }
+    Some((total_rx, total_tx))
+}
+
 #[derive(Clone, Debug)]
 pub struct TabTelemetry {
     pub host: String,
     pub user: String,
-    pub cores: u32,
-    pub cpu_pct: u32,
-    pub ram_used_gb: f32,
-    pub ram_total_gb: f32,
-    pub uptime: String,
-    pub uptime_secs: u64,
-    pub disk_pct: u32,
-    pub net_rate: String,
+    pub cores: Option<u32>,
+    pub cpu_pct: Option<u32>,
+    pub ram_used_gb: Option<f32>,
+    pub ram_total_gb: Option<f32>,
+    pub ram_pct: Option<u32>,
+    pub uptime: Option<String>,
+    pub uptime_secs: Option<u64>,
+    pub disk_pct: Option<u32>,
+    pub net_rate: Option<String>,
     pub is_remote: bool,
     pub is_connected: bool,
     pub last_updated: std::time::Instant,
@@ -312,7 +362,7 @@ impl TabTelemetry {
     pub fn new_local() -> Self {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get() as u32)
-            .unwrap_or(4);
+            .ok();
         let mut host = "LOCALHOST".to_string();
         let mut user = "user".to_string();
         #[cfg(target_os = "windows")]
@@ -333,13 +383,14 @@ impl TabTelemetry {
             host,
             user,
             cores,
-            cpu_pct: 12,
-            ram_used_gb: 1.6,
-            ram_total_gb: 11.4,
-            uptime: "Up: 1 day".into(),
-            uptime_secs: 86400,
-            disk_pct: 48,
-            net_rate: "▲0.02M  ▼0.01M".into(),
+            cpu_pct: None,
+            ram_used_gb: None,
+            ram_total_gb: None,
+            ram_pct: None,
+            uptime: None,
+            uptime_secs: None,
+            disk_pct: read_local_disk_pct(),
+            net_rate: None,
             is_remote: false,
             is_connected: true,
             last_updated: std::time::Instant::now() - std::time::Duration::from_secs(10),
@@ -349,41 +400,18 @@ impl TabTelemetry {
     pub fn new_remote(session: &Session) -> Self {
         let (host_str, user_str) = session.session_type.remote_host_and_user();
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&host_str, &mut hasher);
-        let hash = std::hash::Hasher::finish(&hasher);
-
-        let cores = match hash % 5 {
-            0 => 1,
-            1 => 2,
-            2 => 4,
-            3 => 8,
-            _ => 16,
-        };
-        let total_ram = match cores {
-            1 => 1.0,
-            2 => 2.0,
-            4 => 4.0,
-            8 => 8.0,
-            _ => 16.0,
-        };
-        let used_ram = (total_ram * (0.20 + ((hash % 35) as f32 / 100.0))).min(total_ram - 0.1);
-        let disk = 20 + ((hash % 35) as u32);
-        let days = 1 + ((hash % 60) as u64);
-        let uptime_secs = days * 86400 + (hash % 86400);
-        let cpu = 2 + ((hash % 15) as u32);
-
         Self {
             host: if !session.name.is_empty() { session.name.clone() } else { host_str },
             user: if !user_str.is_empty() { user_str } else { "root".into() },
-            cores,
-            cpu_pct: cpu,
-            ram_used_gb: (used_ram * 10.0).round() / 10.0,
-            ram_total_gb: total_ram,
-            uptime: format!("Up: {} days", days),
-            uptime_secs,
-            disk_pct: disk,
-            net_rate: format!("▲{:.2}M  ▼{:.2}M", ((hash % 40) as f32 + 2.0)/100.0, ((hash % 70) as f32 + 5.0)/100.0),
+            cores: None,
+            cpu_pct: None,
+            ram_used_gb: None,
+            ram_total_gb: None,
+            ram_pct: None,
+            uptime: None,
+            uptime_secs: None,
+            disk_pct: None,
+            net_rate: None,
             is_remote: true,
             is_connected: true,
             last_updated: std::time::Instant::now(),
@@ -511,6 +539,8 @@ pub struct RustyBoxApp {
     // Live System Telemetry Dashboard
     last_telemetry_time: std::time::Instant,
     local_telemetry: TabTelemetry,
+    last_local_net_bytes: Option<(u64, u64)>,
+    last_local_net_time: Option<std::time::Instant>,
     // Context Actions & Modals
     selected_sidebar_session_id: Option<String>,
     last_synced_tab_id: Option<String>,
@@ -705,6 +735,8 @@ impl RustyBoxApp {
             is_home_active: false,
             last_telemetry_time: std::time::Instant::now() - std::time::Duration::from_secs(10),
             local_telemetry: TabTelemetry::new_local(),
+            last_local_net_bytes: None,
+            last_local_net_time: None,
             selected_sidebar_session_id: None,
             last_synced_tab_id: None,
             last_synced_is_home: true,
@@ -1444,9 +1476,7 @@ impl RustyBoxApp {
         {
             if let Ok(h) = std::env::var("COMPUTERNAME") { self.local_telemetry.host = h; }
             if let Ok(u) = std::env::var("USERNAME") { self.local_telemetry.user = u; }
-            self.local_telemetry.cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-            self.local_telemetry.cpu_pct = 8 + ((t % 7) as u32);
+            self.local_telemetry.cores = std::thread::available_parallelism().map(|n| n.get() as u32).ok();
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1459,7 +1489,8 @@ impl RustyBoxApp {
             if let Ok(u) = std::env::var("USER") {
                 self.local_telemetry.user = u;
             }
-            self.local_telemetry.cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
+            let cores_opt = std::thread::available_parallelism().map(|n| n.get() as u32).ok();
+            self.local_telemetry.cores = cores_opt;
 
             if let Ok(mem) = std::fs::read_to_string("/proc/meminfo") {
                 let mut total = 0u64;
@@ -1472,38 +1503,65 @@ impl RustyBoxApp {
                     }
                 }
                 if total > 0 {
-                    self.local_telemetry.ram_total_gb = total as f32 / 1024.0 / 1024.0;
-                    self.local_telemetry.ram_used_gb = (total.saturating_sub(avail)) as f32 / 1024.0 / 1024.0;
+                    let total_gb = total as f32 / 1024.0 / 1024.0;
+                    let used_gb = (total.saturating_sub(avail)) as f32 / 1024.0 / 1024.0;
+                    self.local_telemetry.ram_total_gb = Some(total_gb);
+                    self.local_telemetry.ram_used_gb = Some(used_gb);
+                    self.local_telemetry.ram_pct = Some(((used_gb / total_gb.max(0.1)) * 100.0).round() as u32);
                 }
             }
 
             if let Ok(load) = std::fs::read_to_string("/proc/loadavg") {
                 if let Some(val) = load.split_whitespace().next().and_then(|v| v.parse::<f32>().ok()) {
-                    self.local_telemetry.cpu_pct = ((val * 10.0).round() as u32).clamp(1, 99);
+                    let cores_cnt = cores_opt.unwrap_or(1) as f32;
+                    let pct = ((val / cores_cnt) * 100.0).round() as u32;
+                    self.local_telemetry.cpu_pct = Some(pct.clamp(1, 99));
                 }
             }
 
             if let Ok(up) = std::fs::read_to_string("/proc/uptime") {
                 if let Some(secs) = up.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
                     let total_s = secs as u64;
-                    self.local_telemetry.uptime_secs = total_s;
+                    self.local_telemetry.uptime_secs = Some(total_s);
                     let days = total_s / 86400;
                     let hours = (total_s % 86400) / 3600;
+                    let mins = (total_s % 3600) / 60;
                     if days > 0 {
-                        self.local_telemetry.uptime = format!("Up: {} day{}", days, if days > 1 { "s" } else { "" });
+                        self.local_telemetry.uptime = Some(format!("Up: {} day{}", days, if days > 1 { "s" } else { "" }));
+                    } else if hours > 0 {
+                        self.local_telemetry.uptime = Some(format!("Up: {} hr{}", hours, if hours > 1 { "s" } else { "" }));
                     } else {
-                        self.local_telemetry.uptime = format!("Up: {} hr{}", hours, if hours > 1 { "s" } else { "" });
+                        self.local_telemetry.uptime = Some(format!("Up: {} min{}", mins, if mins > 1 { "s" } else { "" }));
                     }
                 }
             }
-            self.local_telemetry.disk_pct = 48;
+            self.local_telemetry.disk_pct = read_local_disk_pct();
+
+            // Real Network Throughput calculation from /proc/net/dev
+            if let Some((curr_rx, curr_tx)) = read_local_net_bytes() {
+                let now = std::time::Instant::now();
+                if let (Some((prev_rx, prev_tx)), Some(prev_t)) = (self.last_local_net_bytes, self.last_local_net_time) {
+                    let dt = (now - prev_t).as_secs_f32().max(0.1);
+                    let rx_bps = (curr_rx.saturating_sub(prev_rx) as f32) / dt;
+                    let tx_bps = (curr_tx.saturating_sub(prev_tx) as f32) / dt;
+                    let fmt_speed = |bps: f32| -> String {
+                        if bps >= 1024.0 * 1024.0 {
+                            format!("{:.2}M", bps / (1024.0 * 1024.0))
+                        } else {
+                            format!("{:.1}K", (bps / 1024.0).max(0.0))
+                        }
+                    };
+                    self.local_telemetry.net_rate = Some(format!("▲{}  ▼{}", fmt_speed(tx_bps), fmt_speed(rx_bps)));
+                }
+                self.last_local_net_bytes = Some((curr_rx, curr_tx));
+                self.last_local_net_time = Some(now);
+            }
         }
 
         // 2. Update telemetry for each open tab
-        let now_sec = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
         let local_host_copy = self.local_telemetry.host.clone();
 
-        for (idx, tab) in self.open_tabs.iter_mut().enumerate() {
+        for tab in self.open_tabs.iter_mut() {
             let is_alive = tab.session.is_alive();
             tab.telemetry.is_connected = is_alive;
 
@@ -1529,43 +1587,39 @@ impl RustyBoxApp {
                     tab.telemetry.user = det.user.clone();
                     tab.telemetry.host = det.host.clone();
                     if let Some(d) = det.disk_pct {
-                        tab.telemetry.disk_pct = d;
+                        tab.telemetry.disk_pct = Some(d);
                     }
                     if let Some(r) = det.ram_pct {
-                        let total = if tab.telemetry.ram_total_gb > 0.0 { tab.telemetry.ram_total_gb } else { 1.0 };
-                        tab.telemetry.ram_used_gb = ((total * (r as f32 / 100.0)) * 10.0).round() / 10.0;
+                        tab.telemetry.ram_pct = Some(r);
+                        if let Some(total) = tab.telemetry.ram_total_gb {
+                            tab.telemetry.ram_used_gb = Some(((total * (r as f32 / 100.0)) * 10.0).round() / 10.0);
+                        }
                     }
                     if let Some(c) = det.cpu_pct {
-                        tab.telemetry.cpu_pct = c;
+                        tab.telemetry.cpu_pct = Some(c);
                     }
                 }
             }
 
             if tab.telemetry.is_remote {
-                // Remote tab: dynamic alive metrics per server
+                // Remote tab: no mockup simulation! Only real or detected values.
                 if !is_alive {
-                    tab.telemetry.cpu_pct = 0;
-                    tab.telemetry.uptime = "Disconnected".into();
-                    tab.telemetry.net_rate = "0.00M / 0.00M".into();
-                } else {
-                    tab.telemetry.uptime_secs += elapsed_secs;
-                    let days = tab.telemetry.uptime_secs / 86400;
-                    let hours = (tab.telemetry.uptime_secs % 86400) / 3600;
+                    tab.telemetry.uptime = Some("Disconnected".into());
+                    tab.telemetry.cpu_pct = None;
+                    tab.telemetry.net_rate = None;
+                } else if let Some(up_secs) = tab.telemetry.uptime_secs {
+                    let new_secs = up_secs + elapsed_secs;
+                    tab.telemetry.uptime_secs = Some(new_secs);
+                    let days = new_secs / 86400;
+                    let hours = (new_secs % 86400) / 3600;
+                    let mins = (new_secs % 3600) / 60;
                     if days > 0 {
-                        tab.telemetry.uptime = format!("Up: {} day{}", days, if days > 1 { "s" } else { "" });
+                        tab.telemetry.uptime = Some(format!("Up: {} day{}", days, if days > 1 { "s" } else { "" }));
+                    } else if hours > 0 {
+                        tab.telemetry.uptime = Some(format!("Up: {} hr{}", hours, if hours > 1 { "s" } else { "" }));
                     } else {
-                        tab.telemetry.uptime = format!("Up: {} hr{}", hours, if hours > 1 { "s" } else { "" });
+                        tab.telemetry.uptime = Some(format!("Up: {} min{}", mins, if mins > 1 { "s" } else { "" }));
                     }
-
-                    // Fluctuate CPU slightly around server base load to simulate active server
-                    let seed = ((now_sec + idx as u64 * 13) % 11) as i32 - 5;
-                    let base_cpu = tab.telemetry.cpu_pct as i32;
-                    let new_cpu = (base_cpu + seed).clamp(1, 95) as u32;
-                    tab.telemetry.cpu_pct = new_cpu;
-
-                    let up_m = (((now_sec * 3 + idx as u64 * 7) % 80) as f32) / 100.0;
-                    let down_m = (((now_sec * 5 + idx as u64 * 11) % 150) as f32) / 100.0;
-                    tab.telemetry.net_rate = format!("▲{:.2}M  ▼{:.2}M", up_m, down_m);
                 }
             } else {
                 // Local tab mirrors fresh local telemetry
@@ -1573,12 +1627,14 @@ impl RustyBoxApp {
                 tab.telemetry.cpu_pct = self.local_telemetry.cpu_pct;
                 tab.telemetry.ram_used_gb = self.local_telemetry.ram_used_gb;
                 tab.telemetry.ram_total_gb = self.local_telemetry.ram_total_gb;
+                tab.telemetry.ram_pct = self.local_telemetry.ram_pct;
                 tab.telemetry.uptime = self.local_telemetry.uptime.clone();
                 tab.telemetry.uptime_secs = self.local_telemetry.uptime_secs;
                 tab.telemetry.disk_pct = self.local_telemetry.disk_pct;
                 tab.telemetry.cores = self.local_telemetry.cores;
                 tab.telemetry.host = self.local_telemetry.host.clone();
                 tab.telemetry.user = self.local_telemetry.user.clone();
+                tab.telemetry.net_rate = self.local_telemetry.net_rate.clone();
             }
         }
     }
@@ -2767,70 +2823,132 @@ impl eframe::App for RustyBoxApp {
                     };
 
                         // 1. Host (Far right)
-                        stat_chip(ui, RichText::new(format!("🖥 {}", telem.host)).strong().size(10.5).color(Color32::WHITE));
+                        let host_display = if !telem.host.is_empty() { &telem.host } else { "--" };
+                        stat_chip(ui, RichText::new(format!("🖥 {}", host_display)).strong().size(10.5).color(Color32::WHITE));
 
-                        // 2. CPU with visual gauge
-                        let cpu_frac = (telem.cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
-                        egui::Frame::none()
-                            .fill(Color32::from_rgb(18, 24, 35))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
-                            .rounding(5.0)
-                            .inner_margin(egui::Margin::symmetric(7.0, 2.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("⚡ {}%", telem.cpu_pct)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
-                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
-                                    ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
-                                    let mut filled_rect = rect;
-                                    filled_rect.set_width(rect.width() * cpu_frac);
-                                    let bar_color = if telem.cpu_pct > 75 {
-                                        Color32::from_rgb(239, 68, 68)
-                                    } else if telem.cpu_pct > 50 {
-                                        Color32::from_rgb(245, 158, 11)
-                                    } else {
-                                        Color32::from_rgb(34, 197, 94)
-                                    };
-                                    ui.painter().rect_filled(filled_rect, 2.5, bar_color);
-                                });
-                            });
+                        // 2. CPU with visual gauge or placeholder
+                        match telem.cpu_pct {
+                            Some(cpu_pct) => {
+                                let cpu_frac = (cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(18, 24, 35))
+                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .rounding(5.0)
+                                    .inner_margin(egui::Margin::symmetric(7.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("⚡ {}%", cpu_pct)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
+                                            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
+                                            ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
+                                            let mut filled_rect = rect;
+                                            filled_rect.set_width(rect.width() * cpu_frac);
+                                            let bar_color = if cpu_pct > 75 {
+                                                Color32::from_rgb(239, 68, 68)
+                                            } else if cpu_pct > 50 {
+                                                Color32::from_rgb(245, 158, 11)
+                                            } else {
+                                                Color32::from_rgb(34, 197, 94)
+                                            };
+                                            ui.painter().rect_filled(filled_rect, 2.5, bar_color);
+                                        });
+                                    });
+                            }
+                            None => {
+                                stat_chip(ui, RichText::new("⚡ --%").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
                         // 3. Cores
-                        stat_chip(ui, RichText::new(format!("⚙ {} Cores", telem.cores)).color(Color32::from_rgb(167, 139, 250)).size(10.5));
+                        match telem.cores {
+                            Some(cores) => {
+                                stat_chip(ui, RichText::new(format!("⚙ {} Cores", cores)).color(Color32::from_rgb(167, 139, 250)).size(10.5));
+                            }
+                            None => {
+                                stat_chip(ui, RichText::new("⚙ -- Cores").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
-                        // 4. RAM with visual gauge
-                        let ram_pct = (telem.ram_used_gb / telem.ram_total_gb.max(0.1)).clamp(0.0, 1.0);
-                        egui::Frame::none()
-                            .fill(Color32::from_rgb(18, 24, 35))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
-                            .rounding(5.0)
-                            .inner_margin(egui::Margin::symmetric(7.0, 2.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("💾 {:.1}/{:.1}G", telem.ram_used_gb, telem.ram_total_gb)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
-                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
-                                    ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
-                                    let mut filled_rect = rect;
-                                    filled_rect.set_width(rect.width() * ram_pct);
-                                    ui.painter().rect_filled(filled_rect, 2.5, Color32::from_rgb(56, 189, 248));
-                                });
-                            });
+                        // 4. RAM with visual gauge or placeholder
+                        match (telem.ram_used_gb, telem.ram_total_gb, telem.ram_pct) {
+                            (Some(used), Some(total), _) => {
+                                let ram_pct = (used / total.max(0.1)).clamp(0.0, 1.0);
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(18, 24, 35))
+                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .rounding(5.0)
+                                    .inner_margin(egui::Margin::symmetric(7.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("💾 {:.1}/{:.1}G", used, total)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
+                                            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
+                                            ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
+                                            let mut filled_rect = rect;
+                                            filled_rect.set_width(rect.width() * ram_pct);
+                                            ui.painter().rect_filled(filled_rect, 2.5, Color32::from_rgb(56, 189, 248));
+                                        });
+                                    });
+                            }
+                            (_, _, Some(pct)) => {
+                                let ram_pct = (pct as f32 / 100.0).clamp(0.0, 1.0);
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(18, 24, 35))
+                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .rounding(5.0)
+                                    .inner_margin(egui::Margin::symmetric(7.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("💾 {}%", pct)).size(10.5).color(Color32::from_rgb(220, 230, 245)));
+                                            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 6.0), egui::Sense::hover());
+                                            ui.painter().rect_filled(rect, 2.5, Color32::from_rgb(30, 38, 52));
+                                            let mut filled_rect = rect;
+                                            filled_rect.set_width(rect.width() * ram_pct);
+                                            ui.painter().rect_filled(filled_rect, 2.5, Color32::from_rgb(56, 189, 248));
+                                        });
+                                    });
+                            }
+                            _ => {
+                                stat_chip(ui, RichText::new("💾 --/--G").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
                         // 5. Network throughput
-                        stat_chip(ui, RichText::new(format!("🌐 {}", telem.net_rate)).color(Color32::from_rgb(56, 189, 248)).size(10.5));
+                        match telem.net_rate {
+                            Some(ref rate) => {
+                                stat_chip(ui, RichText::new(format!("🌐 {}", rate)).color(Color32::from_rgb(56, 189, 248)).size(10.5));
+                            }
+                            None => {
+                                stat_chip(ui, RichText::new("🌐 --").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
                         // 6. Uptime
-                        stat_chip(ui, RichText::new(format!("⏱ {}", telem.uptime)).size(10.5).color(Color32::from_rgb(156, 163, 175)));
+                        match telem.uptime {
+                            Some(ref uptime) => {
+                                stat_chip(ui, RichText::new(format!("⏱ {}", uptime)).size(10.5).color(Color32::from_rgb(156, 163, 175)));
+                            }
+                            None => {
+                                stat_chip(ui, RichText::new("⏱ --").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
                         // 7. User
-                        stat_chip(ui, RichText::new(format!("👤 {}", telem.user)).size(10.5).color(Color32::from_rgb(201, 209, 217)));
+                        let user_str = if !telem.user.is_empty() { format!("👤 {}", telem.user) } else { "👤 --".to_string() };
+                        stat_chip(ui, RichText::new(user_str).size(10.5).color(Color32::from_rgb(201, 209, 217)));
 
                         // 8. Disk usage
-                        stat_chip(
-                            ui,
-                            RichText::new(format!("🖴 {}%", telem.disk_pct))
-                                .color(Color32::from_rgb(74, 222, 128))
-                                .size(10.5),
-                        );
+                        match telem.disk_pct {
+                            Some(disk) => {
+                                stat_chip(
+                                    ui,
+                                    RichText::new(format!("🖴 {}%", disk))
+                                        .color(Color32::from_rgb(74, 222, 128))
+                                        .size(10.5),
+                                );
+                            }
+                            None => {
+                                stat_chip(ui, RichText::new("🖴 --%").size(10.5).color(Color32::from_rgb(148, 163, 184)));
+                            }
+                        }
 
                         // 9. Multi-Exec Warning
                         if self.multi_exec_enabled {
@@ -7232,5 +7350,66 @@ demouser1@vultr:~$
         assert_eq!(tab.last_sftp_path, None);
         tab.last_sftp_path = Some("/etc/nginx/sites-available".to_string());
         assert_eq!(tab.last_sftp_path.as_deref(), Some("/etc/nginx/sites-available"));
+    }
+
+    #[test]
+    fn test_local_telemetry_initialization_and_real_data() {
+        let telem = TabTelemetry::new_local();
+        assert!(!telem.host.is_empty(), "Local host must not be empty");
+        assert!(!telem.user.is_empty(), "Local user must not be empty");
+        assert!(!telem.is_remote);
+        assert!(telem.is_connected);
+
+        #[cfg(unix)]
+        {
+            assert!(telem.cores.is_some(), "Cores should be detected on Unix");
+            assert!(telem.disk_pct.is_some(), "Disk pct should be detected on Unix");
+            if let Some(pct) = telem.disk_pct {
+                assert!(pct <= 100, "Disk percentage should be <= 100%");
+            }
+        }
+
+        // Before update, dynamic metrics must be None to avoid showing fake mockup data
+        assert_eq!(telem.cpu_pct, None);
+        assert_eq!(telem.ram_used_gb, None);
+        assert_eq!(telem.ram_total_gb, None);
+        assert_eq!(telem.net_rate, None);
+    }
+
+    #[test]
+    fn test_remote_telemetry_does_not_use_mockups() {
+        let session = Session::new_ssh("Production VPS", "Servers", "103.57.220.111", 22, "admin");
+
+        let telem = TabTelemetry::new_remote(&session);
+        assert_eq!(telem.host, "Production VPS");
+        assert_eq!(telem.user, "admin");
+        assert!(telem.is_remote);
+
+        // When remote session has no active data yet, all metrics must be None (not fake hashed numbers)
+        assert_eq!(telem.cores, None);
+        assert_eq!(telem.cpu_pct, None);
+        assert_eq!(telem.ram_used_gb, None);
+        assert_eq!(telem.ram_total_gb, None);
+        assert_eq!(telem.ram_pct, None);
+        assert_eq!(telem.uptime, None);
+        assert_eq!(telem.uptime_secs, None);
+        assert_eq!(telem.disk_pct, None);
+        assert_eq!(telem.net_rate, None);
+    }
+
+    #[test]
+    fn test_read_local_disk_pct_and_net_bytes() {
+        #[cfg(unix)]
+        {
+            let disk = read_local_disk_pct();
+            assert!(disk.is_some(), "Should read root filesystem disk usage");
+            let pct = disk.unwrap();
+            assert!(pct > 0 && pct <= 100, "Disk usage {}% should be in 1..=100", pct);
+
+            let net = read_local_net_bytes();
+            assert!(net.is_some(), "Should read /proc/net/dev on Linux");
+            let (rx, tx) = net.unwrap();
+            assert!(rx > 0 || tx > 0, "Network bytes should be non-zero");
+        }
     }
 }
