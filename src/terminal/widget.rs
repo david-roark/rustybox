@@ -2316,10 +2316,9 @@ mod tests {
         sess.kill();
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_terminal_widget_mouse_drag_selection_and_copy() {
-        let mut drag_sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap();
+        let mut drag_sess = PtySession::spawn_local(24, 80, None, None).unwrap();
         drag_sess.parser.lock().process(b"hello world\r\n");
         let ctx = egui::Context::default();
         let drag_tab_id = "test_tab_drag";
@@ -2379,6 +2378,277 @@ mod tests {
             ctx.data(|d| d.get_temp(drag_sel_id));
         assert!(sel_after_release.is_some(), "Selection should remain active after mouse release");
         assert!(!test_copied.is_empty(), "Copied text should not be empty after drag release");
+        drag_sess.kill();
+    }
+
+    #[test]
+    fn test_terminal_widget_reverse_drag_selection_and_copy() {
+        let mut drag_sess = PtySession::spawn_local(24, 80, None, None).unwrap();
+        drag_sess.parser.lock().process(b"hello world\r\n");
+        let ctx = egui::Context::default();
+        let drag_tab_id = "test_tab_reverse_drag";
+        let drag_sel_id = egui::Id::new("term_selection").with(drag_tab_id);
+
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+        let mut input0 = egui::RawInput::default();
+        input0.screen_rect = screen_rect;
+        input0.events.push(Event::PointerMoved(pos2(80.0, 10.0)));
+        let _ = ctx.run(input0, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Press at column 8
+        let mut input1 = egui::RawInput::default();
+        input1.screen_rect = screen_rect;
+        input1.events.push(Event::PointerButton {
+            pos: pos2(80.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input1, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Drag backwards to column 0
+        let mut input2 = egui::RawInput::default();
+        input2.screen_rect = screen_rect;
+        input2.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
+        let _ = ctx.run(input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Release at column 0
+        let mut input3 = egui::RawInput::default();
+        input3.screen_rect = screen_rect;
+        input3.events.push(Event::PointerButton {
+            pos: pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut test_copied = String::new();
+        let _ = ctx.run(input3, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+            test_copied = ctx.output(|o| o.copied_text.clone());
+        });
+
+        let sel_after_release: Option<((usize, usize), (usize, usize))> =
+            ctx.data(|d| d.get_temp(drag_sel_id));
+        assert!(sel_after_release.is_some(), "Reverse selection must remain active after release");
+        assert!(!test_copied.is_empty(), "Reverse selection must copy non-empty text");
+        drag_sess.kill();
+    }
+
+    #[test]
+    fn test_terminal_widget_single_click_clears_selection() {
+        let mut sess = PtySession::spawn_local(24, 80, None, None).unwrap();
+        let ctx = egui::Context::default();
+        let tab_id = "test_tab_click_clear";
+        let sel_id = egui::Id::new("term_selection").with(tab_id);
+
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+        // Seed an active selection in ctx data
+        ctx.data_mut(|d| {
+            d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 8usize)));
+        });
+
+        // Initial frame to verify selection is loaded
+        let mut input0 = egui::RawInput::default();
+        input0.screen_rect = screen_rect;
+        let _ = ctx.run(input0, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+        });
+        assert!(ctx.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id)).is_some());
+
+        // Perform a single click (press & release at same location)
+        let mut input1 = egui::RawInput::default();
+        input1.screen_rect = screen_rect;
+        input1.events.push(Event::PointerButton {
+            pos: pos2(50.0, 50.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input1, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+        });
+
+        let mut input2 = egui::RawInput::default();
+        input2.screen_rect = screen_rect;
+        input2.events.push(Event::PointerButton {
+            pos: pos2(50.0, 50.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+        });
+
+        let sel_after_click: Option<((usize, usize), (usize, usize))> =
+            ctx.data(|d| d.get_temp(sel_id));
+        assert_eq!(sel_after_click, None, "Single click must clear selection");
+        sess.kill();
+    }
+
+    #[test]
+    fn test_terminal_widget_all_copy_shortcuts() {
+        let mut sess = PtySession::spawn_local(24, 80, None, None).unwrap();
+        sess.parser.lock().process(b"hello world\r\n");
+        let ctx = egui::Context::default();
+        let tab_id = "test_tab_shortcuts";
+        let sel_id = egui::Id::new("term_selection").with(tab_id);
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+        // 1. Test Ctrl+Shift+C
+        ctx.data_mut(|d| {
+            d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
+        });
+        let mut in_ctrl_shift_c = egui::RawInput::default();
+        in_ctrl_shift_c.screen_rect = screen_rect;
+        in_ctrl_shift_c.modifiers = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        in_ctrl_shift_c.events.push(Event::Key {
+            key: Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: in_ctrl_shift_c.modifiers,
+        });
+        let mut copied = String::new();
+        let _ = ctx.run(in_ctrl_shift_c, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+            copied = ctx.output(|o| o.copied_text.clone());
+        });
+        assert!(!copied.is_empty(), "Ctrl+Shift+C must copy selected text");
+        assert_eq!(ctx.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id)), None);
+
+        // 2. Test Ctrl+Insert
+        ctx.data_mut(|d| {
+            d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
+        });
+        let mut in_ctrl_insert = egui::RawInput::default();
+        in_ctrl_insert.screen_rect = screen_rect;
+        in_ctrl_insert.modifiers = egui::Modifiers::CTRL;
+        in_ctrl_insert.events.push(Event::Key {
+            key: Key::Insert,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        });
+        copied.clear();
+        let _ = ctx.run(in_ctrl_insert, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+            copied = ctx.output(|o| o.copied_text.clone());
+        });
+        assert!(!copied.is_empty(), "Ctrl+Insert must copy selected text");
+        assert_eq!(ctx.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id)), None);
+
+        // 3. Test Event::Copy (macOS Cmd+C or native system clipboard trigger)
+        ctx.data_mut(|d| {
+            d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
+        });
+        let mut in_event_copy = egui::RawInput::default();
+        in_event_copy.screen_rect = screen_rect;
+        in_event_copy.events.push(Event::Copy);
+        copied.clear();
+        let _ = ctx.run(in_event_copy, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
+            });
+            copied = ctx.output(|o| o.copied_text.clone());
+        });
+        assert!(!copied.is_empty(), "Event::Copy must copy selected text");
+        assert_eq!(ctx.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id)), None);
+        sess.kill();
+    }
+
+    #[test]
+    fn test_terminal_widget_multiline_drag_selection() {
+        let mut drag_sess = PtySession::spawn_local(24, 80, None, None).unwrap();
+        drag_sess.parser.lock().process(b"first line\r\nsecond line\r\nthird line\r\n");
+        let ctx = egui::Context::default();
+        let drag_tab_id = "test_tab_multiline";
+        let drag_sel_id = egui::Id::new("term_selection").with(drag_tab_id);
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+        let mut input0 = egui::RawInput::default();
+        input0.screen_rect = screen_rect;
+        input0.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
+        let _ = ctx.run(input0, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Press at row 0
+        let mut input1 = egui::RawInput::default();
+        input1.screen_rect = screen_rect;
+        input1.events.push(Event::PointerButton {
+            pos: pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input1, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Drag down to row 2 (y = 50.0)
+        let mut input2 = egui::RawInput::default();
+        input2.screen_rect = screen_rect;
+        input2.events.push(Event::PointerMoved(pos2(80.0, 50.0)));
+        let _ = ctx.run(input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        // Release
+        let mut input3 = egui::RawInput::default();
+        input3.screen_rect = screen_rect;
+        input3.events.push(Event::PointerButton {
+            pos: pos2(80.0, 50.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut test_copied = String::new();
+        let _ = ctx.run(input3, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+            test_copied = ctx.output(|o| o.copied_text.clone());
+        });
+
+        let sel: Option<((usize, usize), (usize, usize))> = ctx.data(|d| d.get_temp(drag_sel_id));
+        assert!(sel.is_some(), "Multiline selection must remain active");
+        let ((sr, _), (er, _)) = sel.unwrap();
+        assert_ne!(sr, er, "Start row and end row must span multiple lines");
+        assert!(!test_copied.is_empty(), "Copied text must not be empty");
         drag_sess.kill();
     }
 
