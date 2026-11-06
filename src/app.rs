@@ -27,6 +27,87 @@ pub struct DetectedRemoteSession {
     pub cores: Option<u32>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TerminalMotdStats {
+    pub disk_pct: Option<u32>,
+    pub ram_pct: Option<u32>,
+    pub cpu_pct: Option<u32>,
+    pub cores: Option<u32>,
+}
+
+pub fn parse_terminal_motd_stats(screen_text: &str) -> TerminalMotdStats {
+    let mut disk_pct = None;
+    let mut ram_pct = None;
+    let mut cpu_pct = None;
+    let cores = None;
+
+    for line in screen_text.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse Linux MOTD stats
+        // Disk usage: "Usage of /: 29.0% of 22.88GB" or "Disk usage: 45%"
+        if disk_pct.is_none() {
+            if let Some(pct_str) = line.split("Usage of /:").nth(1) {
+                if let Some(num_str) = pct_str.split('%').next() {
+                    if let Ok(pct) = num_str.trim().parse::<f32>() {
+                        disk_pct = Some(pct.round() as u32);
+                    }
+                }
+            } else if let Some(pct_str) = line.split("Disk usage:").nth(1) {
+                if let Some(num_str) = pct_str.split('%').next() {
+                    if let Ok(pct) = num_str.trim().parse::<f32>() {
+                        disk_pct = Some(pct.round() as u32);
+                    }
+                }
+            }
+        }
+
+        // Memory usage: "Memory usage: 33%" or "RAM usage: 33%"
+        if ram_pct.is_none() {
+            if let Some(pct_str) = line.split("Memory usage:").nth(1) {
+                if let Some(num_str) = pct_str.split('%').next() {
+                    if let Ok(pct) = num_str.trim().parse::<f32>() {
+                        ram_pct = Some(pct.round() as u32);
+                    }
+                }
+            } else if let Some(pct_str) = line.split("RAM usage:").nth(1) {
+                if let Some(num_str) = pct_str.split('%').next() {
+                    if let Ok(pct) = num_str.trim().parse::<f32>() {
+                        ram_pct = Some(pct.round() as u32);
+                    }
+                }
+            }
+        }
+
+        // System load: "System load: 0.12" or "Load average: 0.12"
+        if cpu_pct.is_none() {
+            if let Some(val_str) = line.split("System load:").nth(1) {
+                if let Some(first_num) = val_str.split_whitespace().next() {
+                    if let Ok(load) = first_num.trim().parse::<f32>() {
+                        cpu_pct = Some(((load * 10.0).round() as u32).clamp(1, 95));
+                    }
+                }
+            } else if let Some(val_str) = line.split("Load average:").nth(1) {
+                if let Some(first_num) = val_str.split_whitespace().next() {
+                    if let Ok(load) = first_num.trim().parse::<f32>() {
+                        cpu_pct = Some(((load * 10.0).round() as u32).clamp(1, 95));
+                    }
+                }
+            }
+        }
+    }
+
+    TerminalMotdStats {
+        disk_pct,
+        ram_pct,
+        cpu_pct,
+        cores,
+    }
+}
+
 pub fn detect_remote_session(title: &str, screen_text: &str, local_host: &str) -> Option<DetectedRemoteSession> {
     let mut detected_user: Option<String> = None;
     let mut detected_host: Option<String> = None;
@@ -48,19 +129,14 @@ pub fn detect_remote_session(title: &str, screen_text: &str, local_host: &str) -
     }
 
     // 2. Scan lines of screen_text from bottom to top
-    let mut disk_pct = None;
-    let mut ram_pct = None;
-    let mut cpu_pct = None;
-    let cores = None;
+    if detected_user.is_none() || detected_host.is_none() {
+        for line in screen_text.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-    for line in screen_text.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Look for prompt: user@host:...[$#] or [user@host ~]$
-        if detected_user.is_none() || detected_host.is_none() {
+            // Look for prompt: user@host:...[$#] or [user@host ~]$
             if let Some(at_idx) = trimmed.rfind('@') {
                 let left = &trimmed[..at_idx];
                 let right = &trimmed[at_idx + 1..];
@@ -91,52 +167,24 @@ pub fn detect_remote_session(title: &str, screen_text: &str, local_host: &str) -
                         if trimmed.contains('#') || trimmed.contains('$') || trimmed.contains(':') || trimmed.contains('~') {
                             detected_user = Some(user_candidate.to_string());
                             detected_host = Some(host_candidate.to_string());
+                            break;
                         }
-                    }
-                }
-            }
-        }
-
-        // Parse Linux MOTD stats
-        if line.contains("Usage of /:") && disk_pct.is_none() {
-            if let Some(pct_str) = line.split("Usage of /:").nth(1) {
-                if let Some(num_str) = pct_str.split('%').next() {
-                    if let Ok(pct) = num_str.trim().parse::<f32>() {
-                        disk_pct = Some(pct.round() as u32);
-                    }
-                }
-            }
-        }
-
-        if line.contains("Memory usage:") && ram_pct.is_none() {
-            if let Some(pct_str) = line.split("Memory usage:").nth(1) {
-                if let Some(num_str) = pct_str.split('%').next() {
-                    if let Ok(pct) = num_str.trim().parse::<f32>() {
-                        ram_pct = Some(pct.round() as u32);
-                    }
-                }
-            }
-        }
-
-        if line.contains("System load:") && cpu_pct.is_none() {
-            if let Some(val_str) = line.split("System load:").nth(1) {
-                if let Some(first_num) = val_str.split_whitespace().next() {
-                    if let Ok(load) = first_num.trim().parse::<f32>() {
-                        cpu_pct = Some(((load * 10.0).round() as u32).clamp(1, 95));
                     }
                 }
             }
         }
     }
 
+    let stats = parse_terminal_motd_stats(screen_text);
+
     if let (Some(u), Some(h)) = (detected_user, detected_host) {
         Some(DetectedRemoteSession {
             user: u,
             host: h,
-            disk_pct,
-            ram_pct,
-            cpu_pct,
-            cores,
+            disk_pct: stats.disk_pct,
+            ram_pct: stats.ram_pct,
+            cpu_pct: stats.cpu_pct,
+            cores: stats.cores,
         })
     } else {
         None
@@ -1578,25 +1626,60 @@ impl RustyBoxApp {
                     tab.telemetry.host = if !s.name.is_empty() { s.name.clone() } else { h };
                     tab.telemetry.user = if !u.is_empty() { u } else { "root".into() };
                 }
-            } else if !tab.telemetry.is_remote && is_alive {
-                // Only scan parser text for local tabs that might have launched ssh
-                let screen_title = tab.session.title.lock().clone();
-                let screen_text = tab.session.parser.lock().screen().contents();
-                if let Some(det) = detect_remote_session(&screen_title, &screen_text, &local_host_copy) {
-                    tab.telemetry.is_remote = true;
-                    tab.telemetry.user = det.user.clone();
-                    tab.telemetry.host = det.host.clone();
-                    if let Some(d) = det.disk_pct {
-                        tab.telemetry.disk_pct = Some(d);
+            }
+
+            if is_alive {
+                // Extract full terminal text (all scrollback history + visible screen)
+                let full_terminal_text = {
+                    let mut p = tab.session.parser.lock();
+                    crate::terminal::widget::extract_all_terminal_text(p.screen_mut())
+                };
+
+                // Scan MOTD / system stats for ALL tabs (both pre-defined SSH and dynamically detected)
+                let motd_stats = parse_terminal_motd_stats(&full_terminal_text);
+                if let Some(d) = motd_stats.disk_pct {
+                    tab.telemetry.disk_pct = Some(d);
+                }
+                if let Some(r) = motd_stats.ram_pct {
+                    tab.telemetry.ram_pct = Some(r);
+                    if let Some(total) = tab.telemetry.ram_total_gb {
+                        tab.telemetry.ram_used_gb = Some(((total * (r as f32 / 100.0)) * 10.0).round() / 10.0);
                     }
-                    if let Some(r) = det.ram_pct {
-                        tab.telemetry.ram_pct = Some(r);
-                        if let Some(total) = tab.telemetry.ram_total_gb {
-                            tab.telemetry.ram_used_gb = Some(((total * (r as f32 / 100.0)) * 10.0).round() / 10.0);
+                }
+                if let Some(c) = motd_stats.cpu_pct {
+                    tab.telemetry.cpu_pct = Some(c);
+                }
+                if let Some(cores) = motd_stats.cores {
+                    tab.telemetry.cores = Some(cores);
+                }
+
+                // If not yet marked as remote (e.g. local tab that launched ssh command), detect it
+                if !tab.telemetry.is_remote {
+                    let screen_title = tab.session.title.lock().clone();
+                    if let Some(det) = detect_remote_session(&screen_title, &full_terminal_text, &local_host_copy) {
+                        tab.telemetry.is_remote = true;
+                        tab.telemetry.user = det.user;
+                        tab.telemetry.host = det.host;
+                        if let Some(d) = det.disk_pct {
+                            tab.telemetry.disk_pct = Some(d);
+                        }
+                        if let Some(r) = det.ram_pct {
+                            tab.telemetry.ram_pct = Some(r);
+                            if let Some(total) = tab.telemetry.ram_total_gb {
+                                tab.telemetry.ram_used_gb = Some(((total * (r as f32 / 100.0)) * 10.0).round() / 10.0);
+                            }
+                        }
+                        if let Some(c) = det.cpu_pct {
+                            tab.telemetry.cpu_pct = Some(c);
                         }
                     }
-                    if let Some(c) = det.cpu_pct {
-                        tab.telemetry.cpu_pct = Some(c);
+                }
+
+                // Real SSH2/SFTP background channel integration:
+                // If this tab's remote session is connected to SFTP, mirror the real remote disk stats from `df -k`
+                if tab.telemetry.is_remote && self.explorer.is_remote {
+                    if let Some((_used, _total, pct)) = self.explorer.remote_disk_stats {
+                        tab.telemetry.disk_pct = Some(pct.round() as u32);
                     }
                 }
             }
@@ -7411,5 +7494,70 @@ demouser1@vultr:~$
             let (rx, tx) = net.unwrap();
             assert!(rx > 0 || tx > 0, "Network bytes should be non-zero");
         }
+    }
+
+    #[test]
+    fn test_parse_terminal_motd_stats_standalone() {
+        let motd_text = r#"
+Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 5.15.0-105-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+  System information as of Fri Nov  6 13:40:00 UTC 2026
+
+  System load:                      0.35
+  Usage of /:                       42.5% of 39.80GB
+  Memory usage:                     58%
+  Swap usage:                       0%
+  Processes:                        112
+  Users logged in:                  1
+  IPv4 address for eth0:            192.0.2.10
+"#;
+
+        let stats = parse_terminal_motd_stats(motd_text);
+        assert_eq!(stats.disk_pct, Some(43));
+        assert_eq!(stats.ram_pct, Some(58));
+        assert_eq!(stats.cpu_pct, Some(4)); // (0.35 * 10.0).round() = 4
+    }
+
+    #[test]
+    fn test_predefined_ssh_tab_updates_motd_stats() {
+        let session_def = Session::new_ssh("My VPS", "Servers", "192.0.2.1", 22, "ubuntu");
+        let pty = PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap();
+        let motd = "\r\nSystem information\r\nSystem load: 0.20\r\nUsage of /: 35.0% of 20GB\r\nMemory usage: 45%\r\nubuntu@server:~$ ";
+        pty.parser.lock().process(motd.as_bytes());
+
+        let mut tab = OpenTab {
+            id: "ssh-tab-1".to_string(),
+            title: "SSH: My VPS".to_string(),
+            session: pty,
+            session_def: Some(session_def.clone()),
+            custom_cmd: None,
+            workdir: None,
+            telemetry: TabTelemetry::new_remote(&session_def),
+            last_synced_cwd: None,
+            last_sftp_path: None,
+        };
+
+        // Before scan: metrics are None
+        assert_eq!(tab.telemetry.disk_pct, None);
+        assert_eq!(tab.telemetry.ram_pct, None);
+        assert_eq!(tab.telemetry.cpu_pct, None);
+
+        // Extract full terminal text
+        let full_text = {
+            let mut p = tab.session.parser.lock();
+            crate::terminal::widget::extract_all_terminal_text(p.screen_mut())
+        };
+        let stats = parse_terminal_motd_stats(&full_text);
+        if let Some(d) = stats.disk_pct { tab.telemetry.disk_pct = Some(d); }
+        if let Some(r) = stats.ram_pct { tab.telemetry.ram_pct = Some(r); }
+        if let Some(c) = stats.cpu_pct { tab.telemetry.cpu_pct = Some(c); }
+
+        assert_eq!(tab.telemetry.disk_pct, Some(35));
+        assert_eq!(tab.telemetry.ram_pct, Some(45));
+        assert_eq!(tab.telemetry.cpu_pct, Some(2));
     }
 }
