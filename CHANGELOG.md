@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-76] - 2026-11-06
+### Fixed & Improved (UI Interaction & Layout Polish)
+- **Khắc phục triệt để lỗi chồng lấn/cấn viền khi rê chuột giữa các thẻ**:
+  - Phát hiện và xử lý nguyên nhân gốc: `ui.allocate_new_ui(...)` khi gọi trên `ui` cha trong `egui` tự động cập nhật lại con trỏ layout (cursor) dựa theo bounding box của nội dung bên trong, kéo giật lùi vị trí thẻ kế tiếp và gây chồng lấn hitbox/viền sáng lên thẻ trước đó.
+  - Chuyển toàn bộ cơ chế dựng nội dung bên trong thẻ của Action Cards và Recent Connections sang `ui.new_child(...)` độc lập, bảo toàn tuyệt đối con trỏ layout của `ui` cha.
+  - Chuẩn hóa khoảng cách ngang `card_spacing = 14px` cố định cho từng hàng Action Cards và Recent Connections, đảm bảo các thẻ cách đều nhau 14px, viền hover màu xanh sáng trọn vẹn 4 góc bo 8px, không còn bất kỳ hiện tượng đè mép hay cấn góc nào khi rê chuột.
+
+---
+
+## [v1.3-75] - 2026-11-06
+### Fixed & Improved (Home Dashboard Balance)
+- **Cân đối khoảng đệm trên/dưới và kích thước thẻ Action Cards**:
+  - Tách riêng thông số chiều cao `action_card_h = 58px` (cho 6 thẻ công cụ chính) và `session_card_h = 68px` (cho thẻ Recent Connections 3 dòng).
+  - Tinh chỉnh khoảng đệm đối xứng `10px` trên và `10px` dưới cho Action Cards, loại bỏ hoàn toàn khoảng trống dư thừa 22px dưới đáy thẻ.
+  - Tăng khoảng cách dọc giữa Hàng 1 và Hàng 2 của Action Cards lên 14px, tạo độ giãn cách thoáng đãng và hài hòa với lưới giao diện tổng thể.
+
+---
+
 ## [v1.3-74] - 2026-11-05
 ### Added & Fixed (Merge PR #4 from david-roark)
 - **Tùy chọn Font chữ Terminal & Nhúng JetBrains Nerd Mono**:
