@@ -153,6 +153,13 @@ impl<'a> TerminalWidget<'a> {
         let sb_drag_id = egui::Id::new("term_sb_drag").with(&self.tab_id);
         let init_focus_id = egui::Id::new("term_init_focus").with(&self.tab_id);
 
+        let clear_selection_in_ui = |ui: &mut egui::Ui| {
+            ui.data_mut(|d| {
+                d.remove_temp::<((usize, usize), (usize, usize))>(sel_id);
+                d.remove_temp::<Option<((usize, usize), (usize, usize))>>(sel_id);
+            });
+        };
+
         let pos_to_screen_cell = |pos: egui::Pos2| -> (usize, usize) {
             let r = (((pos.y - rect.top()) / row_height).floor().max(0.0) as usize)
                 .min(rows.saturating_sub(1) as usize);
@@ -168,9 +175,11 @@ impl<'a> TerminalWidget<'a> {
         };
 
         let mut selection: Option<((usize, usize), (usize, usize))> =
-            ui.data(|d| d.get_temp(sel_id));
+            ui.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id))
+                .or_else(|| ui.data(|d| d.get_temp::<Option<((usize, usize), (usize, usize))>>(sel_id)).flatten());
         let mut drag_origin: Option<(usize, usize, egui::Pos2)> =
-            ui.data(|d| d.get_temp(drag_origin_id));
+            ui.data(|d| d.get_temp::<(usize, usize, egui::Pos2)>(drag_origin_id))
+                .or_else(|| ui.data(|d| d.get_temp::<Option<(usize, usize, egui::Pos2)>>(drag_origin_id)).flatten());
         let mut dragging_scrollbar: bool = ui.data(|d| d.get_temp(sb_drag_id)).unwrap_or(false);
 
         let (hover_pos, shift_held, ctrl_held_now, middle_clicked, secondary_clicked, primary_clicked) =
@@ -192,9 +201,12 @@ impl<'a> TerminalWidget<'a> {
 
         // Handle interactive vertical scrollbar click/drag or TUI mouse reporting / text selection
         let tui_captures_mouse = mouse_mode != vt100::MouseProtocolMode::None && !shift_held;
+        let press_origin_pos = ui.input(|i| i.pointer.press_origin());
+        let just_stopped_drag = response.drag_stopped();
 
         if response.drag_started() {
-            if let Some(pos) = response.interact_pointer_pos() {
+            let start_pos = press_origin_pos.or_else(|| response.interact_pointer_pos());
+            if let Some(pos) = start_pos {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     dragging_scrollbar = true;
                 } else if tui_captures_mouse {
@@ -212,11 +224,18 @@ impl<'a> TerminalWidget<'a> {
                 } else if rect.contains(pos) {
                     let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
                     drag_origin = Some((abs_r, c, pos));
-                    selection = None;
+                    if let Some(cur_pos) = hover_pos.or_else(|| response.interact_pointer_pos()) {
+                        let end_cell = pos_to_abs_cell(cur_pos, scrollback_offset);
+                        if (abs_r, c) != end_cell {
+                            selection = Some(((abs_r, c), end_cell));
+                        }
+                    }
                 }
             }
-        } else if response.dragged() {
-            if let Some(pos) = hover_pos {
+        }
+
+        if response.dragged() {
+            if let Some(pos) = hover_pos.or_else(|| response.interact_pointer_pos()) {
                 if dragging_scrollbar && !alternate_screen && scrollback_len > 0 {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
                     let new_sb = ((1.0 - ratio) * (scrollback_len as f32)).round() as usize;
@@ -224,6 +243,11 @@ impl<'a> TerminalWidget<'a> {
                     parser.screen_mut().set_scrollback(new_sb);
                     scrollback_offset = parser.screen().scrollback();
                 } else if !tui_captures_mouse {
+                    if drag_origin.is_none() {
+                        let s_pos = press_origin_pos.unwrap_or(pos);
+                        let (abs_r, c) = pos_to_abs_cell(s_pos, scrollback_offset);
+                        drag_origin = Some((abs_r, c, s_pos));
+                    }
                     if let Some((orig_abs_r, orig_c, orig_pos)) = drag_origin {
                         // Auto-scroll when dragging near top/bottom edge to allow multi-page selection
                         if !alternate_screen && scrollback_len > 0 {
@@ -239,18 +263,16 @@ impl<'a> TerminalWidget<'a> {
                                 scrollback_offset = parser.screen().scrollback();
                             }
                         }
-                        if pos.distance(orig_pos) >= 5.0 || (pos_to_abs_cell(pos, scrollback_offset) != (orig_abs_r, orig_c)) {
-                            let end_cell = pos_to_abs_cell(pos, scrollback_offset);
-                            if (orig_abs_r, orig_c) != end_cell {
-                                selection = Some(((orig_abs_r, orig_c), end_cell));
-                            }
+                        let end_cell = pos_to_abs_cell(pos, scrollback_offset);
+                        if (orig_abs_r, orig_c) != end_cell || pos.distance(orig_pos) >= 3.0 {
+                            selection = Some(((orig_abs_r, orig_c), end_cell));
                         }
                     }
                 }
             }
         }
 
-        if response.drag_stopped() {
+        if just_stopped_drag {
             if dragging_scrollbar {
                 dragging_scrollbar = false;
             } else if tui_captures_mouse {
@@ -283,7 +305,7 @@ impl<'a> TerminalWidget<'a> {
             }
         }
 
-        if response.triple_clicked() && !response.dragged() {
+        if response.triple_clicked() && !response.dragged() && !just_stopped_drag {
             if let Some(pos) = response.interact_pointer_pos() {
                 if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
                     let (abs_r, _) = pos_to_abs_cell(pos, scrollback_offset);
@@ -302,7 +324,7 @@ impl<'a> TerminalWidget<'a> {
                     drag_origin = None;
                 }
             }
-        } else if response.double_clicked() && !response.dragged() {
+        } else if response.double_clicked() && !response.dragged() && !just_stopped_drag {
             if let Some(pos) = response.interact_pointer_pos() {
                 if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
                     let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
@@ -320,7 +342,7 @@ impl<'a> TerminalWidget<'a> {
                     drag_origin = None;
                 }
             }
-        } else if response.clicked() && !response.dragged() {
+        } else if response.clicked() && !response.dragged() && !just_stopped_drag {
             if let Some(pos) = response.interact_pointer_pos() {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
@@ -350,15 +372,26 @@ impl<'a> TerminalWidget<'a> {
                     ) {
                         let _ = self.session.write_bytes(&rel_seq);
                     }
+                } else if !scrollbar_rect.contains(pos) {
+                    selection = None;
+                    drag_origin = None;
                 }
             }
-            selection = None;
-            drag_origin = None;
         }
 
         ui.data_mut(|d| {
-            d.insert_temp(sel_id, selection);
-            d.insert_temp(drag_origin_id, drag_origin);
+            if let Some(sel) = selection {
+                d.insert_temp(sel_id, sel);
+            } else {
+                d.remove_temp::<((usize, usize), (usize, usize))>(sel_id);
+                d.remove_temp::<Option<((usize, usize), (usize, usize))>>(sel_id);
+            }
+            if let Some(orig) = drag_origin {
+                d.insert_temp(drag_origin_id, orig);
+            } else {
+                d.remove_temp::<(usize, usize, egui::Pos2)>(drag_origin_id);
+                d.remove_temp::<Option<(usize, usize, egui::Pos2)>>(drag_origin_id);
+            }
             d.insert_temp(sb_drag_id, dragging_scrollbar);
         });
 
@@ -511,7 +544,7 @@ impl<'a> TerminalWidget<'a> {
                             }
                         }
                         selection = None;
-                        ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                        clear_selection_in_ui(ui);
                         ui.close_menu();
                     }
                 }
@@ -531,7 +564,7 @@ impl<'a> TerminalWidget<'a> {
                         }
                     }
                     selection = None;
-                    ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                    clear_selection_in_ui(ui);
                     ui.close_menu();
                 }
 
@@ -555,7 +588,7 @@ impl<'a> TerminalWidget<'a> {
                         let _ = sender.send(b"\x03".to_vec());
                     }
                     selection = None;
-                    ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                    clear_selection_in_ui(ui);
                     ui.close_menu();
                 }
                 if ui.button("🔍 Find in Terminal (Ctrl+F)").clicked() {
@@ -1020,7 +1053,7 @@ impl<'a> TerminalWidget<'a> {
                                     copy_text_to_clipboard(ui, &text);
                                 }
                                 selection = None;
-                                ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                                clear_selection_in_ui(ui);
                             }
                             Key::Insert => input_bytes.extend_from_slice(b"\x1b[2~"),
                             Key::F if ctrl && !shift => action = TerminalAction::OpenSearch,
@@ -1046,7 +1079,7 @@ impl<'a> TerminalWidget<'a> {
                                     copy_text_to_clipboard(ui, &text);
                                 }
                                 selection = None;
-                                ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                                clear_selection_in_ui(ui);
                             }
                             Key::V if ctrl && shift => {
                                 // Ctrl+Shift+V: Paste from Clipboard
@@ -1092,7 +1125,7 @@ impl<'a> TerminalWidget<'a> {
                                         }
                                         // Always clear selection after copying so subsequent Ctrl+C immediately sends SIGINT
                                         selection = None;
-                                        ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                                        clear_selection_in_ui(ui);
                                     } else {
                                         // Standard Ctrl+C: Send SIGINT (\x03) to foreground process (docker logs, ping, tail -f, etc.)
                                         self.session.parser.lock().screen_mut().set_scrollback(0);
@@ -1138,7 +1171,7 @@ impl<'a> TerminalWidget<'a> {
                                 }
                                 // Clear selection after copying so subsequent Ctrl+C sends SIGINT
                                 selection = None;
-                                ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                                clear_selection_in_ui(ui);
                             } else {
                                 // No selection: Ctrl+C sends SIGINT (\x03) to interrupt running command (docker logs, ping, etc.)
                                 self.session.parser.lock().screen_mut().set_scrollback(0);
@@ -1165,7 +1198,7 @@ impl<'a> TerminalWidget<'a> {
                                 copy_text_to_clipboard(ui, &text);
                             }
                             selection = None;
-                            ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                            clear_selection_in_ui(ui);
                         }
                     }
                     Event::Paste(text) => {
@@ -1198,15 +1231,14 @@ impl<'a> TerminalWidget<'a> {
 
             if let Some(text) = paste_text_to_check {
                 selection = None;
-                ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                clear_selection_in_ui(ui);
                 action = TerminalAction::MultiLinePaste(text);
             }
 
             if !input_bytes.is_empty() {
                 // Any keyboard input clears stale selection and snaps scrollback to live bottom
                 if selection.is_some() {
-                    selection = None;
-                    ui.data_mut(|d| d.insert_temp(sel_id, selection));
+                    clear_selection_in_ui(ui);
                 }
                 self.session.parser.lock().screen_mut().set_scrollback(0);
                 let _ = self.session.write_bytes(&input_bytes);
@@ -2203,7 +2235,7 @@ mod tests {
         // 1. Seed an active selection and press Ctrl+C (both Key::C + Event::Copy in same frame)
         //    Verify it does NOT deadlock egui::Context when calling output_mut / data_mut, and clears selection!
         ctx.data_mut(|d| {
-            d.insert_temp(sel_id, Some(((0usize, 0usize), (0usize, 8usize))));
+            d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 8usize)));
         });
 
         let mut raw_input = egui::RawInput::default();
@@ -2282,6 +2314,72 @@ mod tests {
             "Ctrl+C through TerminalWidget::ui failed to interrupt foreground streaming process"
         );
         sess.kill();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_terminal_widget_mouse_drag_selection_and_copy() {
+        let mut drag_sess = PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap();
+        drag_sess.parser.lock().process(b"hello world\r\n");
+        let ctx = egui::Context::default();
+        let drag_tab_id = "test_tab_drag";
+        let drag_sel_id = egui::Id::new("term_selection").with(drag_tab_id);
+
+        let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+        let mut input0 = egui::RawInput::default();
+        input0.screen_rect = screen_rect;
+        input0.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
+        let _ = ctx.run(input0, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        let mut input1 = egui::RawInput::default();
+        input1.screen_rect = screen_rect;
+        input1.events.push(Event::PointerButton {
+            pos: pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input1, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        let mut input2 = egui::RawInput::default();
+        input2.screen_rect = screen_rect;
+        input2.events.push(Event::PointerMoved(pos2(80.0, 10.0)));
+        let _ = ctx.run(input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+        });
+
+        let mut input3 = egui::RawInput::default();
+        input3.screen_rect = screen_rect;
+        input3.events.push(Event::PointerButton {
+            pos: pos2(80.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut test_copied = String::new();
+        let _ = ctx.run(input3, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = TerminalWidget::new(drag_tab_id, &mut drag_sess).ui(ui, None);
+            });
+            test_copied = ctx.output(|o| o.copied_text.clone());
+        });
+
+        let sel_after_release: Option<((usize, usize), (usize, usize))> =
+            ctx.data(|d| d.get_temp(drag_sel_id));
+        assert!(sel_after_release.is_some(), "Selection should remain active after mouse release");
+        assert!(!test_copied.is_empty(), "Copied text should not be empty after drag release");
+        drag_sess.kill();
     }
 
     #[test]
