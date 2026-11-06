@@ -1,4 +1,7 @@
-use super::{ExternalOpenMode, FileEntry, FileExplorer};
+use super::{
+    format_modified_time, format_size_kb, ExternalOpenMode, FileEntry, FileExplorer,
+    SftpSortColumn,
+};
 use egui::{
     pos2, vec2, Align2, Color32, FontId, Margin, Rect, RichText, Rounding,
     ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
@@ -524,71 +527,17 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
-                // Table Column Header (`Name ▼` | `Size`)
-                let (hdr_rect, hdr_resp) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-                if hdr_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if hdr_resp.on_hover_text("Click to toggle sort order (A-Z / Z-A)").clicked() {
-                    explorer.toggle_sort_order();
-                }
+                let col_size_w = 68.0f32;
+                let col_date_w = 115.0f32;
+                let col_owner_w = 60.0f32;
+                let col_group_w = 60.0f32;
+                let col_access_w = 85.0f32;
+                let fixed_cols_total = col_size_w + col_date_w + col_owner_w + col_group_w + col_access_w; // 388.0
 
-                let p = ui.painter();
-                p.rect_filled(
-                    hdr_rect,
-                    Rounding {
-                        nw: 5.0,
-                        ne: 5.0,
-                        sw: 0.0,
-                        se: 0.0,
-                    },
-                    Color32::from_rgb(28, 33, 40),
-                );
-                p.line_segment(
-                    [pos2(hdr_rect.left(), hdr_rect.bottom()), pos2(hdr_rect.right(), hdr_rect.bottom())],
-                    Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
-                );
-                p.text(
-                    pos2(hdr_rect.left() + 8.0, hdr_rect.center().y),
-                    Align2::LEFT_CENTER,
-                    "Name",
-                    FontId::proportional(11.5),
-                    Color32::from_rgb(201, 209, 217),
-                );
-                // Sort indicator triangle next to `Name`
-                let tri_x = hdr_rect.left() + 46.0;
-                let tri_y = hdr_rect.center().y;
-                if explorer.sort_ascending {
-                    p.add(egui::Shape::convex_polygon(
-                        vec![
-                            pos2(tri_x - 3.2, tri_y - 1.8),
-                            pos2(tri_x + 3.2, tri_y - 1.8),
-                            pos2(tri_x, tri_y + 2.4),
-                        ],
-                        Color32::from_rgb(139, 148, 158),
-                        Stroke::NONE,
-                    ));
-                } else {
-                    p.add(egui::Shape::convex_polygon(
-                        vec![
-                            pos2(tri_x, tri_y - 2.4),
-                            pos2(tri_x + 3.2, tri_y + 1.8),
-                            pos2(tri_x - 3.2, tri_y + 1.8),
-                        ],
-                        Color32::from_rgb(139, 148, 158),
-                        Stroke::NONE,
-                    ));
-                }
-                p.text(
-                    pos2(hdr_rect.right() - 8.0, hdr_rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    "Size",
-                    FontId::proportional(11.0),
-                    Color32::from_rgb(139, 148, 158),
-                );
+                let avail_w = ui.available_width();
+                let col_name_w = (avail_w - fixed_cols_total).max(165.0);
+                let table_w = col_name_w + fixed_cols_total;
 
-                let list_h = (table_h - 26.0).max(90.0);
                 let mut clicked_dir: Option<PathBuf> = None;
                 let mut double_clicked_file: Option<PathBuf> = None;
                 let mut context_chmod: Option<PathBuf> = None;
@@ -608,169 +557,338 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 let mut context_compare: Option<PathBuf> = None;
                 let mut go_parent = false;
 
-                ScrollArea::vertical()
-                    .id_salt("sftp_entries_scroll")
-                    .max_height(list_h)
-                    .min_scrolled_height(list_h)
+                ScrollArea::horizontal()
+                    .id_salt("sftp_horiz_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.set_min_width(table_w);
 
-                        // Parent directory `..` row (always at top just like RustyBox)
-                        let (up_rect, up_resp) =
-                            ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-                        if up_resp.hovered() {
+                        // 1. STICKY HEADER ROW (Matching MobaXterm 6 Columns)
+                        let (hdr_rect, _) = ui.allocate_exact_size(vec2(table_w, 24.0), Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(
+                            hdr_rect,
+                            Rounding {
+                                nw: 5.0,
+                                ne: 5.0,
+                                sw: 0.0,
+                                se: 0.0,
+                            },
+                            Color32::from_rgb(28, 33, 40),
+                        );
+                        p.line_segment(
+                            [pos2(hdr_rect.left(), hdr_rect.bottom()), pos2(hdr_rect.right(), hdr_rect.bottom())],
+                            Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                        );
+
+                        // Header Column Rectangles
+                        let r_name = Rect::from_min_max(hdr_rect.min, pos2(hdr_rect.min.x + col_name_w, hdr_rect.max.y));
+                        let r_size = Rect::from_min_max(pos2(r_name.max.x, hdr_rect.min.y), pos2(r_name.max.x + col_size_w, hdr_rect.max.y));
+                        let r_date = Rect::from_min_max(pos2(r_size.max.x, hdr_rect.min.y), pos2(r_size.max.x + col_date_w, hdr_rect.max.y));
+                        let r_owner = Rect::from_min_max(pos2(r_date.max.x, hdr_rect.min.y), pos2(r_date.max.x + col_owner_w, hdr_rect.max.y));
+                        let r_group = Rect::from_min_max(pos2(r_owner.max.x, hdr_rect.min.y), pos2(r_owner.max.x + col_group_w, hdr_rect.max.y));
+                        let r_access = Rect::from_min_max(pos2(r_group.max.x, hdr_rect.min.y), pos2(hdr_rect.max.x, hdr_rect.max.y));
+
+                        // Vertical Column Dividers
+                        for &div_x in &[r_name.max.x, r_size.max.x, r_date.max.x, r_owner.max.x, r_group.max.x] {
+                            p.line_segment(
+                                [pos2(div_x, hdr_rect.top() + 3.0), pos2(div_x, hdr_rect.bottom() - 3.0)],
+                                Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                            );
+                        }
+
+                        // Column Header Interactions
+                        let resp_name = ui.interact(r_name, ui.id().with("hdr_name"), Sense::click()).on_hover_text("Sort by Name");
+                        let resp_size = ui.interact(r_size, ui.id().with("hdr_size"), Sense::click()).on_hover_text("Sort by Size (KB)");
+                        let resp_date = ui.interact(r_date, ui.id().with("hdr_date"), Sense::click()).on_hover_text("Sort by Last Modified");
+                        let resp_owner = ui.interact(r_owner, ui.id().with("hdr_owner"), Sense::click()).on_hover_text("Sort by Owner");
+                        let resp_group = ui.interact(r_group, ui.id().with("hdr_group"), Sense::click()).on_hover_text("Sort by Group");
+                        let resp_access = ui.interact(r_access, ui.id().with("hdr_access"), Sense::click()).on_hover_text("Sort by Access Permissions");
+
+                        if resp_name.hovered() || resp_size.hovered() || resp_date.hovered() || resp_owner.hovered() || resp_group.hovered() || resp_access.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            ui.painter().rect_filled(
-                                up_rect,
-                                Rounding::same(3.0),
-                                Color32::from_rgb(28, 33, 40),
-                            );
                         }
-                        draw_mini_folder(
-                            ui.painter(),
-                            pos2(up_rect.left() + 14.0, up_rect.center().y),
-                            Color32::from_rgb(245, 158, 11),
-                        );
-                        ui.painter().text(
-                            pos2(up_rect.left() + 26.0, up_rect.center().y),
+
+                        if resp_name.clicked() { explorer.set_sort_column(SftpSortColumn::Name); }
+                        if resp_size.clicked() { explorer.set_sort_column(SftpSortColumn::Size); }
+                        if resp_date.clicked() { explorer.set_sort_column(SftpSortColumn::Modified); }
+                        if resp_owner.clicked() { explorer.set_sort_column(SftpSortColumn::Owner); }
+                        if resp_group.clicked() { explorer.set_sort_column(SftpSortColumn::Group); }
+                        if resp_access.clicked() { explorer.set_sort_column(SftpSortColumn::Access); }
+
+                        // Draw Header Labels
+                        p.text(
+                            pos2(r_name.left() + 8.0, r_name.center().y),
                             Align2::LEFT_CENTER,
-                            "..",
-                            FontId::monospace(12.0),
-                            Color32::from_rgb(230, 237, 243),
+                            "Name",
+                            FontId::proportional(11.5),
+                            Color32::from_rgb(201, 209, 217),
                         );
-                        let up_resp = up_resp.on_hover_text("Double-click to go to parent directory");
-                        if up_resp.double_clicked() {
-                            go_parent = true;
+                        if explorer.sort_column == SftpSortColumn::Name {
+                            draw_sort_arrow(p, r_name.left() + 48.0, r_name.center().y, explorer.sort_ascending);
                         }
-                        up_resp.context_menu(|ui| {
-                            if ui.button("⬆  Parent directory").clicked() {
-                                go_parent = true;
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            if ui.button("🔄  Refresh current folder").clicked() {
-                                context_refresh = true;
-                                ui.close_menu();
-                            }
-                        });
 
-                        for entry in &explorer.entries {
-                            let is_selected = explorer.selected_file.as_ref() == Some(&entry.path);
-                            let (row_rect, resp) =
-                                ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-                            if resp.hovered() {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
+                        p.text(
+                            pos2(r_size.right() - 8.0, r_size.center().y),
+                            Align2::RIGHT_CENTER,
+                            "Size (KB)",
+                            FontId::proportional(11.0),
+                            Color32::from_rgb(139, 148, 158),
+                        );
+                        if explorer.sort_column == SftpSortColumn::Size {
+                            draw_sort_arrow(p, r_size.left() + 10.0, r_size.center().y, explorer.sort_ascending);
+                        }
 
-                            let p = ui.painter();
-                            if is_selected {
-                                p.rect(
-                                    row_rect,
-                                    Rounding::same(3.0),
-                                    Color32::from_rgba_unmultiplied(31, 111, 235, 55),
-                                    Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
-                                );
-                            } else if resp.hovered() {
-                                p.rect_filled(
-                                    row_rect,
-                                    Rounding::same(3.0),
-                                    Color32::from_rgb(26, 31, 38),
-                                );
-                            }
+                        p.text(
+                            pos2(r_date.left() + 8.0, r_date.center().y),
+                            Align2::LEFT_CENTER,
+                            "Last modified",
+                            FontId::proportional(11.0),
+                            Color32::from_rgb(139, 148, 158),
+                        );
+                        if explorer.sort_column == SftpSortColumn::Modified {
+                            draw_sort_arrow(p, r_date.left() + 86.0, r_date.center().y, explorer.sort_ascending);
+                        }
 
-                            let icon_c = pos2(row_rect.left() + 14.0, row_rect.center().y);
-                            if entry.is_dir {
-                                let folder_col = if entry.is_hidden {
-                                    Color32::from_rgb(217, 159, 56)
-                                } else {
-                                    Color32::from_rgb(251, 191, 36)
-                                };
-                                draw_mini_folder(p, icon_c, folder_col);
-                            } else {
-                                let doc_col = if entry.is_hidden {
-                                    Color32::from_rgb(139, 148, 158)
-                                } else if entry.name.ends_with(".sh")
-                                    || entry.name.ends_with(".py")
-                                    || entry.name.ends_with(".rs")
-                                    || entry.name.ends_with(".rb")
-                                {
-                                    Color32::from_rgb(88, 166, 255)
-                                } else {
-                                    Color32::from_rgb(201, 209, 217)
-                                };
-                                draw_mini_file(p, icon_c, doc_col);
-                            }
+                        p.text(
+                            pos2(r_owner.left() + 8.0, r_owner.center().y),
+                            Align2::LEFT_CENTER,
+                            "Owner",
+                            FontId::proportional(11.0),
+                            Color32::from_rgb(139, 148, 158),
+                        );
+                        if explorer.sort_column == SftpSortColumn::Owner {
+                            draw_sort_arrow(p, r_owner.left() + 48.0, r_owner.center().y, explorer.sort_ascending);
+                        }
 
-                            let size_str = if entry.is_dir {
-                                String::new()
-                            } else {
-                                format_file_size(entry.size)
-                            };
-                            let right_reserve = if size_str.is_empty() { 8.0 } else { 56.0 };
+                        p.text(
+                            pos2(r_group.left() + 8.0, r_group.center().y),
+                            Align2::LEFT_CENTER,
+                            "Group",
+                            FontId::proportional(11.0),
+                            Color32::from_rgb(139, 148, 158),
+                        );
+                        if explorer.sort_column == SftpSortColumn::Group {
+                            draw_sort_arrow(p, r_group.left() + 46.0, r_group.center().y, explorer.sort_ascending);
+                        }
 
-                            let name_clip = Rect::from_min_max(
-                                pos2(row_rect.left() + 26.0, row_rect.top()),
-                                pos2((row_rect.right() - right_reserve).max(row_rect.left() + 40.0), row_rect.bottom()),
-                            );
-                            let name_color = if entry.is_dir {
-                                if entry.is_hidden {
-                                    Color32::from_rgb(210, 218, 226)
-                                } else {
-                                    Color32::from_rgb(240, 246, 252)
+                        p.text(
+                            pos2(r_access.left() + 8.0, r_access.center().y),
+                            Align2::LEFT_CENTER,
+                            "Access",
+                            FontId::proportional(11.0),
+                            Color32::from_rgb(139, 148, 158),
+                        );
+                        if explorer.sort_column == SftpSortColumn::Access {
+                            draw_sort_arrow(p, r_access.left() + 50.0, r_access.center().y, explorer.sort_ascending);
+                        }
+
+                        let list_h = (table_h - 26.0).max(90.0);
+
+                        ScrollArea::vertical()
+                            .id_salt("sftp_entries_scroll")
+                            .max_height(list_h)
+                            .min_scrolled_height(list_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_min_width(table_w);
+                                ui.spacing_mut().item_spacing.y = 1.0;
+
+                                // Parent directory `..` row (always at top just like MobaXterm)
+                                let (up_rect, up_resp) =
+                                    ui.allocate_exact_size(vec2(table_w, 22.0), Sense::click());
+                                if up_resp.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    ui.painter().rect_filled(
+                                        up_rect,
+                                        Rounding::same(3.0),
+                                        Color32::from_rgb(28, 33, 40),
+                                    );
                                 }
-                            } else if entry.is_hidden {
-                                Color32::from_rgb(165, 175, 186)
-                            } else {
-                                Color32::from_rgb(215, 222, 230)
-                            };
-
-                            ui.painter().with_clip_rect(name_clip).text(
-                                pos2(row_rect.left() + 26.0, row_rect.center().y),
-                                Align2::LEFT_CENTER,
-                                &entry.name,
-                                FontId::proportional(12.0),
-                                name_color,
-                            );
-
-                            if !size_str.is_empty() {
+                                draw_mini_folder(
+                                    ui.painter(),
+                                    pos2(up_rect.left() + 14.0, up_rect.center().y),
+                                    Color32::from_rgb(245, 158, 11),
+                                );
                                 ui.painter().text(
-                                    pos2(row_rect.right() - 6.0, row_rect.center().y),
-                                    Align2::RIGHT_CENTER,
-                                    &size_str,
-                                    FontId::monospace(10.0),
-                                    Color32::from_rgb(110, 118, 129),
+                                    pos2(up_rect.left() + 26.0, up_rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    "..",
+                                    FontId::monospace(12.0),
+                                    Color32::from_rgb(230, 237, 243),
                                 );
-                            }
-
-                            if resp.clicked() {
-                                explorer.selected_file = Some(entry.path.clone());
-                            }
-                            if resp.middle_clicked() {
-                                context_terminal_paste_path = Some(entry.path.to_string_lossy().to_string());
-                            }
-                            if resp.double_clicked() {
-                                if entry.is_dir {
-                                    clicked_dir = Some(entry.path.clone());
-                                } else {
-                                    double_clicked_file = Some(entry.path.clone());
+                                let up_resp = up_resp.on_hover_text("Double-click to go to parent directory");
+                                if up_resp.double_clicked() {
+                                    go_parent = true;
                                 }
-                            }
+                                up_resp.context_menu(|ui| {
+                                    if ui.button("⬆  Parent directory").clicked() {
+                                        go_parent = true;
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("🔄  Refresh current folder").clicked() {
+                                        context_refresh = true;
+                                        ui.close_menu();
+                                    }
+                                });
 
-                            let tip = format!(
-                                "{}\nPermissions: {}\n{}",
-                                entry.path.display(),
-                                entry.permissions,
-                                if entry.is_dir {
-                                    "Type: Directory".to_string()
-                                } else {
-                                    format!("Size: {}", format_file_size(entry.size))
-                                }
-                            );
-                            let path_clone = entry.path.clone();
-                            let is_dir_entry = entry.is_dir;
-                            let entry_clone = entry.clone();
-                            resp.on_hover_text(tip).context_menu(|ui| {
+                                for entry in &explorer.entries {
+                                    let is_selected = explorer.selected_file.as_ref() == Some(&entry.path);
+                                    let (row_rect, resp) =
+                                        ui.allocate_exact_size(vec2(table_w, 22.0), Sense::click());
+                                    if resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+
+                                    let p = ui.painter();
+                                    if is_selected {
+                                        p.rect(
+                                            row_rect,
+                                            Rounding::same(3.0),
+                                            Color32::from_rgba_unmultiplied(31, 111, 235, 55),
+                                            Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                        );
+                                    } else if resp.hovered() {
+                                        p.rect_filled(
+                                            row_rect,
+                                            Rounding::same(3.0),
+                                            Color32::from_rgb(26, 31, 38),
+                                        );
+                                    }
+
+                                    // Col 1: Icon + Name
+                                    let icon_c = pos2(row_rect.left() + 14.0, row_rect.center().y);
+                                    if entry.is_dir {
+                                        let folder_col = if entry.is_hidden {
+                                            Color32::from_rgb(217, 159, 56)
+                                        } else {
+                                            Color32::from_rgb(251, 191, 36)
+                                        };
+                                        draw_mini_folder(p, icon_c, folder_col);
+                                    } else {
+                                        let doc_col = if entry.is_hidden {
+                                            Color32::from_rgb(139, 148, 158)
+                                        } else if entry.name.ends_with(".sh")
+                                            || entry.name.ends_with(".py")
+                                            || entry.name.ends_with(".rs")
+                                            || entry.name.ends_with(".rb")
+                                        {
+                                            Color32::from_rgb(88, 166, 255)
+                                        } else {
+                                            Color32::from_rgb(201, 209, 217)
+                                        };
+                                        draw_mini_file(p, icon_c, doc_col);
+                                    }
+
+                                    let name_clip = Rect::from_min_max(
+                                        pos2(row_rect.left() + 26.0, row_rect.top()),
+                                        pos2(row_rect.left() + col_name_w - 6.0, row_rect.bottom()),
+                                    );
+                                    let name_color = if entry.is_dir {
+                                        if entry.is_hidden {
+                                            Color32::from_rgb(210, 218, 226)
+                                        } else {
+                                            Color32::from_rgb(240, 246, 252)
+                                        }
+                                    } else if entry.is_hidden {
+                                        Color32::from_rgb(165, 175, 186)
+                                    } else {
+                                        Color32::from_rgb(215, 222, 230)
+                                    };
+
+                                    p.with_clip_rect(name_clip).text(
+                                        pos2(row_rect.left() + 26.0, row_rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        &entry.name,
+                                        FontId::proportional(12.0),
+                                        name_color,
+                                    );
+
+                                    // Col 2: Size (KB)
+                                    let size_right_x = row_rect.left() + col_name_w + col_size_w - 8.0;
+                                    if !entry.is_dir {
+                                        let size_str = format_size_kb(entry.size);
+                                        p.text(
+                                            pos2(size_right_x, row_rect.center().y),
+                                            Align2::RIGHT_CENTER,
+                                            &size_str,
+                                            FontId::monospace(10.5),
+                                            Color32::from_rgb(139, 148, 158),
+                                        );
+                                    }
+
+                                    // Col 3: Last modified
+                                    let date_left_x = row_rect.left() + col_name_w + col_size_w + 8.0;
+                                    let date_str = format_modified_time(entry.modified);
+                                    if !date_str.is_empty() {
+                                        p.text(
+                                            pos2(date_left_x, row_rect.center().y),
+                                            Align2::LEFT_CENTER,
+                                            &date_str,
+                                            FontId::monospace(10.5),
+                                            Color32::from_rgb(139, 148, 158),
+                                        );
+                                    }
+
+                                    // Col 4: Owner
+                                    let owner_left_x = date_left_x + col_date_w;
+                                    p.text(
+                                        pos2(owner_left_x, row_rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        &entry.owner,
+                                        FontId::proportional(11.0),
+                                        Color32::from_rgb(201, 209, 217),
+                                    );
+
+                                    // Col 5: Group
+                                    let group_left_x = owner_left_x + col_owner_w;
+                                    p.text(
+                                        pos2(group_left_x, row_rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        &entry.group,
+                                        FontId::proportional(11.0),
+                                        Color32::from_rgb(139, 148, 158),
+                                    );
+
+                                    // Col 6: Access
+                                    let access_left_x = group_left_x + col_group_w;
+                                    p.text(
+                                        pos2(access_left_x, row_rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        &entry.permissions,
+                                        FontId::monospace(10.5),
+                                        Color32::from_rgb(139, 148, 158),
+                                    );
+
+                                    if resp.clicked() {
+                                        explorer.selected_file = Some(entry.path.clone());
+                                    }
+                                    if resp.middle_clicked() {
+                                        context_terminal_paste_path = Some(entry.path.to_string_lossy().to_string());
+                                    }
+                                    if resp.double_clicked() {
+                                        if entry.is_dir {
+                                            clicked_dir = Some(entry.path.clone());
+                                        } else {
+                                            double_clicked_file = Some(entry.path.clone());
+                                        }
+                                    }
+
+                                    let date_display = if date_str.is_empty() { "-".to_string() } else { date_str };
+                                    let tip = format!(
+                                        "{}\nSize: {}\nLast modified: {}\nOwner / Group: {} / {}\nAccess: {}",
+                                        entry.path.display(),
+                                        if entry.is_dir { "Directory".to_string() } else { format!("{} bytes ({} KB)", entry.size, format_size_kb(entry.size)) },
+                                        date_display,
+                                        entry.owner,
+                                        entry.group,
+                                        entry.permissions,
+                                    );
+                                    let path_clone = entry.path.clone();
+                                    let is_dir_entry = entry.is_dir;
+                                    let entry_clone = entry.clone();
+                                    resp.on_hover_text(tip).context_menu(|ui| {
                                 if is_dir_entry {
                                     if ui.button("📂  Open").clicked() {
                                         clicked_dir = Some(path_clone.clone());
@@ -863,7 +981,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
                         // Background empty space for Folder Context Menu (Matches MobaXterm 100%)
                         let avail_h = ui.available_height().max(50.0);
-                        let (_, bg_resp) = ui.allocate_exact_size(vec2(ui.available_width(), avail_h), Sense::click());
+                        let (_, bg_resp) = ui.allocate_exact_size(vec2(table_w, avail_h), Sense::click());
                         bg_resp.context_menu(|ui| {
                             if ui.button("⬆  Parent directory").clicked() {
                                 go_parent = true;
@@ -907,6 +1025,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             }
                         });
                     });
+                });
 
                 if go_parent {
                     explorer.go_up();
@@ -1278,6 +1397,30 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 });
             });
         explorer.diff_open = open && !close_diff;
+    }
+}
+
+fn draw_sort_arrow(p: &egui::Painter, x: f32, y: f32, ascending: bool) {
+    if ascending {
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                pos2(x - 3.2, y + 2.0),
+                pos2(x + 3.2, y + 2.0),
+                pos2(x, y - 2.5),
+            ],
+            Color32::from_rgb(139, 148, 158),
+            Stroke::NONE,
+        ));
+    } else {
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                pos2(x - 3.2, y - 2.0),
+                pos2(x + 3.2, y - 2.0),
+                pos2(x, y + 2.5),
+            ],
+            Color32::from_rgb(139, 148, 158),
+            Stroke::NONE,
+        ));
     }
 }
 

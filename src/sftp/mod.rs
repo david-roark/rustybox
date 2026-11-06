@@ -27,6 +27,45 @@ pub struct FileEntry {
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub permissions: String,
+    pub owner: String,
+    pub group: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SftpSortColumn {
+    Name,
+    Size,
+    Modified,
+    Owner,
+    Group,
+    Access,
+}
+
+pub fn format_size_kb(size: u64) -> String {
+    if size == 0 {
+        return "0".to_string();
+    }
+    let kb = (size + 1023) / 1024;
+    let s = kb.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let len = s.len();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+pub fn format_modified_time(time: Option<SystemTime>) -> String {
+    match time {
+        Some(t) => {
+            let dt: chrono::DateTime<chrono::Local> = chrono::DateTime::from(t);
+            dt.format("%Y-%m-%d %H:%M").to_string()
+        }
+        None => String::new(),
+    }
 }
 
 #[derive(Clone)]
@@ -75,6 +114,7 @@ pub struct FileExplorer {
     pub remote_sessions: HashMap<String, RemoteSessionState>,
     // View & RustyBox SFTP options
     pub show_hidden: bool,
+    pub sort_column: SftpSortColumn,
     pub sort_ascending: bool,
     pub follow_terminal_folder: bool,
     pub remote_monitoring_enabled: bool,
@@ -150,6 +190,7 @@ impl FileExplorer {
             last_synced_terminal_cwd: None,
             remote_sessions: HashMap::new(),
             show_hidden: true,
+            sort_column: SftpSortColumn::Name,
             sort_ascending: true,
             follow_terminal_folder: false,
             remote_monitoring_enabled: true,
@@ -325,6 +366,21 @@ impl FileExplorer {
         self.refresh();
     }
 
+    pub fn set_sort_column(&mut self, col: SftpSortColumn) {
+        if self.sort_column == col {
+            self.sort_ascending = !self.sort_ascending;
+        } else {
+            self.sort_column = col;
+            self.sort_ascending = true;
+        }
+        if self.is_remote && !self.remote_raw_entries.is_empty() {
+            self.apply_remote_filter_and_sort();
+            self.save_active_remote_state();
+        } else {
+            self.refresh();
+        }
+    }
+
     pub fn apply_remote_filter_and_sort(&mut self) {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
@@ -341,14 +397,30 @@ impl FileExplorer {
         }
 
         let asc = self.sort_ascending;
-        dirs.sort_by(|a, b| {
-            let cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-            if asc { cmp } else { cmp.reverse() }
-        });
-        files.sort_by(|a, b| {
-            let cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-            if asc { cmp } else { cmp.reverse() }
-        });
+        let col = self.sort_column;
+        let cmp_fn = |a: &FileEntry, b: &FileEntry| -> std::cmp::Ordering {
+            let ordering = match col {
+                SftpSortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SftpSortColumn::Size => a.size.cmp(&b.size),
+                SftpSortColumn::Modified => match (a.modified, b.modified) {
+                    (Some(ma), Some(mb)) => ma.cmp(&mb),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+                SftpSortColumn::Owner => a.owner.to_lowercase().cmp(&b.owner.to_lowercase()),
+                SftpSortColumn::Group => a.group.to_lowercase().cmp(&b.group.to_lowercase()),
+                SftpSortColumn::Access => a.permissions.cmp(&b.permissions),
+            };
+            if asc {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        };
+
+        dirs.sort_by(cmp_fn);
+        files.sort_by(cmp_fn);
 
         self.entries.clear();
         self.entries.extend(dirs);
@@ -695,6 +767,7 @@ impl FileExplorer {
                         let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
                         let modified = metadata.as_ref().and_then(|m| m.modified().ok());
                         let permissions = Self::format_permissions(metadata.as_ref(), is_dir);
+                        let (owner, group) = Self::get_local_owner_group(&metadata);
 
                         let item = FileEntry {
                             name,
@@ -704,6 +777,8 @@ impl FileExplorer {
                             size,
                             modified,
                             permissions,
+                            owner,
+                            group,
                         };
 
                         if is_dir {
@@ -715,14 +790,30 @@ impl FileExplorer {
                 }
 
                 let asc = self.sort_ascending;
-                dirs.sort_by(|a, b| {
-                    let cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-                    if asc { cmp } else { cmp.reverse() }
-                });
-                files.sort_by(|a, b| {
-                    let cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-                    if asc { cmp } else { cmp.reverse() }
-                });
+                let col = self.sort_column;
+                let cmp_fn = |a: &FileEntry, b: &FileEntry| -> std::cmp::Ordering {
+                    let ordering = match col {
+                        SftpSortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                        SftpSortColumn::Size => a.size.cmp(&b.size),
+                        SftpSortColumn::Modified => match (a.modified, b.modified) {
+                            (Some(ma), Some(mb)) => ma.cmp(&mb),
+                            (Some(_), None) => std::cmp::Ordering::Greater,
+                            (None, Some(_)) => std::cmp::Ordering::Less,
+                            (None, None) => std::cmp::Ordering::Equal,
+                        },
+                        SftpSortColumn::Owner => a.owner.to_lowercase().cmp(&b.owner.to_lowercase()),
+                        SftpSortColumn::Group => a.group.to_lowercase().cmp(&b.group.to_lowercase()),
+                        SftpSortColumn::Access => a.permissions.cmp(&b.permissions),
+                    };
+                    if asc {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
+                };
+
+                dirs.sort_by(cmp_fn);
+                files.sort_by(cmp_fn);
 
                 self.entries.extend(dirs);
                 self.entries.extend(files);
@@ -731,6 +822,32 @@ impl FileExplorer {
                 self.error_message = Some(format!("Cannot read dir: {}", e));
             }
         }
+    }
+
+    fn get_local_owner_group(meta: &Option<fs::Metadata>) -> (String, String) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Some(m) = meta {
+                let uid = m.uid();
+                let gid = m.gid();
+                let u = if uid == 0 {
+                    "root".to_string()
+                } else {
+                    std::env::var("USER").unwrap_or_else(|_| uid.to_string())
+                };
+                let g = if gid == 0 {
+                    "root".to_string()
+                } else {
+                    std::env::var("USER").unwrap_or_else(|_| gid.to_string())
+                };
+                return (u, g);
+            }
+        }
+        let user = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "user".to_string());
+        (user.clone(), user)
     }
 
     fn format_permissions(meta: Option<&fs::Metadata>, is_dir: bool) -> String {
@@ -1425,6 +1542,8 @@ mod tests {
                 size: 120,
                 modified: None,
                 permissions: "-rw-r--r--".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
             FileEntry {
                 name: ".bashrc".into(),
@@ -1434,6 +1553,8 @@ mod tests {
                 size: 45,
                 modified: None,
                 permissions: "-rw-------".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
             FileEntry {
                 name: "alpha".into(),
@@ -1443,6 +1564,8 @@ mod tests {
                 size: 4096,
                 modified: None,
                 permissions: "drwxr-xr-x".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
             FileEntry {
                 name: ".ssh".into(),
@@ -1452,6 +1575,8 @@ mod tests {
                 size: 4096,
                 modified: None,
                 permissions: "drwx------".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
         ];
 
@@ -1490,6 +1615,8 @@ mod tests {
                 size: 4096,
                 modified: None,
                 permissions: "drwxr-xr-x".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
             FileEntry {
                 name: "nginx.conf".into(),
@@ -1499,6 +1626,8 @@ mod tests {
                 size: 1024,
                 modified: None,
                 permissions: "-rw-r--r--".into(),
+                owner: "root".into(),
+                group: "root".into(),
             },
         ];
 
@@ -1528,6 +1657,8 @@ mod tests {
             size: 512,
             modified: None,
             permissions: "-rwxr-x---".into(),
+            owner: "root".into(),
+            group: "root".into(),
         }];
 
         explorer.open_chmod(file_path);
@@ -1623,6 +1754,8 @@ mod tests {
             size: 2048,
             modified: None,
             permissions: "-rw-r--r--".into(),
+            owner: "root".into(),
+            group: "root".into(),
         }];
         explorer.apply_remote_filter_and_sort();
         explorer.selected_file = Some(PathBuf::from("/var/log/nginx/access.log"));
@@ -1649,6 +1782,8 @@ mod tests {
             size: 512,
             modified: None,
             permissions: "-rw-r--r--".into(),
+            owner: "root".into(),
+            group: "root".into(),
         }];
         explorer.apply_remote_filter_and_sort();
         explorer.is_loading = false;
@@ -1686,6 +1821,8 @@ mod tests {
             size: 100,
             modified: None,
             permissions: "-rw-r--r--".into(),
+            owner: "www-data".into(),
+            group: "www-data".into(),
         }];
 
         // Try uploading a local file also named index.html
@@ -1751,6 +1888,8 @@ mod tests {
             size: 11,
             modified: None,
             permissions: "rw-r--r--".to_string(),
+            owner: "php".to_string(),
+            group: "php".to_string(),
         };
         explorer.open_properties(entry);
         assert!(explorer.properties_open);

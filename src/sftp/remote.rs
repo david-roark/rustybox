@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -188,7 +189,13 @@ fn run_sftp_worker(
     event_tx: Sender<SftpEvent>,
     cancel_flag: Arc<AtomicBool>,
 ) {
-    let mut current_sess: Option<(ssh2::Session, ssh2::Sftp, SftpTargetConfig)> = None;
+    let mut current_sess: Option<(
+        ssh2::Session,
+        ssh2::Sftp,
+        SftpTargetConfig,
+        HashMap<u32, String>,
+        HashMap<u32, String>,
+    )> = None;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -198,7 +205,7 @@ fn run_sftp_worker(
 
             SftpCommand::Connect(cfg) => {
                 // If already connected to the same config, keep it
-                if let Some((_, _, ref active_cfg)) = current_sess {
+                if let Some((_, _, ref active_cfg, ..)) = current_sess {
                     if *active_cfg == cfg {
                         let _ = event_tx.send(SftpEvent::Connected {
                             target: format!("{}@{}:{}", cfg.user, cfg.host, cfg.port),
@@ -230,8 +237,11 @@ fn run_sftp_worker(
                             initial_dir: valid_dir.clone(),
                         });
 
+                        // Cache remote user and group mappings from /etc/passwd and /etc/group
+                        let (users, groups) = load_remote_id_cache(&sftp, &cfg.user);
+
                         // Automatically fetch directory entries for the initial dir
-                        if let Ok(entries) = read_sftp_dir(&sftp, &valid_dir) {
+                        if let Ok(entries) = read_sftp_dir(&sftp, &valid_dir, &cfg.user, &users, &groups) {
                             let _ = event_tx.send(SftpEvent::DirListed {
                                 dir: valid_dir.clone(),
                                 entries,
@@ -243,7 +253,7 @@ fn run_sftp_worker(
                             let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
                         }
 
-                        current_sess = Some((sess, sftp, cfg));
+                        current_sess = Some((sess, sftp, cfg, users, groups));
                     }
                     Err(e) => {
                         let _ = event_tx.send(SftpEvent::ConnectionFailed(e));
@@ -256,8 +266,8 @@ fn run_sftp_worker(
             }
 
             SftpCommand::ListDir(dir_path) => {
-                if let Some((ref sess, ref sftp, _)) = current_sess {
-                    match read_sftp_dir(sftp, &dir_path) {
+                if let Some((ref sess, ref sftp, ref cfg, ref users, ref groups)) = current_sess {
+                    match read_sftp_dir(sftp, &dir_path, &cfg.user, users, groups) {
                         Ok(entries) => {
                             let _ = event_tx.send(SftpEvent::DirListed {
                                 dir: dir_path.clone(),
@@ -277,7 +287,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::ReadFile(remote_path) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     const MAX_EDITOR_BYTES: u64 = 2 * 1024 * 1024;
                     let p = Path::new(&remote_path);
                     if let Ok(stat) = sftp.stat(p) {
@@ -317,7 +327,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::WriteFile(remote_path, content) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     match sftp.create(Path::new(&remote_path)) {
                         Ok(mut file) => {
                             if let Err(e) = file.write_all(content.as_bytes()) {
@@ -334,7 +344,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::CreateDir(remote_path) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     match sftp.mkdir(Path::new(&remote_path), 0o755) {
                         Ok(_) => {
                             let _ = event_tx.send(SftpEvent::OperationSuccess("Folder created on VPS".into()));
@@ -347,7 +357,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::CreateFile(remote_path) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     match sftp.create(Path::new(&remote_path)) {
                         Ok(_) => {
                             let _ = event_tx.send(SftpEvent::OperationSuccess("File created on VPS".into()));
@@ -360,7 +370,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::Delete(remote_path, is_dir) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     let p = Path::new(&remote_path);
                     let res: Result<(), String> = if is_dir {
                         remove_sftp_dir_recursive(sftp, p, 0)
@@ -379,7 +389,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::Rename(from_path, to_path) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     let from = Path::new(&from_path);
                     let to = Path::new(&to_path);
                     match sftp.rename(from, to, None) {
@@ -394,7 +404,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::Chmod(remote_path, mode) => {
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     let p = Path::new(&remote_path);
                     let stat = ssh2::FileStat {
                         size: None,
@@ -417,7 +427,7 @@ fn run_sftp_worker(
 
             SftpCommand::Upload(local_path, remote_path) => {
                 cancel_flag.store(false, Ordering::SeqCst);
-                if let Some((ref sess, ref sftp, _)) = current_sess {
+                if let Some((ref sess, ref sftp, ..)) = current_sess {
                     let total_bytes = match std::fs::metadata(&local_path) {
                         Ok(m) => m.len(),
                         Err(e) => {
@@ -529,7 +539,7 @@ fn run_sftp_worker(
 
             SftpCommand::Download(remote_path, local_path) => {
                 cancel_flag.store(false, Ordering::SeqCst);
-                if let Some((_, ref sftp, _)) = current_sess {
+                if let Some((_, ref sftp, ..)) = current_sess {
                     let p = Path::new(&remote_path);
                     let total_bytes = sftp.stat(p).map(|s| s.size.unwrap_or(0)).unwrap_or(0);
                     let file_name = p
@@ -630,7 +640,7 @@ fn run_sftp_worker(
             }
 
             SftpCommand::GetDiskUsage(dir_path) => {
-                if let Some((ref sess, _, _)) = current_sess {
+                if let Some((ref sess, ..)) = current_sess {
                     if let Ok((used, total, pct)) = fetch_remote_disk(sess, &dir_path) {
                         let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
                     }
@@ -798,7 +808,68 @@ fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), S
     Ok((sess, sftp))
 }
 
-fn read_sftp_dir(sftp: &ssh2::Sftp, dir_path: &str) -> Result<Vec<FileEntry>, String> {
+fn load_remote_id_cache(
+    sftp: &ssh2::Sftp,
+    default_user: &str,
+) -> (HashMap<u32, String>, HashMap<u32, String>) {
+    let mut users = HashMap::new();
+    let mut groups = HashMap::new();
+
+    users.insert(0, "root".to_string());
+    groups.insert(0, "root".to_string());
+
+    if let Ok(mut f) = sftp.open(Path::new("/etc/passwd")) {
+        let mut buf = Vec::new();
+        if (&mut f).take(65536).read_to_end(&mut buf).is_ok() {
+            let content = String::from_utf8_lossy(&buf);
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() >= 4 {
+                    let uname = parts[0].to_string();
+                    if let Ok(uid) = parts[2].parse::<u32>() {
+                        users.insert(uid, uname.clone());
+                    }
+                    if let Ok(gid) = parts[3].parse::<u32>() {
+                        groups.entry(gid).or_insert(uname);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(mut f) = sftp.open(Path::new("/etc/group")) {
+        let mut buf = Vec::new();
+        if (&mut f).take(65536).read_to_end(&mut buf).is_ok() {
+            let content = String::from_utf8_lossy(&buf);
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() >= 3 {
+                    let gname = parts[0].to_string();
+                    if let Ok(gid) = parts[2].parse::<u32>() {
+                        groups.insert(gid, gname);
+                    }
+                }
+            }
+        }
+    }
+
+    if !default_user.is_empty() {
+        // Ensure default user name is present as a fallback
+        if !users.values().any(|v| v == default_user) {
+            users.insert(1000, default_user.to_string());
+        }
+    }
+
+    (users, groups)
+}
+
+fn read_sftp_dir(
+    sftp: &ssh2::Sftp,
+    dir_path: &str,
+    default_user: &str,
+    users: &HashMap<u32, String>,
+    groups: &HashMap<u32, String>,
+) -> Result<Vec<FileEntry>, String> {
     let p = Path::new(dir_path);
     let list = sftp.readdir(p).map_err(|e| format!("Readdir error: {}", e))?;
 
@@ -824,6 +895,42 @@ fn read_sftp_dir(sftp: &ssh2::Sftp, dir_path: &str) -> Result<Vec<FileEntry>, St
 
         let permissions = format_mode(stat.perm.unwrap_or(0), is_dir);
 
+        let owner = match stat.uid {
+            Some(0) => "root".to_string(),
+            Some(u) => users.get(&u).cloned().unwrap_or_else(|| {
+                if !default_user.is_empty() {
+                    default_user.to_string()
+                } else {
+                    u.to_string()
+                }
+            }),
+            None => {
+                if !default_user.is_empty() {
+                    default_user.to_string()
+                } else {
+                    "-".to_string()
+                }
+            }
+        };
+
+        let group = match stat.gid {
+            Some(0) => "root".to_string(),
+            Some(g) => groups.get(&g).cloned().unwrap_or_else(|| {
+                if !default_user.is_empty() {
+                    default_user.to_string()
+                } else {
+                    g.to_string()
+                }
+            }),
+            None => {
+                if !default_user.is_empty() {
+                    default_user.to_string()
+                } else {
+                    "-".to_string()
+                }
+            }
+        };
+
         let item = FileEntry {
             name,
             path: entry_path,
@@ -832,6 +939,8 @@ fn read_sftp_dir(sftp: &ssh2::Sftp, dir_path: &str) -> Result<Vec<FileEntry>, St
             size,
             modified,
             permissions,
+            owner,
+            group,
         };
 
         if is_dir {
