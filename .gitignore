@@ -7,11 +7,15 @@ data/
 
 # Temporary test screenshots and crops
 *.png
+!assets/*.png
 crop_*.png
 qa_*.png
 test_*.png
 screenshot_*.png
 yesterday_binary_screenshot.png
+
+# Compiled resources
+*.res
 
 # Test scripts and temporary reports
 qa_*.py

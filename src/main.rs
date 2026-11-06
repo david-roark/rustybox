@@ -22,9 +22,17 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    let icon_bytes = include_bytes!("../assets/icon_rgba_128.bin");
+    let app_icon = egui::IconData {
+        rgba: icon_bytes.to_vec(),
+        width: 128,
+        height: 128,
+    };
+
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("RustyBox v1.3-78 - Remote Toolbox & Terminal")
+            .with_title("RustyBox v1.3-79 - Remote Toolbox & Terminal")
+            .with_icon(app_icon)
             .with_maximized(true)
             .with_min_inner_size([700.0, 480.0]),
         ..Default::default()
