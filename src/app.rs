@@ -2125,7 +2125,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-79")
+                                RichText::new("v1.3-80")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -2933,11 +2933,16 @@ impl eframe::App for RustyBoxApp {
                         let mut to_delete_folder: Option<String> = None;
 
                         ScrollArea::vertical().show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.spacing_mut().button_padding = egui::vec2(6.0, 5.5);
+                            ui.spacing_mut().indent = 16.0;
+                            ui.visuals_mut().indent_has_left_vline = false;
+
                             let root_header = egui::CollapsingHeader::new(
                                 RichText::new(format!("★ User sessions ({})", total_filtered_sessions))
                                     .color(Color32::from_rgb(234, 179, 8))
                                     .strong()
-                                    .size(12.0),
+                                    .size(13.5),
                             )
                             .id_salt("user_sessions_root_tree")
                             .default_open(true)
@@ -2948,9 +2953,10 @@ impl eframe::App for RustyBoxApp {
                                     let folder_name = folder.clone();
                                     let display_folder = if folder.is_empty() { "Default" } else { &folder };
                                     let header = egui::CollapsingHeader::new(
-                                        RichText::new(format!("📁 {} ({})", display_folder, list.len()))
+                                        RichText::new(format!("📁  {} ({})", display_folder, list.len()))
                                             .strong()
-                                            .color(Color32::from_rgb(201, 209, 217)),
+                                            .size(13.0)
+                                            .color(Color32::from_rgb(220, 227, 235)),
                                     )
                                     .id_salt(format!("user_sessions_folder_{}", folder))
                                     .default_open(false)
@@ -2993,7 +2999,7 @@ impl eframe::App for RustyBoxApp {
                                             || is_active_tab_session;
 
                                         let id = ui.make_persistent_id(&s.id);
-                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::hover());
                                         let resp = ui.interact(rect, id, egui::Sense::click());
 
                                         if resp.clicked() || resp.secondary_clicked() {
@@ -3016,21 +3022,21 @@ impl eframe::App for RustyBoxApp {
                                         let icon_color = if is_selected { Color32::WHITE } else { Color32::from_rgb(56, 189, 248) };
 
                                         ui.painter().text(
-                                            egui::pos2(rect.left() + 8.0, rect.top() + 10.0),
+                                            egui::pos2(rect.left() + 8.0, rect.top() + 11.0),
                                             egui::Align2::LEFT_CENTER,
                                             icon,
-                                            egui::FontId::proportional(12.0),
+                                            egui::FontId::proportional(12.5),
                                             icon_color,
                                         );
                                         ui.painter().text(
-                                            egui::pos2(rect.left() + 28.0, rect.top() + 10.0),
+                                            egui::pos2(rect.left() + 28.0, rect.top() + 11.0),
                                             egui::Align2::LEFT_CENTER,
                                             &s.name,
-                                            egui::FontId::proportional(12.0),
+                                            egui::FontId::proportional(12.5),
                                             text_color,
                                         );
                                         ui.painter().text(
-                                            egui::pos2(rect.left() + 28.0, rect.top() + 24.0),
+                                            egui::pos2(rect.left() + 28.0, rect.top() + 25.0),
                                             egui::Align2::LEFT_CENTER,
                                             &subtitle,
                                             egui::FontId::proportional(10.5),
