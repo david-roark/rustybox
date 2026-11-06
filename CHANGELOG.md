@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.3-84] - 2026-11-06
+### Added & Improved (Merge PR #5 & PR #6 from duyvuchatai)
+- **Tích hợp PR #5: Bộ chọn văn bản Terminal, Clipboard Wayland & Cross-Platform Tests**:
+  - Hỗ trợ `GLOBAL_CLIPBOARD` và tính năng `wayland-data-control` trên Linux, giữ kết nối clipboard/primary selection không bị mất khi drop object.
+  - Phân luồng sao chép và dán (`copy_text_to_clipboard`, `get_clipboard_text`): Tự động hỗ trợ Linux Primary selection (cho thao tác chuột giữa và Shift+Insert) và Windows standard clipboard.
+  - Tinh chỉnh bôi đen văn bản bằng chuột: Thêm cờ `!just_stopped_drag` ngăn kích hoạt nhầm sự kiện click/double-click khi vừa thả chuột sau khi drag; hỗ trợ dọn dẹp bộ nhớ tạm `clear_selection_in_ui`.
+  - Thuật toán nhận diện biên từ thông minh (`find_word_bounds_in_row`): Hỗ trợ double-click chọn trọn vẹn toàn bộ URL (`https://...`), địa chỉ IP, đường dẫn tệp (`/var/log/...`).
+  - Bổ sung 6 bộ unit test tự động kiểm thử toàn diện: kéo chuột xuôi/ngược, bôi đen nhiều dòng, phím tắt sao chép (Ctrl+Shift+C, Ctrl+Insert, Event::Copy) và kiểm tra giải phóng vùng chọn khi click đơn.
+- **Tích hợp PR #6: Đăng ký ứng dụng Desktop & Icon chuẩn cho Linux Dock**:
+  - Tự động tạo tệp desktop launcher `~/.local/share/applications/rustybox.desktop` và icon chuẩn 8-bit RGBA `rustybox.png`.
+  - Bổ sung định danh `.with_app_id("rustybox")` cho ViewportBuilder, giúp hệ thống cửa sổ Linux/Wayland ghim đúng icon trên Taskbar/Dock.
+
+---
+
+## [v1.3-83] - 2026-11-06
+### Added & Improved (SFTP Recursive Folder Transfer & MobaXterm Top Controls)
+- **Tải lên & Tải xuống đệ quy cả thư mục (Recursive Folder Transfer)**:
+  - Bổ sung menu ngữ cảnh chuột phải: `📤 Upload file(s)...`, `📁 Upload folder...`, `📥 Download folder`.
+  - Hỗ trợ chọn thư mục nội bộ qua `rfd::FileDialog` và tự động tạo cây thư mục đệ quy cả hai chiều upload và download qua SFTP.
+- **Tối ưu tốc độ truyền tải SFTP (Speed Optimization)**:
+  - Cấu hình TCP socket qua `socket2`: Kích hoạt `TCP_NODELAY = true`, mở rộng buffer gửi/nhận socket hệ thống lên **1MB** (`1024 * 1024`).
+  - Nâng kích thước buffer đọc/ghi luồng SFTP lên **256KB** bằng `BufReader` và `BufWriter`, gia tăng đáng kể thông lượng truyền file lớn.
+- **Tái cấu trúc thanh điều khiển SFTP chuẩn MobaXterm**:
+  - Đưa cụm nút **Remote monitoring** (kèm icon ECG monitor) và checkbox **Follow terminal folder** lên vị trí đầu trang ngay bên dưới thanh địa chỉ (Path bar), phía trên danh sách file, không còn bị khuất ở chân trang khi danh sách tệp dài.
+  - Tự động kích hoạt hiển thị tab SFTP Browser ngay khi mở phiên kết nối SSH.
+
+---
+
+## [v1.3-82] - 2026-11-06
+### Fixed & Improved (Terminal Selection & Quick Copy)
+- **Cải tiến bôi đen kéo chuột & sao chép tức thời phong cách MobaXterm**:
+  - Chuẩn hóa tọa độ click và kéo chuột trong widget terminal (`pos_to_abs_cell`), hỗ trợ bôi đen liên tục qua các trang cuộn scrollback.
+  - Thao tác nhanh: Double-click bôi đen và sao chép từ/token, Triple-click bôi đen và sao chép toàn bộ dòng lệnh.
+  - Tự động sao chép văn bản vào clipboard ngay khi nhả chuột (Select-to-copy) và xóa vùng chọn khi click chuột trái đơn lẻ hoặc khi người dùng gõ phím.
+
+---
+
 ## [v1.3-81] - 2026-11-06
 ### Added & Improved (Branding & Application Icon)
 - **Cập nhật Icon 3D Isometric Network Cube to sát viền**:
