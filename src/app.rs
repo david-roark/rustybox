@@ -2125,7 +2125,7 @@ impl eframe::App for RustyBoxApp {
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("v1.3-75")
+                                RichText::new("v1.3-76")
                                     .color(Color32::from_rgb(147, 197, 253))
                                     .size(10.5)
                                     .strong(),
@@ -3806,53 +3806,50 @@ impl eframe::App for RustyBoxApp {
                         } else {
                             egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
                         };
-                        ui.painter().with_clip_rect(ui.clip_rect()).rect(rect, egui::Rounding::same(8.0), bg, border);
+                        ui.painter().rect(rect, egui::Rounding::same(8.0), bg, border);
 
-                        ui.allocate_new_ui(
+                        let mut c_ui = ui.new_child(
                             egui::UiBuilder::new()
                                 .max_rect(rect.shrink2(vec2(10.0, 10.0)))
                                 .layout(Layout::left_to_right(Align::Min)),
-                            |c_ui| {
-                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(rect.shrink(2.0)));
-                                c_ui.spacing_mut().item_spacing.x = 10.0;
-                                // Icon badge container - perfectly centered with 10px top/bottom margins
-                                let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
-                                c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
-                                c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0, tint));
-                                c_ui.painter().text(
-                                    badge_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    icon,
-                                    egui::FontId::proportional(20.0),
-                                    Color32::WHITE,
-                                );
-
-                                c_ui.vertical(|v_ui| {
-                                    v_ui.spacing_mut().item_spacing.y = 2.0;
-                                    let tc = if is_hovered {
-                                        Color32::from_rgb(56, 189, 248)
-                                    } else {
-                                        Color32::WHITE
-                                    };
-                                    v_ui.label(RichText::new(title).strong().size(12.5).color(tc));
-                                    v_ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(148, 163, 184)));
-                                });
-                            },
                         );
+                        c_ui.set_clip_rect(c_ui.clip_rect().intersect(rect.shrink(2.0)));
+                        c_ui.spacing_mut().item_spacing.x = 10.0;
+                        // Icon badge container - perfectly centered with 10px top/bottom margins
+                        let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                        c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
+                        c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0, tint));
+                        c_ui.painter().text(
+                            badge_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            icon,
+                            egui::FontId::proportional(20.0),
+                            Color32::WHITE,
+                        );
+
+                        c_ui.vertical(|v_ui| {
+                            v_ui.spacing_mut().item_spacing.y = 2.0;
+                            let tc = if is_hovered {
+                                Color32::from_rgb(56, 189, 248)
+                            } else {
+                                Color32::WHITE
+                            };
+                            v_ui.label(RichText::new(title).strong().size(12.5).color(tc));
+                            v_ui.label(RichText::new(desc).size(10.0).color(Color32::from_rgb(148, 163, 184)));
+                        });
                         resp
                     };
 
                     // Row 1: Local Terminal, SSH Client, SFTP Browser
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = card_spacing;
                         if modern_card(ui, "💻", "Local Terminal", "Interactive shell with ConPTY", Color32::from_rgb(56, 189, 248), card_w, action_card_h).clicked() {
                             self.spawn_local_terminal("Local Terminal", None, None);
                             self.is_home_active = false;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🌐", "SSH Client", "Key auth & auto-SFTP stream", Color32::from_rgb(96, 165, 250), card_w, action_card_h).clicked() {
                             self.new_session_dialog.open_for_new();
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "📁", "SFTP Browser", "Dual-pane remote file manager", Color32::from_rgb(52, 211, 153), card_w, action_card_h).clicked() {
                             self.show_sftp_sidebar = true;
                             self.sidebar_tab = 1;
@@ -3863,15 +3860,14 @@ impl eframe::App for RustyBoxApp {
 
                     // Row 2: Network Scanner, SSH Tunnels, Network Daemons
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = card_spacing;
                         if modern_card(ui, "📡", "Network Scanner", "Subnet IP discovery & Port Scan", Color32::from_rgb(251, 191, 36), card_w, action_card_h).clicked() {
                             self.show_network_tools = true;
                             self.net_tools_tab = 1;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🔀", "SSH Tunnels", "Local, remote & SOCKS5 proxy", Color32::from_rgb(192, 132, 252), card_w, action_card_h).clicked() {
                             self.show_tunnels = true;
                         }
-                        ui.add_space(card_spacing);
                         if modern_card(ui, "🕊", "Network Daemons", "Micro HTTP, TFTP & Syslog", Color32::from_rgb(244, 114, 182), card_w, action_card_h).clicked() {
                             self.show_services_modal = true;
                         }
@@ -3910,57 +3906,55 @@ impl eframe::App for RustyBoxApp {
                         } else {
                             egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
                         };
-                        ui.painter().with_clip_rect(ui.clip_rect()).rect(q_rect, 6.0, bg, border);
+                        ui.painter().rect(q_rect, 6.0, bg, border);
 
-                        ui.allocate_new_ui(
+                        let mut c_ui = ui.new_child(
                             egui::UiBuilder::new()
                                 .max_rect(q_rect.shrink2(vec2(10.0, 8.0)))
                                 .layout(Layout::left_to_right(Align::Min)),
-                            |c_ui| {
-                                c_ui.set_clip_rect(c_ui.clip_rect().intersect(q_rect.shrink(2.0)));
-                                c_ui.spacing_mut().item_spacing.x = 8.0;
-                                c_ui.label(RichText::new(icon).size(16.0));
-                                c_ui.vertical(|v_ui| {
-                                    v_ui.spacing_mut().item_spacing.y = 2.0;
-                                    v_ui.set_max_width((q_rect.width() - 32.0).max(80.0));
-                                    v_ui.horizontal(|h_ui| {
-                                        let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
-                                        h_ui.add(egui::Label::new(RichText::new(&s.name).strong().size(11.5).color(title_col)).truncate());
-                                        if !s.folder.is_empty() {
-                                            h_ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(format!("[{}]", s.folder))
-                                                        .size(9.5)
-                                                        .color(Color32::from_rgb(100, 116, 139)),
-                                                )
-                                                .truncate(),
-                                            );
-                                        }
-                                    });
-                                    v_ui.add(
+                        );
+                        c_ui.set_clip_rect(c_ui.clip_rect().intersect(q_rect.shrink(2.0)));
+                        c_ui.spacing_mut().item_spacing.x = 8.0;
+                        c_ui.label(RichText::new(icon).size(16.0));
+                        c_ui.vertical(|v_ui| {
+                            v_ui.spacing_mut().item_spacing.y = 2.0;
+                            v_ui.set_max_width((q_rect.width() - 32.0).max(80.0));
+                            v_ui.horizontal(|h_ui| {
+                                let title_col = if is_h { Color32::from_rgb(56, 189, 248) } else { Color32::WHITE };
+                                h_ui.add(egui::Label::new(RichText::new(&s.name).strong().size(11.5).color(title_col)).truncate());
+                                if !s.folder.is_empty() {
+                                    h_ui.add(
                                         egui::Label::new(
-                                            RichText::new(s.connection_subtitle())
-                                                .monospace()
-                                                .size(10.0)
-                                                .color(Color32::from_rgb(148, 163, 184)),
+                                            RichText::new(format!("[{}]", s.folder))
+                                                .size(9.5)
+                                                .color(Color32::from_rgb(100, 116, 139)),
                                         )
                                         .truncate(),
                                     );
-                                    if show_time {
-                                        if let Some(ts) = s.last_connected_display() {
-                                            v_ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
-                                                        .size(9.5)
-                                                        .color(Color32::from_rgb(52, 211, 153)),
-                                                )
-                                                .truncate(),
-                                            );
-                                        }
-                                    }
-                                });
-                            },
-                        );
+                                }
+                            });
+                            v_ui.add(
+                                egui::Label::new(
+                                    RichText::new(s.connection_subtitle())
+                                        .monospace()
+                                        .size(10.0)
+                                        .color(Color32::from_rgb(148, 163, 184)),
+                                )
+                                .truncate(),
+                            );
+                            if show_time {
+                                if let Some(ts) = s.last_connected_display() {
+                                    v_ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
+                                                .size(9.5)
+                                                .color(Color32::from_rgb(52, 211, 153)),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            }
+                        });
                         q_resp.on_hover_text(format!(
                             "{}\n{}\nFolder: {}",
                             s.name,
@@ -3992,10 +3986,8 @@ impl eframe::App for RustyBoxApp {
                     } else {
                         for chunk in recent_sessions.chunks(3) {
                             ui.horizontal(|ui| {
-                                for (i, s) in chunk.iter().enumerate() {
-                                    if i > 0 {
-                                        ui.add_space(card_spacing);
-                                    }
+                                ui.spacing_mut().item_spacing.x = card_spacing;
+                                for s in chunk {
                                     let q_resp = render_session_card(ui, s, true);
                                     if q_resp.clicked() {
                                         to_launch_quick = Some((*s).clone());
