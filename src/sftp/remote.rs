@@ -113,6 +113,18 @@ impl RemoteSftpClient {
         }
     }
 
+    #[cfg(test)]
+    pub fn new_mock(cmd_tx: Sender<SftpCommand>, event_rx: Receiver<SftpEvent>) -> Self {
+        Self {
+            cmd_tx,
+            event_rx,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            active_target: None,
+            is_connected: true,
+            is_busy: false,
+        }
+    }
+
     pub fn cancel_transfer(&mut self) {
         self.cancel_flag.store(true, Ordering::SeqCst);
         let _ = self.cmd_tx.send(SftpCommand::CancelTransfer);
