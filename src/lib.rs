@@ -5,3 +5,4 @@ pub mod sftp;
 pub mod terminal;
 pub mod tunneling;
 pub mod snippets;
+pub mod telemetry;

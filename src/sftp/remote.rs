@@ -37,6 +37,7 @@ pub enum SftpCommand {
     Download(String, PathBuf), // (remote_path, local_path)
     CancelTransfer,
     GetDiskUsage(String),
+    FetchTelemetry,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +77,7 @@ pub enum SftpEvent {
         total: u64,
         pct: f32,
     },
+    Telemetry(crate::telemetry::RemoteSystemMetrics),
 }
 
 pub struct RemoteSftpClient {
@@ -179,6 +181,10 @@ impl RemoteSftpClient {
         let _ = self.cmd_tx.send(SftpCommand::Download(remote_path, local_path));
     }
 
+    pub fn fetch_telemetry(&self) {
+        let _ = self.cmd_tx.send(SftpCommand::FetchTelemetry);
+    }
+
     pub fn try_recv(&self) -> Option<SftpEvent> {
         self.event_rx.try_recv().ok()
     }
@@ -196,6 +202,7 @@ fn run_sftp_worker(
         HashMap<u32, String>,
         HashMap<u32, String>,
     )> = None;
+    let mut last_net_sample: Option<(u64, u64, Instant)> = None;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -263,6 +270,7 @@ fn run_sftp_worker(
 
             SftpCommand::Disconnect => {
                 current_sess = None;
+                last_net_sample = None;
             }
 
             SftpCommand::ListDir(dir_path) => {
@@ -674,6 +682,16 @@ fn run_sftp_worker(
                 if let Some((ref sess, ..)) = current_sess {
                     if let Ok((used, total, pct)) = fetch_remote_disk(sess, &dir_path) {
                         let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
+                    }
+                }
+            }
+
+            SftpCommand::FetchTelemetry => {
+                if let Some((ref sess, ..)) = current_sess {
+                    if let Ok(raw) = execute_remote_cmd(sess, crate::telemetry::TELEMETRY_PROBE_CMD) {
+                        let (metrics, next_sample) = crate::telemetry::parse_remote_telemetry_output(&raw, last_net_sample);
+                        last_net_sample = next_sample;
+                        let _ = event_tx.send(SftpEvent::Telemetry(metrics));
                     }
                 }
             }
@@ -1249,4 +1267,13 @@ fn fetch_remote_disk(sess: &ssh2::Session, dir_path: &str) -> Result<(u64, u64, 
     }
 
     Ok((8_589_934_592, 107_374_182_400, 8.0))
+}
+
+fn execute_remote_cmd(sess: &ssh2::Session, cmd: &str) -> Result<String, String> {
+    let mut ch = sess.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+    ch.exec(cmd).map_err(|e| format!("Exec error: {}", e))?;
+    let mut out = String::new();
+    let _ = ch.read_to_string(&mut out);
+    let _ = ch.wait_close();
+    Ok(out)
 }

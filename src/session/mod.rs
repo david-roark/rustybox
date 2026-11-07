@@ -79,6 +79,17 @@ impl SessionType {
             SessionType::LocalShell { .. } => ("LOCALHOST".into(), "user".into()),
         }
     }
+
+    pub fn port(&self) -> Option<u16> {
+        match self {
+            SessionType::Ssh { port, .. } => Some(*port),
+            SessionType::Telnet { port, .. } => Some(*port),
+            SessionType::Rdp { port, .. } => Some(*port),
+            SessionType::Vnc { port, .. } => Some(*port),
+            SessionType::Ftp { port, .. } => Some(*port),
+            _ => None,
+        }
+    }
 }
 
 fn default_ssh_browser_type() -> String {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use parking_lot::Mutex;
 
 pub mod remote;
@@ -83,6 +83,8 @@ pub struct RemoteSessionState {
     pub last_synced_terminal_cwd: Option<PathBuf>,
     pub selected_file: Option<PathBuf>,
     pub remote_disk_stats: Option<(u64, u64, f32)>,
+    pub remote_telemetry: Option<crate::telemetry::RemoteSystemMetrics>,
+    pub last_telemetry_poll: Option<Instant>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
 }
@@ -108,6 +110,7 @@ pub struct FileExplorer {
     pub remote_label: Option<String>,
     pub remote_client: Option<Arc<Mutex<RemoteSftpClient>>>,
     pub remote_disk_stats: Option<(u64, u64, f32)>,
+    pub remote_telemetry: Option<crate::telemetry::RemoteSystemMetrics>,
     pub remote_raw_entries: Vec<FileEntry>,
     pub remote_home_dir: Option<PathBuf>,
     pub last_synced_terminal_cwd: Option<PathBuf>,
@@ -185,6 +188,7 @@ impl FileExplorer {
             remote_label: None,
             remote_client: None,
             remote_disk_stats: None,
+            remote_telemetry: None,
             remote_raw_entries: Vec::new(),
             remote_home_dir: None,
             last_synced_terminal_cwd: None,
@@ -265,6 +269,7 @@ impl FileExplorer {
             sess.last_synced_terminal_cwd = self.last_synced_terminal_cwd.clone();
             sess.selected_file = self.selected_file.clone();
             sess.remote_disk_stats = self.remote_disk_stats;
+            sess.remote_telemetry = self.remote_telemetry.clone();
             sess.error_message = self.error_message.clone();
             sess.status_message = self.status_message.clone();
         }
@@ -285,6 +290,7 @@ impl FileExplorer {
             self.last_synced_terminal_cwd = sess.last_synced_terminal_cwd;
             self.selected_file = sess.selected_file;
             self.remote_disk_stats = sess.remote_disk_stats;
+            self.remote_telemetry = sess.remote_telemetry;
             self.error_message = sess.error_message;
             self.status_message = sess.status_message;
             self.apply_remote_filter_and_sort();
@@ -337,6 +343,8 @@ impl FileExplorer {
             last_synced_terminal_cwd: None,
             selected_file: None,
             remote_disk_stats: None,
+            remote_telemetry: None,
+            last_telemetry_poll: None,
             error_message: None,
             status_message: None,
         };
@@ -358,6 +366,7 @@ impl FileExplorer {
         self.is_loading = false;
         self.active_remote_label = None;
         self.remote_disk_stats = None;
+        self.remote_telemetry = None;
         self.remote_raw_entries.clear();
         self.remote_home_dir = None;
         self.last_synced_terminal_cwd = None;
@@ -550,6 +559,12 @@ impl FileExplorer {
                     SftpEvent::DiskUsage { used, total, pct } => {
                         sess.remote_disk_stats = Some((used, total, pct));
                     }
+                    SftpEvent::Telemetry(metrics) => {
+                        sess.remote_telemetry = Some(metrics.clone());
+                        if self.remote_label.as_deref() == Some(label.as_str()) {
+                            self.remote_telemetry = Some(metrics);
+                        }
+                    }
                 }
             }
 
@@ -557,6 +572,24 @@ impl FileExplorer {
                 sess.is_loading = true;
                 let path_str = sess.current_path.to_string_lossy().to_string();
                 sess.client.lock().list_dir(&path_str);
+            }
+        }
+
+        if self.remote_monitoring_enabled {
+            let now = Instant::now();
+            for (_label, sess) in self.remote_sessions.iter_mut() {
+                if sess.is_connected && !sess.is_loading {
+                    let should_poll = sess.last_telemetry_poll
+                        .map(|t| now.duration_since(t) >= Duration::from_millis(2500))
+                        .unwrap_or(true);
+                    if should_poll {
+                        let client = sess.client.lock();
+                        if !client.is_busy {
+                            client.fetch_telemetry();
+                            sess.last_telemetry_poll = Some(now);
+                        }
+                    }
+                }
             }
         }
 
@@ -576,6 +609,18 @@ impl FileExplorer {
                 self.load_active_remote_state(&active_label);
             }
         }
+    }
+
+    pub fn get_active_telemetry(&self) -> Option<crate::telemetry::RemoteSystemMetrics> {
+        if self.is_remote {
+            if let Some(ref label) = self.remote_label {
+                if let Some(sess) = self.remote_sessions.get(label) {
+                    return sess.remote_telemetry.clone();
+                }
+            }
+            return self.remote_telemetry.clone();
+        }
+        None
     }
 
     pub fn set_path(&mut self, path: PathBuf) {

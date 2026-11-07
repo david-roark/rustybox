@@ -7,6 +7,7 @@ mod sftp;
 mod terminal;
 mod tunneling;
 mod snippets;
+mod telemetry;
 
 use app::RustyBoxApp;
 use eframe::egui::ViewportBuilder;
