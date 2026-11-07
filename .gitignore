@@ -8,6 +8,7 @@ data/
 # Temporary test screenshots and crops
 *.png
 !assets/*.png
+!docs/screenshots/*.png
 crop_*.png
 qa_*.png
 test_*.png

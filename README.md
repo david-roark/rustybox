@@ -7,6 +7,8 @@
 
 > **RustyBox** là bộ công cụ Remote Terminal & SSH Toolbox đa nền tảng hiện đại, hiệu năng cao, viết 100% bằng **Rust**. Ứng dụng hoạt động độc lập (Portable), khởi động tức thì, dung lượng siêu nhẹ (~12 MB), không phụ thuộc runtime cồng kềnh, được thiết kế làm giải pháp thay thế mạnh mẽ cho MobaXterm, Termius và PuTTY.
 
+![RustyBox Preview](docs/screenshots/rustybox_preview.png)
+
 ---
 
 ## 📸 Điểm nổi bật & Tính năng chính
