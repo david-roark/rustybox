@@ -133,6 +133,8 @@ pub struct Session {
     pub backspace_sends_ctrl_h: bool,
     #[serde(default = "default_true")]
     pub right_click_paste: bool,
+    #[serde(default = "default_true")]
+    pub copy_on_select: bool,
     #[serde(default)]
     pub log_terminal_output: bool,
     #[serde(default)]
@@ -182,6 +184,7 @@ impl Session {
             terminal_color_scheme: default_color_scheme(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
+            copy_on_select: true,
             log_terminal_output: false,
             log_directory: String::new(),
             use_ssh_gateway: false,
@@ -224,6 +227,7 @@ impl Session {
             terminal_color_scheme: default_color_scheme(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
+            copy_on_select: true,
             log_terminal_output: false,
             log_directory: String::new(),
             use_ssh_gateway: false,

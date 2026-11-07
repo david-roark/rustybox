@@ -482,6 +482,7 @@ pub struct RustyBoxApp {
     // Multi-line paste confirmation (MobaXterm TFORMCHECKCLIPBOARD)
     pending_paste_text: Option<String>,
     paste_protection_enabled: bool,
+    copy_on_select: bool,
     // Settings & Hotkeys Dialogs (MobaXterm TFORMPARAMS & TFORMHOTKEYS)
     show_settings_dialog: bool,
     show_hotkeys_dialog: bool,
@@ -588,6 +589,7 @@ impl RustyBoxApp {
         let font_size = if config.font_size >= 8.0 && config.font_size <= 36.0 { config.font_size } else { 14.0 };
         let theme = TerminalTheme::from_name(&config.theme_name).unwrap_or(TerminalTheme::RustyBoxDark);
         let paste_protection_enabled = config.paste_protection_enabled;
+        let copy_on_select = config.copy_on_select;
         let (broadcast_tx, broadcast_rx) = unbounded();
 
         // Ensure every session has a unique UUID (auto-repair any historical duplicate IDs)
@@ -682,6 +684,7 @@ impl RustyBoxApp {
             search_query: String::new(),
             pending_paste_text: None,
             paste_protection_enabled,
+            copy_on_select,
             show_settings_dialog: false,
             show_hotkeys_dialog: false,
             show_manage_passwords: false,
@@ -899,6 +902,17 @@ impl RustyBoxApp {
             chrono::Local::now().format("%Y%m%d_%H%M%S")
         );
         Some(dir.join(filename))
+    }
+
+    fn persist_preferences(&self) -> Result<(), String> {
+        self.storage.save_preferences(
+            self.ui_scale,
+            self.font_size,
+            &self.terminal_font_family,
+            self.theme.name(),
+            self.paste_protection_enabled,
+            self.copy_on_select,
+        )
     }
 
     fn build_ssh_spawn_config(s: &Session, tunnel_x11: bool) -> (Option<String>, crate::terminal::pty_session::SshSpawnConfig) {
@@ -1949,16 +1963,16 @@ impl eframe::App for RustyBoxApp {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Equals)) {
             self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.persist_preferences();
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Minus)) {
             self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.persist_preferences();
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Num0)
             || i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0)) {
             self.ui_scale = 1.0;
-            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+            let _ = self.persist_preferences();
         }
 
         // Global Keyboard Shortcuts
@@ -2228,7 +2242,7 @@ impl eframe::App for RustyBoxApp {
                             if ui.selectable_label(is_selected, opt.name).clicked() {
                                 self.terminal_font_family = opt.id.to_string();
                                 crate::terminal::fonts::setup_terminal_fonts(ui.ctx(), &self.terminal_font_family);
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.persist_preferences();
                                 ui.close_menu();
                             }
                         }
@@ -2269,17 +2283,17 @@ impl eframe::App for RustyBoxApp {
                     ui.menu_button("🔍 UI Font & Zoom Scale", |ui| {
                         if ui.button("➕ Zoom In UI (+10%)\tCtrl+Shift++").clicked() {
                             self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.persist_preferences();
                             ui.close_menu();
                         }
                         if ui.button("➖ Zoom Out UI (-10%)\tCtrl+Shift+-").clicked() {
                             self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.persist_preferences();
                             ui.close_menu();
                         }
                         if ui.button("↺ Reset Zoom (100%)\tCtrl+0").clicked() {
                             self.ui_scale = 1.0;
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.persist_preferences();
                             ui.close_menu();
                         }
                         ui.separator();
@@ -2287,7 +2301,7 @@ impl eframe::App for RustyBoxApp {
                             let label = format!("{:.0}%{}", scale * 100.0, if (self.ui_scale - scale).abs() < 0.02 { "  ✓" } else { "" });
                             if ui.selectable_label((self.ui_scale - scale).abs() < 0.02, label).clicked() {
                                 self.ui_scale = scale;
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.persist_preferences();
                                 ui.close_menu();
                             }
                         }
@@ -2302,7 +2316,7 @@ impl eframe::App for RustyBoxApp {
                                         s.terminal_color_scheme = t.name().to_string();
                                     }
                                 }
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.persist_preferences();
                                 ui.ctx().request_repaint();
                                 ui.close_menu();
                             }
@@ -2625,18 +2639,18 @@ impl eframe::App for RustyBoxApp {
                                 ui.label(RichText::new("UI:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
                                 if ui.small_button("➖").on_hover_text("Zoom out UI font (Ctrl+Shift+-)").clicked() && self.ui_scale > 0.75 {
                                     self.ui_scale = (self.ui_scale - 0.1).max(0.7);
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.persist_preferences();
                                 }
                                 let pct = (self.ui_scale * 100.0).round() as i32;
                                 if ui.button(RichText::new(format!("{}%", pct)).size(11.0).strong())
                                     .on_hover_text("Click to reset UI Zoom to 100%")
                                     .clicked() {
                                     self.ui_scale = 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.persist_preferences();
                                 }
                                 if ui.small_button("➕").on_hover_text("Zoom in UI font (Ctrl+Shift++)").clicked() && self.ui_scale < 2.0 {
                                     self.ui_scale = (self.ui_scale + 0.1).min(2.0);
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.persist_preferences();
                                 }
 
                                 ui.separator();
@@ -2645,12 +2659,12 @@ impl eframe::App for RustyBoxApp {
                                 ui.label(RichText::new("Term:").color(Color32::from_rgb(148, 163, 184)).size(11.0));
                                 if ui.small_button("➖").on_hover_text("Decrease terminal font size (Ctrl+-)").clicked() && self.font_size > 8.0 {
                                     self.font_size -= 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.persist_preferences();
                                 }
                                 ui.label(RichText::new(format!("{:.0}px", self.font_size)).size(11.0).strong());
                                 if ui.small_button("➕").on_hover_text("Increase terminal font size (Ctrl++)").clicked() && self.font_size < 32.0 {
                                     self.font_size += 1.0;
-                                    let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                    let _ = self.persist_preferences();
                                 }
                             });
                         });
@@ -2678,7 +2692,7 @@ impl eframe::App for RustyBoxApp {
                                     }
                                 });
                             if self.theme != prev_theme {
-                                let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                let _ = self.persist_preferences();
                                 ui.ctx().request_repaint();
                             }
                         });
@@ -4220,6 +4234,11 @@ impl eframe::App for RustyBoxApp {
                     .as_ref()
                     .map(|s| s.right_click_paste)
                     .unwrap_or(false);
+                let cos = tab
+                    .session_def
+                    .as_ref()
+                    .map(|s| s.copy_on_select)
+                    .unwrap_or(self.copy_on_select);
 
                 let widget = TerminalWidget::new(&tab.id, &mut tab.session)
                     .with_font_size(eff_font)
@@ -4229,6 +4248,7 @@ impl eframe::App for RustyBoxApp {
                     .with_active_pane(is_active)
                     .with_backspace_ctrl_h(bs_ctrl_h)
                     .with_right_click_paste(rc_paste)
+                    .with_copy_on_select(cos)
                     .with_highlight_rules(Some(&self.highlight_rules), self.highlight_rules_enabled);
                 let _ = pane_idx;
                 widget.ui(ui, broadcast_tx)
@@ -6773,13 +6793,16 @@ impl eframe::App for RustyBoxApp {
                                                 s.terminal_color_scheme = t.name().to_string();
                                             }
                                         }
-                                        let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                                        let _ = self.persist_preferences();
                                         ui.ctx().request_repaint();
                                     }
                                 }
                             });
                             ui.add_space(6.0);
                             ui.checkbox(&mut self.paste_protection_enabled, "Display confirmation dialog when pasting multiple lines");
+                            if ui.checkbox(&mut self.copy_on_select, "Automatically copy selected text to clipboard (Copy on select)").changed() {
+                                let _ = self.persist_preferences();
+                            }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 let mut hl_en = self.highlight_rules_enabled;
@@ -6862,7 +6885,7 @@ impl eframe::App for RustyBoxApp {
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("💾 Save Preferences").strong().color(Color32::from_rgb(56, 189, 248))).clicked() {
                             let _ = self.storage.save_sessions(&self.sessions);
-                            let _ = self.storage.save_preferences(self.ui_scale, self.font_size, &self.terminal_font_family, self.theme.name(), self.paste_protection_enabled);
+                            let _ = self.persist_preferences();
                             close_dialog = true;
                         }
                         if ui.button("Close").clicked() {

@@ -15,6 +15,7 @@ pub struct TerminalWidget<'a> {
     pub is_active_pane: bool,
     pub backspace_sends_ctrl_h: bool,
     pub right_click_paste: bool,
+    pub copy_on_select: bool,
     pub highlight_rules: Option<&'a [HighlightRule]>,
     pub highlight_enabled: bool,
 }
@@ -45,6 +46,7 @@ impl<'a> TerminalWidget<'a> {
             is_active_pane: true,
             backspace_sends_ctrl_h: false,
             right_click_paste: false,
+            copy_on_select: true,
             highlight_rules: None,
             highlight_enabled: true,
         }
@@ -89,6 +91,11 @@ impl<'a> TerminalWidget<'a> {
     #[allow(dead_code)]
     pub fn with_right_click_paste(mut self, enabled: bool) -> Self {
         self.right_click_paste = enabled;
+        self
+    }
+
+    pub fn with_copy_on_select(mut self, enabled: bool) -> Self {
+        self.copy_on_select = enabled;
         self
     }
 
@@ -298,7 +305,11 @@ impl<'a> TerminalWidget<'a> {
                             extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
                         drop(parser);
                         if !text.is_empty() {
-                            copy_text_to_clipboard(ui, &text);
+                            if self.copy_on_select {
+                                copy_text_to_clipboard(ui, &text);
+                            } else {
+                                copy_text_to_primary_selection(&text);
+                            }
                         }
                     }
                 }
@@ -318,7 +329,11 @@ impl<'a> TerminalWidget<'a> {
                         extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
                     drop(parser);
                     if !text.is_empty() {
-                        copy_text_to_clipboard(ui, &text);
+                        if self.copy_on_select {
+                            copy_text_to_clipboard(ui, &text);
+                        } else {
+                            copy_text_to_primary_selection(&text);
+                        }
                     }
                     selection = Some((start, end));
                     drag_origin = None;
@@ -336,7 +351,11 @@ impl<'a> TerminalWidget<'a> {
                         extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
                     drop(parser);
                     if !text.is_empty() {
-                        copy_text_to_clipboard(ui, &text);
+                        if self.copy_on_select {
+                            copy_text_to_clipboard(ui, &text);
+                        } else {
+                            copy_text_to_primary_selection(&text);
+                        }
                     }
                     selection = Some((start, end));
                     drag_origin = None;
@@ -1829,6 +1848,35 @@ pub fn copy_text_to_clipboard(ui: &Ui, text: &str) {
     }
 }
 
+/// Copies `text` only to the PRIMARY selection on Linux (for middle-click paste),
+/// without overwriting the system CLIPBOARD (Ctrl+V) or triggering clipboard manager extensions.
+pub fn copy_text_to_primary_selection(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut guard = GLOBAL_CLIPBOARD.lock();
+        if guard.is_none() {
+            *guard = arboard::Clipboard::new().ok();
+        }
+        if let Some(cb) = guard.as_mut() {
+            use arboard::{LinuxClipboardKind, SetExtLinux};
+            let res = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+            if res.is_err() {
+                if let Ok(mut new_cb) = arboard::Clipboard::new() {
+                    let _ = new_cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+                    *guard = Some(new_cb);
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = text;
+    }
+}
+
 /// Retrieves text from the OS clipboard.
 /// On Linux, `prefer_primary = true` (e.g. for middle-click paste or Shift+Insert) queries `PRIMARY` first,
 /// falling back to `CLIPBOARD`.
@@ -2834,7 +2882,23 @@ mod tests {
                 copy_text_to_clipboard(ui, "rustybox_clipboard_test");
                 let retrieved = get_clipboard_text(ui, false);
                 assert_eq!(retrieved, Some("rustybox_clipboard_test".to_string()));
+
+                // Test primary selection helper
+                copy_text_to_primary_selection("rustybox_primary_test");
             });
         });
+    }
+
+    #[test]
+    fn test_copy_on_select_configuration() {
+        // Test default copy_on_select is true
+        let mut session = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+            .expect("Failed to spawn local PTY session");
+        let widget = TerminalWidget::new("test_tab", &mut session);
+        assert!(widget.copy_on_select, "Default copy_on_select must be true");
+
+        // Test with_copy_on_select(false) builder
+        let custom_widget = widget.with_copy_on_select(false);
+        assert!(!custom_widget.copy_on_select, "with_copy_on_select(false) must disable copy_on_select");
     }
 }

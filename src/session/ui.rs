@@ -38,6 +38,7 @@ pub struct NewSessionDialog {
     pub terminal_color_scheme: String,
     pub backspace_sends_ctrl_h: bool,
     pub right_click_paste: bool,
+    pub copy_on_select: bool,
     pub log_terminal_output: bool,
     pub log_directory: String,
     // Network settings tab
@@ -138,6 +139,7 @@ impl NewSessionDialog {
             terminal_color_scheme: "RustyBox Dark (Default)".into(),
             backspace_sends_ctrl_h: false,
             right_click_paste: true,
+            copy_on_select: true,
             log_terminal_output: false,
             log_directory: "".into(),
             use_ssh_gateway: false,
@@ -248,6 +250,7 @@ impl NewSessionDialog {
         };
         self.backspace_sends_ctrl_h = s.backspace_sends_ctrl_h;
         self.right_click_paste = s.right_click_paste;
+        self.copy_on_select = s.copy_on_select;
         self.log_terminal_output = s.log_terminal_output;
         self.log_directory = s.log_directory.clone();
         self.use_ssh_gateway = s.use_ssh_gateway;
@@ -486,6 +489,7 @@ impl NewSessionDialog {
             terminal_color_scheme: self.terminal_color_scheme.clone(),
             backspace_sends_ctrl_h: self.backspace_sends_ctrl_h,
             right_click_paste: self.right_click_paste,
+            copy_on_select: self.copy_on_select,
             log_terminal_output: self.log_terminal_output,
             log_directory: self.log_directory.clone(),
             use_ssh_gateway: self.use_ssh_gateway,
@@ -1627,6 +1631,7 @@ pub fn render_new_session_dialog(
                                     ui.add_space(10.0);
                                     rusty_checkbox(ui, &mut dialog.backspace_sends_ctrl_h, "Backspace sends ^H");
                                     rusty_checkbox(ui, &mut dialog.right_click_paste, "Paste using right-click");
+                                    rusty_checkbox(ui, &mut dialog.copy_on_select, "Copy on select (automatically copy selected text)");
                                 }
                                 2 => {
                                     rusty_checkbox(ui, &mut dialog.use_ssh_gateway, "Connect through SSH gateway (jump host)");
