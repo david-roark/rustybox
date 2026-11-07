@@ -681,8 +681,10 @@ impl PtySession {
                 }
                 #[cfg(target_os = "windows")]
                 {
+                    use std::os::windows::process::CommandExt;
                     let _ = std::process::Command::new("taskkill")
                         .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .creation_flags(0x08000000) // CREATE_NO_WINDOW: prevent console window flash on Windows
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .status();

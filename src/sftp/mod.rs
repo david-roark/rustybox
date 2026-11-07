@@ -1460,8 +1460,10 @@ impl FileExplorer {
                         .spawn();
                 }
                 ExternalOpenMode::DefaultProgram => {
+                    use std::os::windows::process::CommandExt;
                     let _ = std::process::Command::new("cmd")
                         .args(["/C", "start", "", &path_str])
+                        .creation_flags(0x08000000)
                         .spawn();
                 }
             }
