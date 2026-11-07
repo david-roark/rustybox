@@ -483,6 +483,7 @@ impl FileExplorer {
                 match evt {
                     SftpEvent::Connected { initial_dir, .. } => {
                         sess.is_connected = true;
+                        sess.is_loading = false;
                         let init_path = PathBuf::from(&initial_dir);
                         sess.remote_home_dir = Some(init_path.clone());
                         sess.current_path = init_path.clone();
@@ -577,17 +578,15 @@ impl FileExplorer {
 
         if self.remote_monitoring_enabled {
             let now = Instant::now();
+            let is_transferring = self.transfer_progress.is_some();
             for (_label, sess) in self.remote_sessions.iter_mut() {
-                if sess.is_connected && !sess.is_loading {
+                if sess.is_connected && !is_transferring {
                     let should_poll = sess.last_telemetry_poll
                         .map(|t| now.duration_since(t) >= Duration::from_millis(2500))
                         .unwrap_or(true);
                     if should_poll {
-                        let client = sess.client.lock();
-                        if !client.is_busy {
-                            client.fetch_telemetry();
-                            sess.last_telemetry_poll = Some(now);
-                        }
+                        sess.client.lock().fetch_telemetry();
+                        sess.last_telemetry_poll = Some(now);
                     }
                 }
             }

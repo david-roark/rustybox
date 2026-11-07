@@ -260,6 +260,13 @@ fn run_sftp_worker(
                             let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
                         }
 
+                        // Also immediately fetch initial telemetry probe
+                        if let Ok(raw) = execute_remote_cmd(&sess, crate::telemetry::TELEMETRY_PROBE_CMD) {
+                            let (metrics, next_sample) = crate::telemetry::parse_remote_telemetry_output(&raw, last_net_sample);
+                            last_net_sample = next_sample;
+                            let _ = event_tx.send(SftpEvent::Telemetry(metrics));
+                        }
+
                         current_sess = Some((sess, sftp, cfg, users, groups));
                     }
                     Err(e) => {
@@ -1272,8 +1279,8 @@ fn fetch_remote_disk(sess: &ssh2::Session, dir_path: &str) -> Result<(u64, u64, 
 fn execute_remote_cmd(sess: &ssh2::Session, cmd: &str) -> Result<String, String> {
     let mut ch = sess.channel_session().map_err(|e| format!("Channel error: {}", e))?;
     ch.exec(cmd).map_err(|e| format!("Exec error: {}", e))?;
-    let mut out = String::new();
-    let _ = ch.read_to_string(&mut out);
+    let mut out_bytes = Vec::new();
+    let _ = ch.read_to_end(&mut out_bytes);
     let _ = ch.wait_close();
-    Ok(out)
+    Ok(String::from_utf8_lossy(&out_bytes).to_string())
 }

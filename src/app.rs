@@ -1211,6 +1211,8 @@ impl RustyBoxApp {
     }
 
     fn update_telemetry(&mut self) {
+        self.explorer.poll();
+
         let elapsed = self.last_telemetry_time.elapsed();
         if elapsed < std::time::Duration::from_millis(1500) {
             return;
@@ -1250,12 +1252,18 @@ impl RustyBoxApp {
                         let target_label = format!("{}@{}:{}", u, h, s.session_type.port().unwrap_or(22));
                         let remote_metrics = self.explorer.remote_sessions.get(&target_label)
                             .and_then(|sess| sess.remote_telemetry.clone())
+                            .or_else(|| {
+                                self.explorer.remote_sessions.values()
+                                    .find(|sess| sess.config.host.eq_ignore_ascii_case(&h) && sess.config.user == u)
+                                    .and_then(|sess| sess.remote_telemetry.clone())
+                            })
                             .or_else(|| self.explorer.get_active_telemetry());
 
                         if let Some(m) = remote_metrics {
                             tab.telemetry.apply_metrics(&m);
-                        } else if self.explorer.is_remote && self.explorer.remote_label.as_deref() == Some(&target_label) {
-                            if let Some((_used, _total, pct)) = self.explorer.remote_disk_stats {
+                        }
+                        if let Some((_used, _total, pct)) = self.explorer.remote_disk_stats {
+                            if tab.telemetry.disk_pct.is_none() {
                                 tab.telemetry.disk_pct = Some(pct.round() as u32);
                             }
                         }
@@ -1733,6 +1741,7 @@ impl eframe::App for RustyBoxApp {
             self.search_open = false;
         }
         self.handle_multi_exec_broadcast();
+        self.explorer.poll();
         self.update_telemetry();
         self.sync_terminal_cwd_if_enabled();
 

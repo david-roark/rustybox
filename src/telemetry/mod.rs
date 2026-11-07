@@ -8,7 +8,7 @@ use crate::session::Session;
 /// 2. RAM Total and Available (kB)
 /// 3. Disk percentage on root (/)
 /// 4. Network interface byte counters
-pub const TELEMETRY_PROBE_CMD: &str = r#"printf "CORES:%s|LOAD:%s|UPTIME:%s\n" "$(nproc 2>/dev/null)" "$(cat /proc/loadavg 2>/dev/null | cut -d' ' -f1)" "$(uptime -p 2>/dev/null)"; grep -E "MemTotal|MemAvailable" /proc/meminfo 2>/dev/null; df -k / 2>/dev/null | tail -1; cat /proc/net/dev 2>/dev/null"#;
+pub const TELEMETRY_PROBE_CMD: &str = r#"printf "CORES:%s|LOAD:%s|UPTIME:%s\n" "$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)" "$(cat /proc/loadavg 2>/dev/null | cut -d' ' -f1)" "$(uptime -p 2>/dev/null || uptime 2>/dev/null)"; grep -E "MemTotal|MemAvailable" /proc/meminfo 2>/dev/null; df -k / 2>/dev/null | tail -1; cat /proc/net/dev 2>/dev/null"#;
 
 /// Structured system metrics obtained from telemetry collection
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -135,8 +135,8 @@ pub fn format_net_speed(bps: f32) -> String {
 pub fn format_uptime_string(raw: &str) -> String {
     let clean = raw.trim();
     let lower = clean.to_lowercase();
-    let without_up = if lower.starts_with("up ") {
-        &clean[3..].trim()
+    let without_up = if let Some(pos) = lower.find("up ") {
+        clean[pos + 3..].trim()
     } else {
         clean
     };
@@ -184,12 +184,9 @@ pub fn format_uptime_string(raw: &str) -> String {
             format!("Up: {} min", minutes)
         }
     } else {
-        // Fallback: keep readable string with "Up: " prefix
-        if lower.starts_with("up ") {
-            format!("Up: {}", &clean[3..].trim())
-        } else {
-            format!("Up: {}", clean)
-        }
+        // Fallback: take readable part before comma (e.g. "1:03" from "1:03, 1 user")
+        let candidate = without_up.split(',').next().unwrap_or(without_up).trim();
+        format!("Up: {}", candidate)
     }
 }
 
