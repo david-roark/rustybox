@@ -4234,11 +4234,6 @@ impl eframe::App for RustyBoxApp {
                     .as_ref()
                     .map(|s| s.right_click_paste)
                     .unwrap_or(false);
-                let cos = tab
-                    .session_def
-                    .as_ref()
-                    .map(|s| s.copy_on_select)
-                    .unwrap_or(self.copy_on_select);
 
                 let widget = TerminalWidget::new(&tab.id, &mut tab.session)
                     .with_font_size(eff_font)
@@ -4248,7 +4243,7 @@ impl eframe::App for RustyBoxApp {
                     .with_active_pane(is_active)
                     .with_backspace_ctrl_h(bs_ctrl_h)
                     .with_right_click_paste(rc_paste)
-                    .with_copy_on_select(cos)
+                    .with_copy_on_select(self.copy_on_select)
                     .with_highlight_rules(Some(&self.highlight_rules), self.highlight_rules_enabled);
                 let _ = pane_idx;
                 widget.ui(ui, broadcast_tx)
