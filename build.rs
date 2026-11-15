@@ -23,7 +23,7 @@ fn main() {
         };
 
         let status = Command::new(windres)
-            .args(&[
+            .args([
                 "assets/rustybox.rc",
                 "-O",
                 "coff",
@@ -32,10 +32,9 @@ fn main() {
             ])
             .status();
 
-        if let Ok(s) = status {
-            if s.success() {
+        if let Ok(s) = status
+            && s.success() {
                 println!("cargo:rustc-link-arg={}", res_path.display());
             }
-        }
     }
 }

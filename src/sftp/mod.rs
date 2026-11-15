@@ -45,12 +45,12 @@ pub fn format_size_kb(size: u64) -> String {
     if size == 0 {
         return "0".to_string();
     }
-    let kb = (size + 1023) / 1024;
+    let kb = size.div_ceil(1024);
     let s = kb.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     let len = s.len();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -70,7 +70,6 @@ pub fn format_modified_time(time: Option<SystemTime>) -> String {
 
 #[derive(Clone)]
 pub struct RemoteSessionState {
-    pub label: String,
     pub config: SftpTargetConfig,
     pub client: Arc<Mutex<RemoteSftpClient>>,
     pub is_connected: bool,
@@ -185,6 +184,12 @@ pub struct FileExplorer {
     pub show_sudo_password_dialog: bool,
     pub sudo_password_input: String,
     pub sudo_password_remember: bool,
+}
+
+impl Default for FileExplorer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileExplorer {
@@ -327,11 +332,10 @@ impl FileExplorer {
     }
 
     pub fn is_active_sudo_mode(&self) -> bool {
-        if let Some(ref label) = self.remote_label {
-            if let Some(sess) = self.remote_sessions.get(label) {
+        if let Some(ref label) = self.remote_label
+            && let Some(sess) = self.remote_sessions.get(label) {
                 return sess.sudo_mode;
             }
-        }
         false
     }
 
@@ -525,7 +529,6 @@ impl FileExplorer {
         let client_arc = Arc::new(Mutex::new(client_inner));
 
         let new_session = RemoteSessionState {
-            label: label.clone(),
             config: cfg,
             client: client_arc,
             is_connected: false,
@@ -648,11 +651,10 @@ impl FileExplorer {
         self.entries.extend(dirs);
         self.entries.extend(files);
 
-        if let Some(ref sel) = self.selected_file {
-            if !self.entries.iter().any(|e| &e.path == sel) {
+        if let Some(ref sel) = self.selected_file
+            && !self.entries.iter().any(|e| &e.path == sel) {
                 self.selected_file = None;
             }
-        }
         self.selected_files.retain(|p| self.entries.iter().any(|e| &e.path == p));
         if self.selected_file.is_none() && !self.selected_files.is_empty() {
             self.selected_file = self.selected_files.last().cloned();
@@ -686,13 +688,11 @@ impl FileExplorer {
             self.selected_files.remove(pos);
             self.selected_file = self.selected_files.last().cloned();
         } else {
-            if self.selected_files.is_empty() {
-                if let Some(prev) = self.selected_file.clone() {
-                    if prev != path {
+            if self.selected_files.is_empty()
+                && let Some(prev) = self.selected_file.clone()
+                    && prev != path {
                         self.selected_files.push(prev);
                     }
-                }
-            }
             self.selected_files.push(path.clone());
             self.selected_file = Some(path.clone());
             self.selection_anchor = Some(path);
@@ -739,6 +739,7 @@ impl FileExplorer {
         }
     }
 
+    #[cfg(test)]
     pub fn toggle_sort_order(&mut self) {
         self.sort_ascending = !self.sort_ascending;
         if self.is_remote && !self.remote_raw_entries.is_empty() {
@@ -835,7 +836,7 @@ impl FileExplorer {
                             opened_editor = Some((label.clone(), PathBuf::from(path), content));
                         }
                     }
-                    SftpEvent::FileWritten { .. } => {
+                    SftpEvent::FileWritten => {
                         sess.is_loading = false;
                         editor_saved_target = Some(label.clone());
                         needs_dir_refresh = true;
@@ -844,11 +845,10 @@ impl FileExplorer {
                         sess.status_message = Some(msg);
                         sess.is_loading = false;
                         sess.error_message = None;
-                        if let Some((ref p, mode)) = self.pending_external_open.take() {
-                            if p.exists() {
+                        if let Some((ref p, mode)) = self.pending_external_open.take()
+                            && p.exists() {
                                 Self::launch_external_file(p, mode);
                             }
-                        }
                         needs_dir_refresh = true;
                     }
                     SftpEvent::OperationError(err) => {
@@ -888,7 +888,7 @@ impl FileExplorer {
         if self.remote_monitoring_enabled {
             let now = Instant::now();
             let is_transferring = self.transfer_progress.is_some();
-            for (_label, sess) in self.remote_sessions.iter_mut() {
+            for sess in self.remote_sessions.values_mut() {
                 if sess.is_connected && !is_transferring {
                     let should_poll = sess.last_telemetry_poll
                         .map(|t| now.duration_since(t) >= Duration::from_millis(2500))
@@ -908,20 +908,18 @@ impl FileExplorer {
             self.editor.mark_saved();
         }
 
-        if self.is_remote {
-            if let Some(active_label) = self.remote_label.clone() {
+        if self.is_remote
+            && let Some(active_label) = self.remote_label.clone() {
                 self.load_active_remote_state(&active_label);
             }
-        }
     }
 
     pub fn get_active_telemetry(&self) -> Option<crate::telemetry::RemoteSystemMetrics> {
         if self.is_remote {
-            if let Some(ref label) = self.remote_label {
-                if let Some(sess) = self.remote_sessions.get(label) {
+            if let Some(ref label) = self.remote_label
+                && let Some(sess) = self.remote_sessions.get(label) {
                     return sess.remote_telemetry.clone();
                 }
-            }
             return self.remote_telemetry.clone();
         }
         None
@@ -1040,6 +1038,7 @@ impl FileExplorer {
         }
     }
 
+    #[cfg(test)]
     pub fn extract_cwd_from_prompt(prompt_line: &str, home_dir: Option<&Path>) -> Option<PathBuf> {
         let trimmed = prompt_line.trim_end();
         let without_sigil = trimmed
@@ -1079,18 +1078,18 @@ impl FileExplorer {
         None
     }
 
+    #[cfg(test)]
     pub fn sync_remote_prompt_cwd(&mut self, prompt_line: &str) {
         if !self.follow_terminal_folder || !self.is_remote {
             return;
         }
-        if let Some(target) = Self::extract_cwd_from_prompt(prompt_line, self.remote_home_dir.as_deref()) {
-            if self.last_synced_terminal_cwd.as_ref() != Some(&target) {
+        if let Some(target) = Self::extract_cwd_from_prompt(prompt_line, self.remote_home_dir.as_deref())
+            && self.last_synced_terminal_cwd.as_ref() != Some(&target) {
                 self.last_synced_terminal_cwd = Some(target.clone());
                 if target != self.current_path {
                     self.set_path(target);
                 }
             }
-        }
     }
 
     pub fn go_up(&mut self) {
@@ -1136,15 +1135,13 @@ impl FileExplorer {
     pub fn refresh(&mut self) {
         self.error_message = None;
         if self.is_remote {
-            if !self.is_connected {
-                if let Some(ref label) = self.remote_label {
-                    if let Some(sess) = self.remote_sessions.get(label) {
+            if !self.is_connected
+                && let Some(ref label) = self.remote_label
+                    && let Some(sess) = self.remote_sessions.get(label) {
                         let cfg = sess.config.clone();
                         self.force_reconnect_remote(cfg);
                         return;
                     }
-                }
-            }
             if let Some(ref client) = self.remote_client {
                 self.is_loading = true;
                 let path_str = match self.remote_os {
@@ -1165,39 +1162,37 @@ impl FileExplorer {
                 let mut dirs = Vec::new();
                 let mut files = Vec::new();
 
-                for entry_res in read_dir {
-                    if let Ok(entry) = entry_res {
-                        let path = entry.path();
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_hidden = name.starts_with('.');
-                        if !self.show_hidden && is_hidden {
-                            continue;
-                        }
+                for entry in read_dir.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let is_hidden = name.starts_with('.');
+                    if !self.show_hidden && is_hidden {
+                        continue;
+                    }
 
-                        let metadata = entry.metadata().ok();
-                        let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                        let modified = metadata.as_ref().and_then(|m| m.modified().ok());
-                        let permissions = Self::format_permissions(metadata.as_ref(), is_dir);
-                        let (owner, group) = Self::get_local_owner_group(&metadata);
+                    let metadata = entry.metadata().ok();
+                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let modified = metadata.as_ref().and_then(|m| m.modified().ok());
+                    let permissions = Self::format_permissions(metadata.as_ref(), is_dir);
+                    let (owner, group) = Self::get_local_owner_group(&metadata);
 
-                        let item = FileEntry {
-                            name,
-                            path,
-                            is_dir,
-                            is_hidden,
-                            size,
-                            modified,
-                            permissions,
-                            owner,
-                            group,
-                        };
+                    let item = FileEntry {
+                        name,
+                        path,
+                        is_dir,
+                        is_hidden,
+                        size,
+                        modified,
+                        permissions,
+                        owner,
+                        group,
+                    };
 
-                        if is_dir {
-                            dirs.push(item);
-                        } else {
-                            files.push(item);
-                        }
+                    if is_dir {
+                        dirs.push(item);
+                    } else {
+                        files.push(item);
                     }
                 }
 
@@ -1343,15 +1338,14 @@ impl FileExplorer {
             .unwrap_or_else(|| "file".to_string());
 
         // Fast check: Known binary or compressed archive format
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if crate::editor::syntax::is_known_binary_extension(ext) {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && crate::editor::syntax::is_known_binary_extension(ext) {
                 self.error_message = Some(format!(
                     "⚠️ Cannot open binary/compressed file \"{}\". Quick Editor only supports text and code files.",
                     file_name
                 ));
                 return;
             }
-        }
 
         if self.is_remote {
             let path_str = path.to_string_lossy().replace('\\', "/");
@@ -1833,8 +1827,8 @@ impl FileExplorer {
                 }
             });
 
-        if let Some(p_str) = perm_str {
-            if let Some(bits) = Self::parse_permissions_str(&p_str) {
+        if let Some(p_str) = perm_str
+            && let Some(bits) = Self::parse_permissions_str(&p_str) {
                 self.chmod_u_r = bits[0];
                 self.chmod_u_w = bits[1];
                 self.chmod_u_x = bits[2];
@@ -1845,7 +1839,6 @@ impl FileExplorer {
                 self.chmod_o_w = bits[7];
                 self.chmod_o_x = bits[8];
             }
-        }
 
         self.chmod_remote_label = if self.is_remote {
             self.remote_label.clone()
@@ -2077,35 +2070,6 @@ impl FileExplorer {
         self.diff_file_a = file_a_name;
         self.diff_file_b = file_b_name;
         self.diff_open = true;
-    }
-
-    pub fn upload_file_to(&mut self, local_path: PathBuf, target_dir: &Path) {
-        if let Some(file_name) = local_path.file_name() {
-            let name_str = file_name.to_string_lossy().to_string();
-            let curr = target_dir.to_string_lossy().to_string();
-            let remote_p = if curr.ends_with('/') {
-                format!("{}{}", curr, name_str)
-            } else {
-                format!("{}/{}", curr, name_str)
-            };
-            if self.is_remote {
-                if let Some(ref client) = self.remote_client {
-                    self.is_loading = true;
-                    client.lock().upload(local_path, remote_p);
-                }
-            } else {
-                let dest = target_dir.join(file_name);
-                match fs::copy(&local_path, &dest) {
-                    Ok(_) => {
-                        self.status_message = Some("Copied locally".to_string());
-                        self.refresh();
-                    }
-                    Err(e) => {
-                        self.error_message = Some(format!("Copy failed: {}", e));
-                    }
-                }
-            }
-        }
     }
 
 }
@@ -2700,7 +2664,6 @@ mod tests {
         let label = "ubuntu@103.57.220.111:22".to_string();
 
         let sess = RemoteSessionState {
-            label: label.clone(),
             config: SftpTargetConfig {
                 host: "103.57.220.111".to_string(),
                 port: 22,
@@ -2779,7 +2742,6 @@ mod tests {
         let label = "ubuntu@103.57.220.111:22".to_string();
 
         let sess = RemoteSessionState {
-            label: label.clone(),
             config: SftpTargetConfig {
                 host: "103.57.220.111".to_string(),
                 port: 22,
@@ -2912,7 +2874,6 @@ mod tests {
 
         let label = "test_sess".to_string();
         let sess = RemoteSessionState {
-            label: label.clone(),
             config: SftpTargetConfig {
                 host: "198.51.100.42".into(),
                 port: 22,
@@ -2988,9 +2949,9 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 // Backslashes must be normalized to forward slashes!
                 assert_eq!(items[0].0, "/var/log/nginx.log");
-                assert_eq!(items[0].1, false);
+                assert!(!items[0].1);
                 assert_eq!(items[1].0, "/var/log/syslog");
-                assert_eq!(items[1].1, false);
+                assert!(!items[1].1);
             }
             other => panic!("Expected SftpCommand::DeleteMany, got {:?}", other),
         }

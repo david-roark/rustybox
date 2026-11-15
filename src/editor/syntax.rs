@@ -473,7 +473,7 @@ pub fn is_binary_buffer(buf: &[u8]) -> bool {
 
     // Check first 8 KB for null bytes (\0)
     let check_len = buf.len().min(8192);
-    buf[..check_len].iter().any(|&b| b == 0)
+    buf[..check_len].contains(&0)
 }
 
 #[cfg(test)]

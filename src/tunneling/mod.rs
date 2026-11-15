@@ -12,24 +12,6 @@ pub enum TunnelMode {
     DynamicSocks5,  // SOCKS5 dynamic proxy (-D)
 }
 
-impl TunnelMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            TunnelMode::LocalForward => "Local Forward (-L)",
-            TunnelMode::RemoteForward => "Remote Forward (-R)",
-            TunnelMode::DynamicSocks5 => "Dynamic SOCKS5 (-D)",
-        }
-    }
-
-    pub fn code(&self) -> &'static str {
-        match self {
-            TunnelMode::LocalForward => "-L",
-            TunnelMode::RemoteForward => "-R",
-            TunnelMode::DynamicSocks5 => "-D",
-        }
-    }
-}
-
 fn default_ssh_port() -> u16 {
     22
 }
@@ -101,6 +83,12 @@ pub struct TunnelManager {
     pub active_states: Vec<Arc<AtomicBool>>,
     pub child_pids: Vec<Arc<Mutex<Option<u32>>>>,
     pub status_messages: Vec<String>,
+}
+
+impl Default for TunnelManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TunnelManager {

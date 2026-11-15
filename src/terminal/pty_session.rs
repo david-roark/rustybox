@@ -98,13 +98,12 @@ pub struct PtySession {
     pub child_pid: Option<u32>,
     pub has_new_data: Arc<AtomicBool>,
     pub child: Arc<parking_lot::Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
-    #[allow(dead_code)]
     pub is_ssh: bool,
     pub last_osc7_path: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 impl PtySession {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn spawn_local(
         rows: u16,
         cols: u16,
@@ -214,30 +213,6 @@ impl PtySession {
         Ok(sess)
     }
 
-    #[allow(dead_code)]
-    pub fn spawn_ssh(
-        rows: u16,
-        cols: u16,
-        host: &str,
-        port: u16,
-        user: &str,
-        key_path: Option<&str>,
-        jump_host: Option<&str>,
-        password: Option<&str>,
-    ) -> Result<Self, String> {
-        Self::spawn_ssh_with_config(
-            rows,
-            cols,
-            host,
-            port,
-            user,
-            key_path,
-            jump_host,
-            password,
-            &SshSpawnConfig::default(),
-        )
-    }
-
     pub fn spawn_ssh_with_config(
         rows: u16,
         cols: u16,
@@ -269,14 +244,13 @@ impl PtySession {
 
         if let Some(pwd) = password {
             let clean = pwd.trim();
-            if !clean.is_empty() {
-                if let Ok(current_exe) = std::env::current_exe() {
+            if !clean.is_empty()
+                && let Ok(current_exe) = std::env::current_exe() {
                     cmd.env("SSH_ASKPASS", current_exe.to_string_lossy().to_string());
                     cmd.env("SSH_ASKPASS_REQUIRE", "force");
                     cmd.env("DISPLAY", "1");
                     cmd.env("RUSTYBOX_SSH_PASS", clean);
                 }
-            }
         }
 
         let default_title = format!("SSH: {}@{}", user, host);
@@ -433,8 +407,8 @@ impl PtySession {
                             let at_pwd_prompt = is_ssh_password_prompt(&combined);
 
                             // Auto-fill SSH password if prompted
-                            if pending_password.is_some() && at_pwd_prompt {
-                                if let Some(pwd) = pending_password.take() {
+                            if pending_password.is_some() && at_pwd_prompt
+                                && let Some(pwd) = pending_password.take() {
                                     let writer_for_pwd = Arc::clone(&writer_reply);
                                     let parser_for_notify = Arc::clone(&parser_clone);
                                     let has_new_data_for_notify = Arc::clone(&has_new_data_clone);
@@ -469,15 +443,14 @@ impl PtySession {
                                         suppress_for_pwd.store(false, Ordering::SeqCst);
                                     });
                                 }
-                            }
 
                             // On Windows, ConPTY (conhost.exe --headless --inheritcursor) emits \x1b[6n
                             // immediately upon pseudo-console creation and blocks the child process (ssh.exe)
                             // from starting until it receives a Cursor Position Report (\x1b[r;cR).
                             // Reply to this initial ConPTY handshake once so ssh.exe can start, then block
                             // subsequent terminal queries on SSH sessions so remote shells never see ^[[6;1R.
-                            if is_ssh && !conpty_init_cpr_replied {
-                                if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[6n") {
+                            if is_ssh && !conpty_init_cpr_replied
+                                && let Some(pos) = combined.windows(4).position(|w| w == b"\x1b[6n") {
                                     conpty_init_cpr_replied = true;
                                     let (r, c) = {
                                         let p = parser_clone.lock();
@@ -489,7 +462,6 @@ impl PtySession {
                                     let _ = w.flush();
                                     combined[pos..pos + 4].fill(0);
                                 }
-                            }
 
                             // If this is an SSH session, NEVER send subsequent terminal query auto-replies (CPR, DA, DSR)
                             // into stdin, because OpenSSH / remote shell (bash/zsh) will treat them as raw
@@ -553,8 +525,8 @@ impl PtySession {
                             // Scan for OSC 7 working directory notification (\x1b]7;file://... or \x1b]7;...)
                             if let Some(pos) = combined.windows(4).position(|w| w == b"\x1b]7;") {
                                 let slice = &combined[pos + 4..];
-                                if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27) {
-                                    if let Ok(s) = std::str::from_utf8(&slice[..end]) {
+                                if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27)
+                                    && let Ok(s) = std::str::from_utf8(&slice[..end]) {
                                         let path_str = if let Some(stripped) = s.strip_prefix("file://") {
                                             if let Some(slash_idx) = stripped.find('/') {
                                                 &stripped[slash_idx..]
@@ -568,22 +540,20 @@ impl PtySession {
                                             *last_osc7_path_clone.lock() = Some(path_str.to_string());
                                         }
                                     }
-                                }
                             }
 
                             // Scan for OSC 0 / OSC 2 window title notification (\x1b]0;... or \x1b]2;...)
                             for prefix in [b"\x1b]0;", b"\x1b]2;"] {
                                 if let Some(pos) = combined.windows(4).position(|w| w == prefix) {
                                     let slice = &combined[pos + 4..];
-                                    if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27) {
-                                        if let Ok(s) = std::str::from_utf8(&slice[..end]) {
+                                    if let Some(end) = slice.iter().position(|&b| b == 7 || b == 27)
+                                        && let Ok(s) = std::str::from_utf8(&slice[..end]) {
                                             let clean = s.trim();
                                             if !clean.is_empty() {
                                                 *title_clone.lock() = clean.to_string();
                                                 break;
                                             }
                                         }
-                                    }
                                 }
                             }
 
@@ -612,7 +582,6 @@ impl PtySession {
         })
     }
 
-    #[allow(dead_code)]
     pub fn write_str(&mut self, s: &str) -> std::io::Result<()> {
         let mut w = self.writer.lock();
         w.write_all(s.as_bytes())?;
@@ -666,28 +635,16 @@ impl PtySession {
         }
     }
 
-    pub fn current_cursor_line(&self) -> Option<String> {
-        let p = self.parser.try_lock()?;
-        let screen = p.screen();
-        let (r, c) = screen.cursor_position();
-        if c == 0 {
-            return None;
-        }
-        Some(screen.contents_between(r, 0, r, c))
-    }
-
     pub fn is_alive(&self) -> bool {
         if !self.running.load(Ordering::Relaxed) {
             return false;
         }
-        if let Some(mut guard) = self.child.try_lock() {
-            if let Some(child) = guard.as_mut() {
-                if let Ok(Some(_status)) = child.try_wait() {
+        if let Some(mut guard) = self.child.try_lock()
+            && let Some(child) = guard.as_mut()
+                && let Ok(Some(_status)) = child.try_wait() {
                     self.running.store(false, Ordering::Relaxed);
                     return false;
                 }
-            }
-        }
         self.running.load(Ordering::Relaxed)
     }
 
@@ -925,12 +882,11 @@ mod tests {
         let mut logged = false;
         for _ in 0..30 {
             std::thread::sleep(Duration::from_millis(40));
-            if let Ok(data) = std::fs::read_to_string(&log_path) {
-                if data.contains("LOG_FILE_VERIFIED") {
+            if let Ok(data) = std::fs::read_to_string(&log_path)
+                && data.contains("LOG_FILE_VERIFIED") {
                     logged = true;
                     break;
                 }
-            }
         }
         sess.kill();
         let _ = std::fs::remove_file(&log_path);

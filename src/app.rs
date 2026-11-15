@@ -10,7 +10,7 @@ use crate::terminal::vt_screen::TerminalTheme;
 use crate::terminal::widget::{copy_text_to_clipboard, TerminalAction, TerminalWidget};
 use crate::terminal::PtySession;
 use crate::tunneling::TunnelManager;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use crate::telemetry::TabTelemetry;
 use egui::{
     menu, pos2, vec2, Align, Align2, Color32, Layout, Margin, RichText, ScrollArea,
@@ -26,8 +26,8 @@ pub fn extract_cwd_from_title(title: &str) -> Option<String> {
     }
 
     // 1. Windows drive path in title (e.g. "C:\Users\Long" or "cmd - C:\Users\Long\Projects")
-    if let Some(pos) = raw.find(":\\") {
-        if pos > 0 {
+    if let Some(pos) = raw.find(":\\")
+        && pos > 0 {
             let drive_char = raw.as_bytes()[pos - 1] as char;
             if drive_char.is_ascii_alphabetic() {
                 let start = pos - 1;
@@ -38,7 +38,6 @@ pub fn extract_cwd_from_title(title: &str) -> Option<String> {
                 }
             }
         }
-    }
 
     // 2. Unix / SSH path in title (e.g. "user@host: /var/log" or "user@host:/var/log" or "root@srv: ~/app - bash")
     if let Some((_user_host, rest)) = raw.split_once(':') {
@@ -70,8 +69,8 @@ pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
         // 1. Windows CMD / PowerShell: C:\Users\Long\Projects> or PS D:\temp>
         if let Some(gt_idx) = trimmed.rfind('>') {
             let before_gt = trimmed[..gt_idx].trim();
-            if let Some(pos) = before_gt.find(":\\") {
-                if pos > 0 {
+            if let Some(pos) = before_gt.find(":\\")
+                && pos > 0 {
                     let drive_char = before_gt.as_bytes()[pos - 1] as char;
                     if drive_char.is_ascii_alphabetic() {
                         let path_cand = before_gt[pos - 1..].trim();
@@ -81,7 +80,6 @@ pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
                         }
                     }
                 }
-            }
         }
 
         // 2. Linux / SSH prompt:
@@ -90,24 +88,23 @@ pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
             let after_at = &trimmed[at_idx + 1..];
             if let Some(colon_idx) = after_at.find(':') {
                 let after_colon = after_at[colon_idx + 1..].trim();
-                let end_idx = after_colon.find(|c: char| c == '$' || c == '#' || c == '%' || c == '>');
+                let end_idx = after_colon.find(['$', '#', '%', '>']);
                 let candidate = if let Some(e) = end_idx {
                     after_colon[..e].trim()
                 } else {
                     after_colon.split_whitespace().next().unwrap_or("").trim()
                 };
 
-                if candidate.starts_with('/') || candidate.starts_with('~') {
-                    if !candidate.contains(['<', '>', '"', '|', '?', '*']) {
+                if (candidate.starts_with('/') || candidate.starts_with('~'))
+                    && !candidate.contains(['<', '>', '"', '|', '?', '*']) {
                         return Some(candidate.to_string());
                     }
-                }
             }
         }
 
         // Format B: [user@host /var/log]# or [user@host ~]$
-        if trimmed.starts_with('[') {
-            if let Some(bracket_end) = trimmed.find(']') {
+        if trimmed.starts_with('[')
+            && let Some(bracket_end) = trimmed.find(']') {
                 let inside = trimmed[1..bracket_end].trim();
                 if let Some((_user_host, path_cand)) = inside.split_once(' ') {
                     let path_cand = path_cand.trim();
@@ -116,17 +113,15 @@ pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
                     }
                 }
             }
-        }
 
         // Format C: user@host (~/app) $
-        if let Some(paren_start) = trimmed.find('(') {
-            if let Some(paren_end) = trimmed[paren_start + 1..].find(')') {
+        if let Some(paren_start) = trimmed.find('(')
+            && let Some(paren_end) = trimmed[paren_start + 1..].find(')') {
                 let inside = trimmed[paren_start + 1..paren_start + 1 + paren_end].trim();
                 if inside.starts_with('/') || inside.starts_with('~') {
                     return Some(inside.to_string());
                 }
             }
-        }
     }
     None
 }
@@ -134,23 +129,19 @@ pub fn extract_cwd_from_screen(screen_text: &str) -> Option<String> {
 /// Detects the active terminal tab's current working directory using OSC 7, /proc filesystem, title, or prompt text.
 pub fn detect_terminal_cwd(tab: &OpenTab) -> Option<String> {
     // 1. Direct OSC 7 path (if shell supports OSC 7)
-    if let Some(ref p) = *tab.session.last_osc7_path.lock() {
-        if !p.trim().is_empty() {
+    if let Some(ref p) = *tab.session.last_osc7_path.lock()
+        && !p.trim().is_empty() {
             return Some(p.trim().to_string());
         }
-    }
 
     // 2. If local shell on Unix/WSL, check /proc/{pid}/cwd (or lsof on macOS)
     #[cfg(all(unix, not(target_os = "macos")))]
-    if !tab.session.is_ssh {
-        if let Some(pid) = tab.session.child_pid {
-            if let Ok(target) = std::fs::read_link(format!("/proc/{}/cwd", pid)) {
-                if target.is_dir() {
+    if !tab.session.is_ssh
+        && let Some(pid) = tab.session.child_pid
+            && let Ok(target) = std::fs::read_link(format!("/proc/{}/cwd", pid))
+                && target.is_dir() {
                     return Some(target.to_string_lossy().to_string());
                 }
-            }
-        }
-    }
     #[cfg(target_os = "macos")]
     if !tab.session.is_ssh {
         if let Some(pid) = tab.session.child_pid {
@@ -176,11 +167,10 @@ pub fn detect_terminal_cwd(tab: &OpenTab) -> Option<String> {
     // 3. Inspect terminal title (set by bash/zsh/fish via OSC 0/2 e.g. "user@host: /path" or "/path")
     let title = tab.session.title.lock().clone();
     let clean_title = title.trim();
-    if !clean_title.is_empty() {
-        if let Some(extracted) = extract_cwd_from_title(clean_title) {
+    if !clean_title.is_empty()
+        && let Some(extracted) = extract_cwd_from_title(clean_title) {
             return Some(extracted);
         }
-    }
 
     // 4. Inspect active prompt on the terminal screen
     let screen_text = tab.session.parser.lock().screen().contents();
@@ -416,7 +406,7 @@ impl RustyBoxApp {
         let theme = TerminalTheme::from_name(&config.theme_name).unwrap_or(TerminalTheme::RustyBoxDark);
         let paste_protection_enabled = config.paste_protection_enabled;
         let copy_on_select = config.copy_on_select;
-        let (broadcast_tx, broadcast_rx) = unbounded();
+        let (broadcast_tx, broadcast_rx) = channel();
 
         // Ensure every session has a unique UUID (auto-repair any historical duplicate IDs)
         let mut seen_ids = std::collections::HashSet::new();
@@ -605,24 +595,24 @@ impl RustyBoxApp {
         visuals.panel_fill = Color32::from_rgb(15, 18, 26);
         visuals.window_fill = Color32::from_rgb(26, 32, 46); // Elevated surface for modals/windows
         visuals.extreme_bg_color = Color32::from_rgb(11, 15, 23);
-        visuals.window_stroke = egui::Stroke::new(1.5, Color32::from_rgb(59, 130, 246)); // Crisp vibrant border
+        visuals.window_stroke = egui::Stroke::new(1.5_f32, Color32::from_rgb(59, 130, 246)); // Crisp vibrant border
         visuals.window_shadow.blur = 24.0;
         visuals.window_shadow.spread = 4.0;
         visuals.window_shadow.color = Color32::from_black_alpha(200);
         visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(20, 25, 36);
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85));
-        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85));
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(226, 232, 240));
         visuals.widgets.inactive.bg_fill = Color32::from_rgb(18, 24, 38);
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(71, 85, 105));
-        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(226, 232, 240));
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(71, 85, 105));
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(226, 232, 240));
         visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(30, 41, 59);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248));
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5_f32, Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
         visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
         visuals.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, Color32::from_rgb(96, 165, 250));
-        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5_f32, Color32::from_rgb(96, 165, 250));
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
         visuals.widgets.active.rounding = egui::Rounding::same(6.0);
         visuals.window_rounding = egui::Rounding::same(10.0);
 
@@ -797,15 +787,14 @@ impl RustyBoxApp {
         if let Ok(entries) = std::fs::read_dir(base_dir) {
             let mut date_dirs = Vec::new();
             for entry in entries.flatten() {
-                if let Ok(file_type) = entry.file_type() {
-                    if file_type.is_dir() {
+                if let Ok(file_type) = entry.file_type()
+                    && file_type.is_dir() {
                         let name = entry.file_name().to_string_lossy().to_string();
                         // Match YYYY-MM-DD format
                         if chrono::NaiveDate::parse_from_str(&name, "%Y-%m-%d").is_ok() {
                             date_dirs.push((name, entry.path()));
                         }
                     }
-                }
             }
             // Sort ascending by date string (oldest first)
             date_dirs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -905,8 +894,8 @@ impl RustyBoxApp {
                 self.scroll_active_tab_into_view = true;
 
                 // Execute startup macro if configured
-                if let Some(ref s) = session_def {
-                    if !s.startup_macro.is_empty() && s.startup_macro != "None" {
+                if let Some(ref s) = session_def
+                    && !s.startup_macro.is_empty() && s.startup_macro != "None" {
                         let cmd_to_run = if let Some((_, cmd)) = self.quick_macros.iter().find(|(name, _)| name == &s.startup_macro) {
                             cmd.clone()
                         } else {
@@ -914,7 +903,6 @@ impl RustyBoxApp {
                         };
                         self.execute_macro(&cmd_to_run);
                     }
-                }
             }
             Err(e) => {
                 eprintln!("Failed to spawn local terminal: {}", e);
@@ -961,11 +949,10 @@ impl RustyBoxApp {
             if let Some(pw) = effective_password {
                 if is_encrypted(&pw) {
                     if self.storage.is_vault_unlocked() {
-                        if let Some(key) = self.storage.vault_key() {
-                            if let Ok(dec) = decrypt_str(&key, &pw) {
+                        if let Some(key) = self.storage.vault_key()
+                            && let Ok(dec) = decrypt_str(&key, &pw) {
                                 decrypted_pw_buf = Some(dec);
                             }
-                        }
                     } else {
                         self.show_vault = true;
                         self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
@@ -1091,8 +1078,8 @@ impl RustyBoxApp {
         let tab_last_sftp = tab.last_sftp_path.clone();
 
         if is_ssh {
-            if let Some(ref s) = tab_def {
-                if let SessionType::Ssh {
+            if let Some(ref s) = tab_def
+                && let SessionType::Ssh {
                     ref host,
                     port,
                     ref user,
@@ -1116,17 +1103,13 @@ impl RustyBoxApp {
                         });
 
                     let mut decrypted_pw_buf: Option<String> = None;
-                    if let Some(pw) = effective_password {
-                        if is_encrypted(pw) {
-                            if self.storage.is_vault_unlocked() {
-                                if let Some(key) = self.storage.vault_key() {
-                                    if let Ok(dec) = decrypt_str(&key, pw) {
+                    if let Some(pw) = effective_password
+                        && is_encrypted(pw)
+                            && self.storage.is_vault_unlocked()
+                                && let Some(key) = self.storage.vault_key()
+                                    && let Ok(dec) = decrypt_str(&key, pw) {
                                         decrypted_pw_buf = Some(dec);
                                     }
-                                }
-                            }
-                        }
-                    }
 
                     let final_password = if let Some(ref dec) = decrypted_pw_buf {
                         Some(dec.as_str())
@@ -1160,7 +1143,6 @@ impl RustyBoxApp {
                         self.sidebar_tab = 1;
                     }
                 }
-            }
         } else {
             // Local Terminal / WSL: switch explorer to local files
             if self.explorer.is_remote {
@@ -1171,11 +1153,10 @@ impl RustyBoxApp {
                 .or(tab_workdir)
                 .map(std::path::PathBuf::from);
 
-            if let Some(dir) = target_local_dir {
-                if dir.is_dir() && self.explorer.current_path != dir {
+            if let Some(dir) = target_local_dir
+                && dir.is_dir() && self.explorer.current_path != dir {
                     self.explorer.set_path(dir);
                 }
-            }
         }
 
         self.sync_terminal_cwd_if_enabled();
@@ -1218,21 +1199,19 @@ impl RustyBoxApp {
                     });
 
                 let mut decrypted_pw_buf: Option<String> = None;
-                if let Some(ref pw) = effective_password {
-                    if is_encrypted(pw) {
+                if let Some(ref pw) = effective_password
+                    && is_encrypted(pw) {
                         if self.storage.is_vault_unlocked() {
-                            if let Some(key) = self.storage.vault_key() {
-                                if let Ok(dec) = decrypt_str(&key, pw) {
+                            if let Some(key) = self.storage.vault_key()
+                                && let Ok(dec) = decrypt_str(&key, pw) {
                                     decrypted_pw_buf = Some(dec);
                                 }
-                            }
                         } else {
                             self.show_vault = true;
                             self.vault_status = Some(("🔒 Master Password Vault is locked. Please unlock to auto-submit saved password.".into(), true));
                             effective_password = None;
                         }
                     }
-                }
 
                 let final_password = if let Some(ref dec) = decrypted_pw_buf {
                     Some(dec.as_str())
@@ -1280,13 +1259,12 @@ impl RustyBoxApp {
                 custom_cmd.as_deref(),
                 workdir.as_deref(),
                 log_path,
-            ) {
-                if let Some(tab) = self.open_tabs.get_mut(idx) {
+            )
+                && let Some(tab) = self.open_tabs.get_mut(idx) {
                     tab.session = session;
                     tab.telemetry.is_connected = true;
                     tab.telemetry.last_updated = std::time::Instant::now();
                 }
-            }
         }
     }
 
@@ -1305,11 +1283,11 @@ impl RustyBoxApp {
             }
             SessionType::Telnet { ref host, port } => {
                 let cmd = format!("telnet {} {}", host, port);
-                let _ = self.spawn_local_terminal_ext(&format!("Telnet: {}", host), Some(&cmd), None, Some(s.clone()));
+                self.spawn_local_terminal_ext(&format!("Telnet: {}", host), Some(&cmd), None, Some(s.clone()));
             }
             SessionType::Serial { ref port_name, baud_rate } => {
                 let cmd = format!("screen {} {}", port_name, baud_rate);
-                let _ = self.spawn_local_terminal_ext(&format!("Serial: {}", port_name), Some(&cmd), None, Some(s.clone()));
+                self.spawn_local_terminal_ext(&format!("Serial: {}", port_name), Some(&cmd), None, Some(s.clone()));
             }
             SessionType::Rdp { ref host, port, .. } => {
                 // Open system RDP client
@@ -1480,11 +1458,10 @@ impl RustyBoxApp {
                         if let Some(m) = remote_metrics {
                             tab.telemetry.apply_metrics(&m);
                         }
-                        if let Some((_used, _total, pct)) = self.explorer.remote_disk_stats {
-                            if tab.telemetry.disk_pct.is_none() {
+                        if let Some((_used, _total, pct)) = self.explorer.remote_disk_stats
+                            && tab.telemetry.disk_pct.is_none() {
                                 tab.telemetry.disk_pct = Some(pct.round() as u32);
                             }
-                        }
                     }
                 }
             } else {
@@ -1512,12 +1489,11 @@ impl RustyBoxApp {
         }
         let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
         let tab = &mut self.open_tabs[idx];
-        if let Some(detected_cwd) = detect_terminal_cwd(tab) {
-            if tab.last_synced_cwd.as_deref() != Some(&detected_cwd) {
+        if let Some(detected_cwd) = detect_terminal_cwd(tab)
+            && tab.last_synced_cwd.as_deref() != Some(&detected_cwd) {
                 tab.last_synced_cwd = Some(detected_cwd.clone());
                 self.explorer.sync_terminal_cwd(&detected_cwd);
             }
-        }
     }
 
     fn handle_quick_connect(&mut self) {
@@ -1575,8 +1551,8 @@ impl RustyBoxApp {
             .arg("-f").arg(&tmp_path);
         for b in bits_arg { cmd.arg(b); }
 
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
+        if let Ok(output) = cmd.output()
+            && output.status.success() {
                 let pub_file = format!("{}.pub", tmp_path);
                 if let Ok(pub_content) = std::fs::read_to_string(&pub_file) {
                     self.keygen_public = pub_content.trim().to_string();
@@ -1598,7 +1574,6 @@ impl RustyBoxApp {
                 let _ = std::fs::remove_file(&pub_file);
                 return;
             }
-        }
         // If ssh-keygen is unavailable, report clear error instead of generating cryptographically invalid fake keys
         self.keygen_public = "❌ Error: ssh-keygen command failed or is not available on this system.".to_string();
         self.keygen_private = "Please install OpenSSH client (ssh-keygen) to generate secure cryptographic key pairs.".to_string();
@@ -1657,13 +1632,11 @@ impl RustyBoxApp {
             && self.import_status_msg.is_none()
             && !self.import_file_path.is_empty()
             && std::path::Path::new(&self.import_file_path).exists()
-        {
-            if let Ok(content) = std::fs::read_to_string(&self.import_file_path) {
+            && let Ok(content) = std::fs::read_to_string(&self.import_file_path) {
                 let len = content.len();
                 self.import_raw_text = content;
                 self.import_status_msg = Some((format!("Loaded {} bytes from '{}'.", len, self.import_file_path), false));
             }
-        }
 
         let mut open_dialog_open = self.show_import_dialog;
         let mut close = false;
@@ -1700,8 +1673,8 @@ impl RustyBoxApp {
                         ui.label(RichText::new("Option A: Load from File on Disk").strong());
                         ui.label(RichText::new("Quick actions:").size(11.0).color(Color32::GRAY));
 
-                        if ui.button(RichText::new("📁 Browse MobaXterm File...").color(Color32::from_rgb(251, 146, 60))).clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
+                        if ui.button(RichText::new("📁 Browse MobaXterm File...").color(Color32::from_rgb(251, 146, 60))).clicked()
+                            && let Some(path) = rfd::FileDialog::new()
                                 .set_title("Select MobaXterm Export File")
                                 .add_filter("MobaXterm Sessions", &["txt", "ini", "mxtpro", "mxtsessions", "csv"])
                                 .add_filter("All Files", &["*"])
@@ -1721,10 +1694,9 @@ impl RustyBoxApp {
                                     }
                                 }
                             }
-                        }
 
-                        if let Some(ssh_cfg_path) = crate::session::import_export::default_ssh_config_path() {
-                            if ui.button(RichText::new("🔑 Load ~/.ssh/config").color(Color32::from_rgb(56, 189, 248))).clicked() {
+                        if let Some(ssh_cfg_path) = crate::session::import_export::default_ssh_config_path()
+                            && ui.button(RichText::new("🔑 Load ~/.ssh/config").color(Color32::from_rgb(56, 189, 248))).clicked() {
                                 let p_str = ssh_cfg_path.to_string_lossy().to_string();
                                 self.import_file_path = p_str.clone();
                                 self.import_default_folder = "SSH Profiles".into();
@@ -1739,15 +1711,14 @@ impl RustyBoxApp {
                                     }
                                 }
                             }
-                        }
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         let path_w = (ui.available_width() - 175.0).max(140.0);
                         let hint = egui::WidgetText::from("Select a file or enter path on disk...").color(Color32::from_rgb(120, 130, 150));
                         ui.add(TextEdit::singleline(&mut self.import_file_path).hint_text(hint).desired_width(path_w));
-                        if ui.button("📂 Browse...").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
+                        if ui.button("📂 Browse...").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
                                 .add_filter("SSH & Session Files", &["config", "txt", "ini", "mxtpro", "mxtsessions", "csv", "json"])
                                 .add_filter("All Files", &["*"])
                                 .pick_file()
@@ -1765,7 +1736,6 @@ impl RustyBoxApp {
                                     }
                                 }
                             }
-                        }
                         if ui.button(RichText::new("📥 Read File").strong()).clicked() {
                             if self.import_file_path.trim().is_empty() {
                                 self.import_status_msg = Some(("Please enter or browse for a file path first.".into(), true));
@@ -1999,15 +1969,14 @@ impl eframe::App for RustyBoxApp {
         }
 
         // Global Keyboard Shortcuts
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageDown)) {
-            if !self.open_tabs.is_empty() {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageDown))
+            && !self.open_tabs.is_empty() {
                 self.is_home_active = false;
                 self.active_tab_idx = (self.active_tab_idx + 1) % self.open_tabs.len();
                 self.sync_sidebar_with_active_tab();
             }
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageUp)) {
-            if !self.open_tabs.is_empty() {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::PageUp))
+            && !self.open_tabs.is_empty() {
                 self.is_home_active = false;
                 self.active_tab_idx = if self.active_tab_idx == 0 {
                     self.open_tabs.len() - 1
@@ -2016,7 +1985,6 @@ impl eframe::App for RustyBoxApp {
                 };
                 self.sync_sidebar_with_active_tab();
             }
-        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.search_open = true;
             self.focus_search = true;
@@ -2040,8 +2008,8 @@ impl eframe::App for RustyBoxApp {
                     && (i.consume_key(egui::Modifiers::CTRL, egui::Key::W)
                         || i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)))
         });
-        if close_tab_shortcut {
-            if !self.open_tabs.is_empty() && !self.is_home_active {
+        if close_tab_shortcut
+            && !self.open_tabs.is_empty() && !self.is_home_active {
                 let active = self.active_tab_idx;
                 if active < self.open_tabs.len() {
                     let mut closed = self.open_tabs.remove(active);
@@ -2056,7 +2024,6 @@ impl eframe::App for RustyBoxApp {
                     self.sidebar_tab = 0;
                 }
             }
-        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::T) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::T)) {
             self.spawn_local_terminal("Local Terminal", None, None);
         }
@@ -2093,21 +2060,19 @@ impl eframe::App for RustyBoxApp {
         self.update_telemetry();
         self.sync_terminal_cwd_if_enabled();
 
-        if let Some(target_dir) = self.explorer.requested_cd_terminal.take() {
-            if !self.is_home_active && !self.open_tabs.is_empty() {
+        if let Some(target_dir) = self.explorer.requested_cd_terminal.take()
+            && !self.is_home_active && !self.open_tabs.is_empty() {
                 let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
                 let cmd = format!("cd \"{}\"\n", target_dir);
                 let _ = self.open_tabs[idx].session.write_str(&cmd);
             }
-        }
 
-        if let Some(paste_path) = self.explorer.requested_terminal_paste.take() {
-            if !self.is_home_active && !self.open_tabs.is_empty() {
+        if let Some(paste_path) = self.explorer.requested_terminal_paste.take()
+            && !self.is_home_active && !self.open_tabs.is_empty() {
                 let idx = self.active_tab_idx.min(self.open_tabs.len() - 1);
                 let snippet = format!("{} ", paste_path);
                 let _ = self.open_tabs[idx].session.write_str(&snippet);
             }
-        }
 
         // Smart Repaint: Repaint immediately only if VISIBLE active terminal(s) have new output
         let visible_has_data = match self.split_mode {
@@ -2160,7 +2125,7 @@ impl eframe::App for RustyBoxApp {
             .frame(
                 egui::Frame::none()
                     .fill(Color32::from_rgb(14, 18, 26))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 32, 46)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 32, 46)))
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0))
             )
             .show(ctx, |ui| {
@@ -2173,7 +2138,7 @@ impl eframe::App for RustyBoxApp {
                     );
                     egui::Frame::none()
                         .fill(Color32::from_rgb(22, 30, 44))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 54, 80)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(38, 54, 80)))
                         .rounding(4.0)
                         .inner_margin(egui::Margin::symmetric(5.0, 1.5))
                         .show(ui, |ui| {
@@ -2212,11 +2177,10 @@ impl eframe::App for RustyBoxApp {
                         ui.close_menu();
                     }
                     if ui.button("📥 Import Sessions from File (JSON)...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
-                            if let Ok(imported) = self.storage.import_from_file(&path) {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()
+                            && let Ok(imported) = self.storage.import_from_file(&path) {
                                 self.apply_imported_config(ui.ctx(), imported);
                             }
-                        }
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2363,11 +2327,10 @@ impl eframe::App for RustyBoxApp {
                         for t in TerminalTheme::all() {
                             if ui.selectable_label(self.theme == *t, t.name()).clicked() {
                                 self.theme = *t;
-                                if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                                    if let Some(ref mut s) = tab.session_def {
+                                if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx)
+                                    && let Some(ref mut s) = tab.session_def {
                                         s.terminal_color_scheme = t.name().to_string();
                                     }
-                                }
                                 let _ = self.persist_preferences();
                                 ui.ctx().request_repaint();
                                 ui.close_menu();
@@ -2501,7 +2464,7 @@ impl eframe::App for RustyBoxApp {
                                 .size(11.5),
                         )
                         .fill(Color32::from_rgb(20, 26, 38))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 62)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 44, 62)))
                         .rounding(5.0),
                     )
                 };
@@ -2547,7 +2510,7 @@ impl eframe::App for RustyBoxApp {
             .frame(
                 egui::Frame::none()
                     .fill(Color32::from_rgb(16, 20, 29))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 47)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 33, 47)))
                     .inner_margin(egui::Margin::symmetric(10.0, 5.0))
             )
             .show(ctx, |ui| {
@@ -2561,9 +2524,9 @@ impl eframe::App for RustyBoxApp {
                             Color32::from_rgb(22, 28, 40)
                         };
                         let stroke = if active {
-                            egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250))
+                            egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250))
                         } else {
-                            egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64))
+                            egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64))
                         };
                         let text_color = if active {
                             Color32::WHITE
@@ -2583,7 +2546,7 @@ impl eframe::App for RustyBoxApp {
                         RichText::new("➕ New Session").color(Color32::WHITE).size(12.0).strong()
                     )
                     .fill(Color32::from_rgb(37, 99, 235))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)))
                     .rounding(6.0)
                     .min_size(egui::vec2(0.0, toolbar_h));
                     if ui.add(new_sess_btn).clicked() {
@@ -2594,7 +2557,7 @@ impl eframe::App for RustyBoxApp {
                         RichText::new("📥 Import").color(Color32::from_rgb(205, 215, 228)).size(12.0).strong()
                     )
                     .fill(Color32::from_rgb(22, 28, 40))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)))
                     .rounding(6.0)
                     .min_size(egui::vec2(0.0, toolbar_h));
                     if ui.add(import_tb_btn).on_hover_text("Import SSH Profiles (~/.ssh/config, MobaXterm, JSON) [Ctrl+I]").clicked() {
@@ -2608,7 +2571,7 @@ impl eframe::App for RustyBoxApp {
                     // Modern Linear-style Segmented Layout Control
                     egui::Frame::none()
                         .fill(Color32::from_rgb(12, 15, 22))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 38, 54)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(30, 38, 54)))
                         .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(2.0, 2.0))
                         .show(ui, |ui| {
@@ -2617,7 +2580,7 @@ impl eframe::App for RustyBoxApp {
                                 let (fill, stroke, text_color) = if active {
                                     (
                                         Color32::from_rgb(37, 99, 235),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)),
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)),
                                         Color32::WHITE,
                                     )
                                 } else {
@@ -2657,11 +2620,11 @@ impl eframe::App for RustyBoxApp {
                     let multi_btn = if self.multi_exec_enabled {
                         egui::Button::new(RichText::new("⚡ Multi-Exec: ON").color(Color32::WHITE).size(12.0).strong())
                             .fill(Color32::from_rgb(217, 119, 6))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(251, 191, 36)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(251, 191, 36)))
                     } else {
                         egui::Button::new(RichText::new("⚡ Multi-Exec: OFF").color(Color32::from_rgb(148, 163, 184)).size(12.0))
                             .fill(Color32::from_rgb(22, 28, 40))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                     }
                     .rounding(6.0)
                     .min_size(egui::vec2(0.0, toolbar_h));
@@ -2681,7 +2644,7 @@ impl eframe::App for RustyBoxApp {
                     // Dual UI Scale & Terminal Font stepper in modern unified container
                     egui::Frame::none()
                         .fill(Color32::from_rgb(22, 28, 40))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                         .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(6.0, 2.0))
                         .show(ui, |ui| {
@@ -2724,7 +2687,7 @@ impl eframe::App for RustyBoxApp {
                     // Theme selector in a modern unified container
                     egui::Frame::none()
                         .fill(Color32::from_rgb(22, 28, 40))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                         .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                         .show(ui, |ui| {
@@ -2734,13 +2697,11 @@ impl eframe::App for RustyBoxApp {
                                 .selected_text(RichText::new(self.theme.name()).size(11.0))
                                 .show_ui(ui, |ui| {
                                     for t in TerminalTheme::all() {
-                                        if ui.selectable_value(&mut self.theme, *t, t.name()).clicked() {
-                                            if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                                                if let Some(ref mut s) = tab.session_def {
+                                        if ui.selectable_value(&mut self.theme, *t, t.name()).clicked()
+                                            && let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx)
+                                                && let Some(ref mut s) = tab.session_def {
                                                     s.terminal_color_scheme = t.name().to_string();
                                                 }
-                                            }
-                                        }
                                     }
                                 });
                             if self.theme != prev_theme {
@@ -2766,7 +2727,7 @@ impl eframe::App for RustyBoxApp {
                     if ui.add(
                         egui::Button::new(RichText::new(format!("{} {}", v_icon, v_txt)).size(11.0).color(v_col).strong())
                             .fill(Color32::from_rgb(22, 28, 40))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                             .rounding(6.0)
                             .min_size(egui::vec2(0.0, toolbar_h))
                     ).on_hover_text("Manage Master Password & AES-256-GCM Vault").clicked() {
@@ -2780,7 +2741,7 @@ impl eframe::App for RustyBoxApp {
             .frame(
                 egui::Frame::none()
                     .fill(Color32::from_rgb(14, 18, 25))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 46)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 33, 46)))
                     .inner_margin(egui::Margin::symmetric(10.0, 3.5))
             )
             .min_height(26.0)
@@ -2807,7 +2768,7 @@ impl eframe::App for RustyBoxApp {
                                 RichText::new(name).size(11.0).color(Color32::from_rgb(220, 230, 245))
                             )
                             .fill(Color32::from_rgb(22, 28, 40))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                             .rounding(6.0);
                             if ui.add(pill).clicked() {
                                 macro_to_run = Some(cmd.clone());
@@ -2816,7 +2777,7 @@ impl eframe::App for RustyBoxApp {
                         if ui.add(
                             egui::Button::new(RichText::new("⚙ Manage").size(11.0).color(Color32::from_rgb(148, 163, 184)))
                                 .fill(Color32::from_rgb(18, 23, 33))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 40, 56)))
+                                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(32, 40, 56)))
                                 .rounding(5.0)
                         ).clicked() {
                             self.show_macro_manager = true;
@@ -2835,7 +2796,7 @@ impl eframe::App for RustyBoxApp {
                     let stat_chip = |ui: &mut egui::Ui, text: RichText| {
                         egui::Frame::none()
                             .fill(Color32::from_rgb(18, 24, 35))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(30, 40, 58)))
                             .rounding(5.0)
                             .inner_margin(egui::Margin::symmetric(6.0, 1.5))
                             .show(ui, |ui| {
@@ -2853,7 +2814,7 @@ impl eframe::App for RustyBoxApp {
                                 let cpu_frac = (cpu_pct as f32 / 100.0).clamp(0.0, 1.0);
                                 egui::Frame::none()
                                     .fill(Color32::from_rgb(18, 24, 35))
-                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(30, 40, 58)))
                                     .rounding(5.0)
                                     .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                                     .show(ui, |ui| {
@@ -2895,7 +2856,7 @@ impl eframe::App for RustyBoxApp {
                                 let ram_pct = (used / total.max(0.1)).clamp(0.0, 1.0);
                                 egui::Frame::none()
                                     .fill(Color32::from_rgb(18, 24, 35))
-                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(30, 40, 58)))
                                     .rounding(5.0)
                                     .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                                     .show(ui, |ui| {
@@ -2913,7 +2874,7 @@ impl eframe::App for RustyBoxApp {
                                 let ram_pct = (pct as f32 / 100.0).clamp(0.0, 1.0);
                                 egui::Frame::none()
                                     .fill(Color32::from_rgb(18, 24, 35))
-                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(30, 40, 58)))
+                                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(30, 40, 58)))
                                     .rounding(5.0)
                                     .inner_margin(egui::Margin::symmetric(7.0, 2.0))
                                     .show(ui, |ui| {
@@ -2992,13 +2953,11 @@ impl eframe::App for RustyBoxApp {
             // Auto-switch to SFTP tab if user drags external files over the sidebar while SFTP is connected
             if self.sidebar_tab == 0 && self.explorer.is_remote {
                 let is_dragging_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
-                if is_dragging_files {
-                    if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
-                        if pos.x <= 320.0 {
+                if is_dragging_files
+                    && let Some(pos) = ctx.input(|i| i.pointer.hover_pos())
+                        && pos.x <= 320.0 {
                             self.sidebar_tab = 1;
                         }
-                    }
-                }
             }
             let max_sidebar_w = (ctx.screen_rect().width() * 0.50).max(280.0);
             ctx.style_mut(|s| {
@@ -3008,7 +2967,7 @@ impl eframe::App for RustyBoxApp {
                 .frame(
                     egui::Frame::none()
                         .fill(Color32::from_rgb(14, 18, 25))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 46)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 33, 46)))
                         .inner_margin(egui::Margin::symmetric(8.0, 8.0))
                 )
                 .resizable(true)
@@ -3018,7 +2977,7 @@ impl eframe::App for RustyBoxApp {
                     // Modern segmented pill switcher
                     egui::Frame::none()
                         .fill(Color32::from_rgb(10, 13, 19))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 50)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(28, 36, 50)))
                         .rounding(6.0)
                         .inner_margin(egui::Margin::symmetric(2.0, 2.0))
                         .show(ui, |ui| {
@@ -3029,12 +2988,12 @@ impl eframe::App for RustyBoxApp {
                                 let sftp_active = self.sidebar_tab == 1;
 
                                 let (s_fill, s_stroke, s_text) = if s_active {
-                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
                                 } else {
                                     (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
                                 };
                                 let (sftp_fill, sftp_stroke, sftp_text) = if sftp_active {
-                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
+                                    (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)), Color32::WHITE)
                                 } else {
                                     (Color32::TRANSPARENT, egui::Stroke::NONE, Color32::from_rgb(148, 163, 184))
                                 };
@@ -3161,11 +3120,11 @@ impl eframe::App for RustyBoxApp {
                                         }
 
                                         let (bg, stroke) = if is_active_tab_session {
-                                            (Color32::from_rgb(29, 78, 216), egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)))
+                                            (Color32::from_rgb(29, 78, 216), egui::Stroke::new(1.5_f32, Color32::from_rgb(56, 189, 248)))
                                         } else if is_selected {
-                                            (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                                            (Color32::from_rgb(37, 99, 235), egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)))
                                         } else if resp.hovered() {
-                                            (Color32::from_rgb(24, 32, 46), egui::Stroke::new(1.0, Color32::from_rgb(38, 50, 72)))
+                                            (Color32::from_rgb(24, 32, 46), egui::Stroke::new(1.0_f32, Color32::from_rgb(38, 50, 72)))
                                         } else {
                                             (Color32::TRANSPARENT, egui::Stroke::NONE)
                                         };
@@ -3236,12 +3195,11 @@ impl eframe::App for RustyBoxApp {
                                                 to_connect_as = Some((s.clone(), cur_user));
                                                 ui.close_menu();
                                             }
-                                            if let Some(h) = s.host_str() {
-                                                if ui.button("🌐 Ping host").clicked() {
+                                            if let Some(h) = s.host_str()
+                                                && ui.button("🌐 Ping host").clicked() {
                                                     to_ping_host = Some(h);
                                                     ui.close_menu();
                                                 }
-                                            }
                                             ui.separator();
                                             if ui.button("📝 Rename session").clicked() {
                                                 to_rename = Some((s.id.clone(), s.name.clone()));
@@ -3338,17 +3296,14 @@ impl eframe::App for RustyBoxApp {
                             self.sessions.push(copy);
                             let _ = self.storage.save_sessions(&self.sessions);
                         }
-                        if let Some(save_s) = to_save_file {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .set_file_name(&format!("{}.json", save_s.name.replace('/', "_")))
+                        if let Some(save_s) = to_save_file
+                            && let Some(path) = rfd::FileDialog::new()
+                                .set_file_name(format!("{}.json", save_s.name.replace('/', "_")))
                                 .add_filter("JSON session", &["json"])
                                 .save_file()
-                            {
-                                if let Ok(json) = serde_json::to_string_pretty(&save_s) {
+                                && let Ok(json) = serde_json::to_string_pretty(&save_s) {
                                     let _ = std::fs::write(path, json);
                                 }
-                            }
-                        }
                         if let Some(sc_s) = to_create_shortcut {
                             #[cfg(target_os = "windows")]
                             {
@@ -3374,12 +3329,11 @@ impl eframe::App for RustyBoxApp {
                         if let Some(preset_s) = to_save_preset {
                             self.status_toast = Some((format!("Saved preset for '{}'", preset_s.name), std::time::Instant::now()));
                         }
-                        if let Some(copy_s) = to_copy_settings {
-                            if let Ok(json) = serde_json::to_string(&copy_s) {
+                        if let Some(copy_s) = to_copy_settings
+                            && let Ok(json) = serde_json::to_string(&copy_s) {
                                 copy_text_to_clipboard(ui, &json);
                                 self.status_toast = Some(("Session settings copied to clipboard".into(), std::time::Instant::now()));
                             }
-                        }
                         if let Some(f) = to_new_in_folder {
                             self.new_session_dialog.open_for_new_in_folder(&f);
                         }
@@ -3416,13 +3370,13 @@ impl eframe::App for RustyBoxApp {
                 pos2(r_edge + 4.0, sidebar_resp.response.rect.bottom()),
             );
             let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
-            let is_splitter_hovered = mouse_pos.map_or(false, |p| splitter_rect.contains(p));
+            let is_splitter_hovered = mouse_pos.is_some_and(|p| splitter_rect.contains(p));
             if is_splitter_hovered {
                 ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sidebar_splitter_indicator")));
                 painter.line_segment(
                     [pos2(r_edge, sidebar_resp.response.rect.top()), pos2(r_edge, sidebar_resp.response.rect.bottom())],
-                    egui::Stroke::new(2.0, Color32::from_rgb(56, 189, 248)),
+                    egui::Stroke::new(2.0_f32, Color32::from_rgb(56, 189, 248)),
                 );
             }
         }
@@ -3472,19 +3426,19 @@ impl eframe::App for RustyBoxApp {
                         let (h_fill, h_stroke, h_text) = if is_home {
                             (
                                 Color32::from_rgb(26, 36, 56),
-                                egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
                                 Color32::WHITE,
                             )
                         } else if home_hovered {
                             (
                                 Color32::from_rgb(28, 36, 48),
-                                egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
+                                egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 58, 76)),
                                 Color32::from_rgb(215, 225, 238),
                             )
                         } else {
                             (
                                 Color32::from_rgb(20, 26, 36),
-                                egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
+                                egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 44, 60)),
                                 Color32::from_rgb(160, 172, 188),
                             )
                         };
@@ -3501,7 +3455,7 @@ impl eframe::App for RustyBoxApp {
                         if is_home {
                             ui.painter().line_segment(
                                 [pos2(home_rect.left() + 2.0, home_rect.top() + 1.0), pos2(home_rect.right() - 2.0, home_rect.top() + 1.0)],
-                                egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                                egui::Stroke::new(2.5_f32, Color32::from_rgb(56, 189, 248)),
                             );
                         }
 
@@ -3545,19 +3499,19 @@ impl eframe::App for RustyBoxApp {
                                 let (fill, stroke, text_color) = if is_active {
                                     (
                                         Color32::from_rgb(26, 36, 56),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
                                         Color32::WHITE,
                                     )
                                 } else if tab_hovered {
                                     (
                                         Color32::from_rgb(28, 36, 48),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(48, 58, 76)),
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 58, 76)),
                                         Color32::from_rgb(215, 225, 238),
                                     )
                                 } else {
                                     (
                                         Color32::from_rgb(20, 26, 36),
-                                        egui::Stroke::new(1.0, Color32::from_rgb(34, 44, 60)),
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 44, 60)),
                                         Color32::from_rgb(160, 172, 188),
                                     )
                                 };
@@ -3574,7 +3528,7 @@ impl eframe::App for RustyBoxApp {
                                 if is_active {
                                     ui.painter().line_segment(
                                         [pos2(tab_rect.left() + 2.0, tab_rect.top() + 1.0), pos2(tab_rect.right() - 2.0, tab_rect.top() + 1.0)],
-                                        egui::Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                                        egui::Stroke::new(2.5_f32, Color32::from_rgb(56, 189, 248)),
                                     );
                                 }
 
@@ -3600,7 +3554,7 @@ impl eframe::App for RustyBoxApp {
                                 };
 
                                 // Title text with dynamic truncation based on actual tab width
-                                let full_title = format!("{}{}", icon, &tab.title);
+                                let full_title = format!("{}{}", icon, tab.title);
                                 let clean_title = tab.title.trim_start_matches("SSH: ").trim();
                                 let max_chars = (((tab_w - 38.0) / 7.0) as usize).clamp(7, 22);
                                 let display_title = if clean_title.chars().count() > max_chars {
@@ -3628,11 +3582,11 @@ impl eframe::App for RustyBoxApp {
                                         7.5,
                                         Color32::from_rgb(220, 38, 38),
                                     );
-                                    let stroke = egui::Stroke::new(1.4, Color32::WHITE);
+                                    let stroke = egui::Stroke::new(1.4_f32, Color32::WHITE);
                                     ui.painter().line_segment([pos2(close_center.x - r_x, close_center.y - r_x), pos2(close_center.x + r_x, close_center.y + r_x)], stroke);
                                     ui.painter().line_segment([pos2(close_center.x - r_x, close_center.y + r_x), pos2(close_center.x + r_x, close_center.y - r_x)], stroke);
                                 } else {
-                                    let stroke = egui::Stroke::new(1.3, if is_active { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(140, 150, 160) });
+                                    let stroke = egui::Stroke::new(1.3_f32, if is_active { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(140, 150, 160) });
                                     ui.painter().line_segment([pos2(close_center.x - r_x, close_center.y - r_x), pos2(close_center.x + r_x, close_center.y + r_x)], stroke);
                                     ui.painter().line_segment([pos2(close_center.x - r_x, close_center.y + r_x), pos2(close_center.x + r_x, close_center.y - r_x)], stroke);
                                 }
@@ -3659,7 +3613,7 @@ impl eframe::App for RustyBoxApp {
                                 RichText::new("+").size(15.0).strong().color(Color32::from_rgb(180, 190, 200)),
                             )
                             .fill(Color32::from_rgb(30, 36, 46))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                             .rounding(4.0)
                             .min_size(egui::vec2(24.0, 24.0));
                             if ui.add(add_btn).on_hover_text("Open new local terminal").clicked() {
@@ -3756,7 +3710,7 @@ impl eframe::App for RustyBoxApp {
                     .show(ctx, |ui| {
                         egui::Frame::menu(ui.style())
                             .fill(Color32::from_rgb(26, 32, 42))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(52, 60, 72)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(52, 60, 72)))
                             .rounding(6.0)
                             .shadow(egui::epaint::Shadow {
                                 offset: vec2(0.0, 4.0),
@@ -3856,8 +3810,8 @@ impl eframe::App for RustyBoxApp {
                     }
                 }
 
-                if let Some(close_idx) = close_tab_idx {
-                    if close_idx < self.open_tabs.len() {
+                if let Some(close_idx) = close_tab_idx
+                    && close_idx < self.open_tabs.len() {
                         let mut closed = self.open_tabs.remove(close_idx);
                         closed.session.kill();
                         if self.open_tabs.is_empty() {
@@ -3871,7 +3825,6 @@ impl eframe::App for RustyBoxApp {
                         self.sync_sidebar_with_active_tab();
                         self.sidebar_tab = 0;
                     }
-                }
 
                 ui.add_space(2.0);
 
@@ -3912,7 +3865,7 @@ impl eframe::App for RustyBoxApp {
                         // Hero Quick Connect Box
                         egui::Frame::none()
                             .fill(Color32::from_rgb(16, 21, 30))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(32, 42, 60)))
                             .rounding(10.0)
                             .inner_margin(egui::Margin::symmetric(18.0, 12.0))
                             .show(ui, |ui| {
@@ -3928,7 +3881,7 @@ impl eframe::App for RustyBoxApp {
                                     RichText::new("▶ Connect").strong().color(Color32::WHITE),
                                 )
                                 .fill(Color32::from_rgb(37, 99, 235))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(96, 165, 250)))
+                                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250)))
                                 .rounding(6.0);
                                 if (q_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                                     || ui.add(conn_btn).clicked()
@@ -3944,7 +3897,7 @@ impl eframe::App for RustyBoxApp {
                                             RichText::new(text).size(11.0).color(Color32::from_rgb(190, 205, 225)),
                                         )
                                         .fill(Color32::from_rgb(22, 28, 40))
-                                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 46, 64)))
+                                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(36, 46, 64)))
                                         .rounding(6.0),
                                     )
                                 };
@@ -4013,9 +3966,9 @@ impl eframe::App for RustyBoxApp {
                             Color32::from_rgb(17, 22, 32)
                         };
                         let border = if is_hovered {
-                            egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248))
+                            egui::Stroke::new(1.2_f32, Color32::from_rgb(56, 189, 248))
                         } else {
-                            egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
+                            egui::Stroke::new(1.0_f32, Color32::from_rgb(32, 42, 60))
                         };
                         ui.painter().rect(rect, egui::Rounding::same(8.0), bg, border);
 
@@ -4029,7 +3982,7 @@ impl eframe::App for RustyBoxApp {
                         // Icon badge container - perfectly centered with 10px top/bottom margins
                         let (badge_rect, _) = c_ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
                         c_ui.painter().rect_filled(badge_rect, 6.0, Color32::from_rgb(24, 32, 46));
-                        c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0, tint));
+                        c_ui.painter().rect_stroke(badge_rect, 6.0, egui::Stroke::new(1.0_f32, tint));
                         c_ui.painter().text(
                             badge_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -4113,9 +4066,9 @@ impl eframe::App for RustyBoxApp {
                         let is_h = q_resp.hovered();
                         let bg = if is_h { Color32::from_rgb(26, 36, 54) } else { Color32::from_rgb(18, 23, 33) };
                         let border = if is_h {
-                            egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248))
+                            egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248))
                         } else {
-                            egui::Stroke::new(1.0, Color32::from_rgb(32, 42, 60))
+                            egui::Stroke::new(1.0_f32, Color32::from_rgb(32, 42, 60))
                         };
                         ui.painter().rect(q_rect, 6.0, bg, border);
 
@@ -4153,8 +4106,8 @@ impl eframe::App for RustyBoxApp {
                                 )
                                 .truncate(),
                             );
-                            if show_time {
-                                if let Some(ts) = s.last_connected_display() {
+                            if show_time
+                                && let Some(ts) = s.last_connected_display() {
                                     v_ui.add(
                                         egui::Label::new(
                                             RichText::new(format!("🕒 {} ({}x)", ts, s.connect_count.max(1)))
@@ -4164,7 +4117,6 @@ impl eframe::App for RustyBoxApp {
                                         .truncate(),
                                     );
                                 }
-                            }
                         });
                         q_resp.on_hover_text(format!(
                             "{}\n{}\nFolder: {}",
@@ -4230,13 +4182,12 @@ impl eframe::App for RustyBoxApp {
                     if let Some(edit_s) = to_edit_session {
                         self.new_session_dialog.open_for_edit(&edit_s);
                     }
-                    if let Some(clear_id) = to_clear_recent_id {
-                        if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == clear_id) {
+                    if let Some(clear_id) = to_clear_recent_id
+                        && let Some(existing) = self.sessions.iter_mut().find(|item| item.id == clear_id) {
                             existing.last_connected_at = None;
                             existing.connect_count = 0;
                             let _ = self.storage.save_sessions(&self.sessions);
                         }
-                    }
                     if let Some(del_id) = to_delete_id {
                         self.sessions.retain(|item| item.id != del_id);
                         let _ = self.storage.save_sessions(&self.sessions);
@@ -4315,15 +4266,14 @@ impl eframe::App for RustyBoxApp {
 
                             if let Some(target_idx) = jump_to {
                                 ui.data_mut(|d| d.insert_temp(nav_idx_id, target_idx));
-                                if let Some((abs_row, _, _)) = matches.get(target_idx) {
-                                    if let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
+                                if let Some((abs_row, _, _)) = matches.get(target_idx)
+                                    && let Some(tab) = self.open_tabs.get(self.active_tab_idx) {
                                         let mut parser = tab.session.parser.lock();
                                         crate::terminal::widget::scroll_to_abs_row(
                                             parser.screen_mut(),
                                             *abs_row,
                                         );
                                     }
-                                }
                             }
                         } else {
                             ui.label(RichText::new("0 matches").color(Color32::from_rgb(200, 100, 100)));
@@ -4613,12 +4563,11 @@ impl eframe::App for RustyBoxApp {
                 }
             }
 
-            if let Some(new_idx) = newly_focused_tab_idx {
-                if self.active_tab_idx != new_idx {
+            if let Some(new_idx) = newly_focused_tab_idx
+                && self.active_tab_idx != new_idx {
                     self.active_tab_idx = new_idx;
                     self.sync_sidebar_with_active_tab();
                 }
-            }
         });
 
         // Handle Action from Terminal
@@ -4626,13 +4575,11 @@ impl eframe::App for RustyBoxApp {
             TerminalAction::MultiLinePaste(text) => {
                 if self.paste_protection_enabled {
                     self.pending_paste_text = Some(text);
-                } else if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                    if let Ok(bytes) = tab.session.paste_text(&text) {
-                        if self.multi_exec_enabled {
+                } else if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx)
+                    && let Ok(bytes) = tab.session.paste_text(&text)
+                        && self.multi_exec_enabled {
                             let _ = self.broadcast_tx.send(bytes);
                         }
-                    }
-                }
             }
             TerminalAction::SaveBufferToFile => {
                 self.save_active_terminal_buffer();
@@ -4682,8 +4629,8 @@ impl eframe::App for RustyBoxApp {
                     self.scroll_active_tab_into_view = true;
                 }
             }
-            TerminalAction::PrevTab => {
-                if !self.open_tabs.is_empty() {
+            TerminalAction::PrevTab
+                if !self.open_tabs.is_empty() => {
                     self.is_home_active = false;
                     self.active_tab_idx = if self.active_tab_idx == 0 {
                         self.open_tabs.len() - 1
@@ -4693,7 +4640,6 @@ impl eframe::App for RustyBoxApp {
                     self.sync_sidebar_with_active_tab();
                     self.scroll_active_tab_into_view = true;
                 }
-            }
             _ => {}
         }
 
@@ -4746,25 +4692,21 @@ impl eframe::App for RustyBoxApp {
                         }
                     });
 
-                    if copy_pending {
-                        if let Some(ref text) = text_to_copy {
+                    if copy_pending
+                        && let Some(ref text) = text_to_copy {
                             copy_text_to_clipboard(ui, text);
                         }
-                    }
                 });
 
             let _ = copy_pending;
 
             if run_paste {
-                if let Some(text) = self.pending_paste_text.take() {
-                    if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                        if let Ok(bytes) = tab.session.paste_text(&text) {
-                            if self.multi_exec_enabled {
+                if let Some(text) = self.pending_paste_text.take()
+                    && let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx)
+                        && let Ok(bytes) = tab.session.paste_text(&text)
+                            && self.multi_exec_enabled {
                                 let _ = self.broadcast_tx.send(bytes);
                             }
-                        }
-                    }
-                }
             } else if close {
                 self.pending_paste_text = None;
             }
@@ -4998,11 +4940,10 @@ impl eframe::App for RustyBoxApp {
                             ui.label("Serving Folder:");
                             let path_str = self.network_tools.http_root.to_string_lossy().to_string();
                             ui.label(RichText::new(path_str).monospace().color(Color32::from_rgb(100, 200, 255)));
-                            if ui.button("Browse...").clicked() {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            if ui.button("Browse...").clicked()
+                                && let Some(folder) = rfd::FileDialog::new().pick_folder() {
                                     self.network_tools.http_root = folder;
                                 }
-                            }
                         });
 
                         ui.horizontal(|ui| {
@@ -5071,11 +5012,10 @@ impl eframe::App for RustyBoxApp {
                             ui.label("TFTP Root Folder:");
                             let path_str = self.network_tools.tftp_root.to_string_lossy().to_string();
                             ui.label(RichText::new(path_str).monospace().color(Color32::from_rgb(100, 200, 255)));
-                            if ui.button("Browse...").clicked() {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            if ui.button("Browse...").clicked()
+                                && let Some(folder) = rfd::FileDialog::new().pick_folder() {
                                     self.network_tools.tftp_root = folder;
                                 }
-                            }
                         });
 
                         ui.horizontal(|ui| {
@@ -5153,7 +5093,7 @@ impl eframe::App for RustyBoxApp {
                         let filter_chip = |ui: &mut egui::Ui, label: &str, mode_idx: usize, current: &mut usize| {
                             let is_sel = *current == mode_idx;
                             let bg = if is_sel { Color32::from_rgb(31, 111, 235) } else { Color32::from_rgb(22, 28, 40) };
-                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(45, 55, 75)) };
+                            let stroke = if is_sel { egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0_f32, Color32::from_rgb(45, 55, 75)) };
                             let btn = egui::Button::new(RichText::new(label).size(11.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(201, 209, 217) }))
                                 .fill(bg)
                                 .stroke(stroke)
@@ -5201,9 +5141,9 @@ impl eframe::App for RustyBoxApp {
 
                                 let is_running = self.tunnel_manager.is_running(idx);
                                 let card_border = if is_running {
-                                    egui::Stroke::new(1.2, Color32::from_rgb(34, 197, 94))
+                                    egui::Stroke::new(1.2_f32, Color32::from_rgb(34, 197, 94))
                                 } else {
-                                    egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68))
+                                    egui::Stroke::new(1.0_f32, Color32::from_rgb(38, 48, 68))
                                 };
 
                                 egui::Frame::none()
@@ -5251,7 +5191,7 @@ impl eframe::App for RustyBoxApp {
 
                                         egui::Frame::none()
                                             .fill(Color32::from_rgb(12, 15, 23))
-                                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 52)))
+                                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(28, 36, 52)))
                                             .rounding(4.0)
                                             .inner_margin(8.0)
                                             .show(ui, |ui| {
@@ -5309,8 +5249,8 @@ impl eframe::App for RustyBoxApp {
                 self.tunnel_manager.remove_tunnel(idx);
                 let _ = self.storage.save_tunnels(&self.tunnel_manager.tunnels);
             }
-            if let Some(idx) = tunnel_to_edit {
-                if idx < self.tunnel_manager.tunnels.len() {
+            if let Some(idx) = tunnel_to_edit
+                && idx < self.tunnel_manager.tunnels.len() {
                     let t = &self.tunnel_manager.tunnels[idx];
                     self.editing_tunnel_idx = Some(idx);
                     self.new_tunnel_name = t.name.clone();
@@ -5328,7 +5268,6 @@ impl eframe::App for RustyBoxApp {
                     };
                     self.show_tunnel_edit = true;
                 }
-            }
 
             self.show_tunnels = open;
         }
@@ -5398,11 +5337,10 @@ impl eframe::App for RustyBoxApp {
                         ui.label("SSH private key:");
                         ui.horizontal(|ui| {
                             ui.add(TextEdit::singleline(&mut self.tunnel_ssh_key_path).desired_width(150.0).margin(Margin::symmetric(8.0, 5.0)));
-                            if ui.small_button("📂").on_hover_text("Browse key file").clicked() {
-                                if let Some(f) = rfd::FileDialog::new().pick_file() {
+                            if ui.small_button("📂").on_hover_text("Browse key file").clicked()
+                                && let Some(f) = rfd::FileDialog::new().pick_file() {
                                     self.tunnel_ssh_key_path = f.to_string_lossy().to_string();
                                 }
-                            }
                         });
                         ui.end_row();
 
@@ -5514,7 +5452,7 @@ impl eframe::App for RustyBoxApp {
                         let cat_chip = |ui: &mut egui::Ui, label: &str, current: &mut String| {
                             let is_sel = current == label;
                             let bg = if is_sel { Color32::from_rgb(37, 99, 235) } else { Color32::from_rgb(22, 28, 40) };
-                            let stroke = if is_sel { egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85)) };
+                            let stroke = if is_sel { egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)) } else { egui::Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)) };
                             let btn = egui::Button::new(RichText::new(label).size(12.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(226, 232, 240) }))
                                 .fill(bg)
                                 .stroke(stroke)
@@ -5554,7 +5492,7 @@ impl eframe::App for RustyBoxApp {
 
                                 egui::Frame::none()
                                     .fill(Color32::from_rgb(17, 21, 31))
-                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68)))
+                                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(38, 48, 68)))
                                     .rounding(6.0)
                                     .inner_margin(8.0)
                                     .show(ui, |ui| {
@@ -5592,7 +5530,7 @@ impl eframe::App for RustyBoxApp {
                                         ui.add_space(4.0);
                                         egui::Frame::none()
                                             .fill(Color32::from_rgb(10, 13, 20))
-                                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 48)))
+                                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 33, 48)))
                                             .rounding(4.0)
                                             .inner_margin(6.0)
                                             .show(ui, |ui| {
@@ -5633,14 +5571,13 @@ impl eframe::App for RustyBoxApp {
                     self.show_snippet_vars = true;
                 }
             }
-            if let Some(idx) = delete_snippet_idx {
-                if idx < self.snippets.len() {
+            if let Some(idx) = delete_snippet_idx
+                && idx < self.snippets.len() {
                     self.snippets.remove(idx);
                     let _ = self.storage.save_snippets(&self.snippets);
                 }
-            }
-            if let Some(idx) = edit_snippet_idx {
-                if idx < self.snippets.len() {
+            if let Some(idx) = edit_snippet_idx
+                && idx < self.snippets.len() {
                     let s = &self.snippets[idx];
                     self.editing_snippet_idx = Some(idx);
                     self.snippet_form_name = s.name.clone();
@@ -5649,7 +5586,6 @@ impl eframe::App for RustyBoxApp {
                     self.snippet_form_desc = s.description.clone();
                     self.show_snippet_edit = true;
                 }
-            }
 
             self.show_snippets = open;
         }
@@ -5768,7 +5704,7 @@ impl eframe::App for RustyBoxApp {
 
                         egui::Frame::none()
                             .fill(Color32::from_rgb(10, 13, 20))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(28, 36, 52)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(28, 36, 52)))
                             .rounding(4.0)
                             .inner_margin(6.0)
                             .show(ui, |ui| {
@@ -5855,7 +5791,7 @@ impl eframe::App for RustyBoxApp {
                     // Add / Edit Rule Row
                     egui::Frame::none()
                         .fill(Color32::from_rgb(17, 21, 31))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(38, 48, 68)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(38, 48, 68)))
                         .rounding(6.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
@@ -5912,12 +5848,11 @@ impl eframe::App for RustyBoxApp {
                                         self.highlight_kw_input.clear();
                                     }
                                 }
-                                if self.editing_highlight_idx.is_some() {
-                                    if ui.button("✖ Cancel").clicked() {
+                                if self.editing_highlight_idx.is_some()
+                                    && ui.button("✖ Cancel").clicked() {
                                         self.editing_highlight_idx = None;
                                         self.highlight_kw_input.clear();
                                     }
-                                }
                             });
 
                             ui.add_space(4.0);
@@ -6001,12 +5936,11 @@ impl eframe::App for RustyBoxApp {
                                 });
                         });
 
-                    if let Some(idx) = delete_rule_idx {
-                        if idx < self.highlight_rules.len() {
+                    if let Some(idx) = delete_rule_idx
+                        && idx < self.highlight_rules.len() {
                             self.highlight_rules.remove(idx);
                             let _ = self.storage.save_highlight_rules(&self.highlight_rules, self.highlight_rules_enabled);
                         }
-                    }
 
                     if reset_defaults {
                         self.highlight_rules = crate::terminal::highlight::default_highlight_rules();
@@ -6023,7 +5957,7 @@ impl eframe::App for RustyBoxApp {
 
                     egui::Frame::none()
                         .fill(Color32::from_rgb(10, 13, 20))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(26, 33, 48)))
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(26, 33, 48)))
                         .rounding(4.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
@@ -6104,16 +6038,14 @@ impl eframe::App for RustyBoxApp {
 
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            if ui.button("💾 Save Public Key (.pub)...").clicked() {
-                                if let Some(path) = rfd::FileDialog::new().add_filter("Public Key", &["pub"]).save_file() {
+                            if ui.button("💾 Save Public Key (.pub)...").clicked()
+                                && let Some(path) = rfd::FileDialog::new().add_filter("Public Key", &["pub"]).save_file() {
                                     let _ = std::fs::write(&path, &self.keygen_public);
                                 }
-                            }
-                            if ui.button("🔒 Save Private Key...").clicked() {
-                                if let Some(path) = rfd::FileDialog::new().save_file() {
+                            if ui.button("🔒 Save Private Key...").clicked()
+                                && let Some(path) = rfd::FileDialog::new().save_file() {
                                     let _ = std::fs::write(&path, &self.keygen_private);
                                 }
-                            }
                         });
                     }
                     ui.add_space(8.0);
@@ -6187,23 +6119,19 @@ impl eframe::App for RustyBoxApp {
                     ui.columns(2, |cols| {
                         cols[0].label(RichText::new("Original Text / File A:").strong());
                         cols[0].add(egui::TextEdit::multiline(&mut self.diff_text_a).desired_rows(8).font(egui::TextStyle::Monospace));
-                        if cols[0].button("Load File A...").clicked() {
-                            if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                if let Ok(s) = std::fs::read_to_string(&path) {
+                        if cols[0].button("Load File A...").clicked()
+                            && let Some(path) = rfd::FileDialog::new().pick_file()
+                                && let Ok(s) = std::fs::read_to_string(&path) {
                                     self.diff_text_a = s;
                                 }
-                            }
-                        }
 
                         cols[1].label(RichText::new("Modified Text / File B:").strong());
                         cols[1].add(egui::TextEdit::multiline(&mut self.diff_text_b).desired_rows(8).font(egui::TextStyle::Monospace));
-                        if cols[1].button("Load File B...").clicked() {
-                            if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                if let Ok(s) = std::fs::read_to_string(&path) {
+                        if cols[1].button("Load File B...").clicked()
+                            && let Some(path) = rfd::FileDialog::new().pick_file()
+                                && let Ok(s) = std::fs::read_to_string(&path) {
                                     self.diff_text_b = s;
                                 }
-                            }
-                        }
                     });
 
                     ui.add_space(6.0);
@@ -6320,8 +6248,8 @@ impl eframe::App for RustyBoxApp {
                         ui.add(TextEdit::singleline(&mut self.new_macro_name).desired_width(100.0).hint_text("ps aux"));
                         ui.label("Command:");
                         ui.add(TextEdit::singleline(&mut self.new_macro_cmd).desired_width(160.0).hint_text("ps aux\n"));
-                        if ui.button("➕ Add").clicked() {
-                            if !self.new_macro_name.trim().is_empty() && !self.new_macro_cmd.is_empty() {
+                        if ui.button("➕ Add").clicked()
+                            && !self.new_macro_name.trim().is_empty() && !self.new_macro_cmd.is_empty() {
                                 let mut cmd = self.new_macro_cmd.clone();
                                 if !cmd.ends_with('\n') {
                                     cmd.push('\n');
@@ -6331,7 +6259,6 @@ impl eframe::App for RustyBoxApp {
                                 self.new_macro_name.clear();
                                 self.new_macro_cmd.clear();
                             }
-                        }
                     });
 
                     ui.separator();
@@ -6350,12 +6277,11 @@ impl eframe::App for RustyBoxApp {
                     });
                 });
 
-            if let Some(idx) = delete_idx {
-                if idx < self.quick_macros.len() {
+            if let Some(idx) = delete_idx
+                && idx < self.quick_macros.len() {
                     self.quick_macros.remove(idx);
                     let _ = self.storage.save_quick_macros(&self.quick_macros);
                 }
-            }
             self.show_macro_manager = open;
         }
 
@@ -6449,32 +6375,28 @@ impl eframe::App for RustyBoxApp {
                             });
 
                             ui.add_space(10.0);
-                            if ui.add(
+                            if (ui.add(
                                 egui::Button::new(RichText::new("🔓 Unlock Vault").strong().color(Color32::WHITE))
                                     .fill(Color32::from_rgb(56, 189, 248))
                             ).clicked()
-                                || trigger_unlock
-                            {
-                                if let Some(ref meta) = cfg.vault {
+                                || trigger_unlock)
+                                && let Some(ref meta) = cfg.vault {
                                     match unlock_vault(meta, &self.master_password) {
                                         Ok(key) => {
                                             self.storage.set_vault_key(Some(key));
                                             // Decrypt in memory
                                             for s in &mut self.sessions {
-                                                if let Some(ref p) = s.password {
-                                                    if is_encrypted(p) {
-                                                        if let Ok(dec) = decrypt_str(&key, p) {
+                                                if let Some(ref p) = s.password
+                                                    && is_encrypted(p)
+                                                        && let Ok(dec) = decrypt_str(&key, p) {
                                                             s.password = Some(dec);
                                                         }
-                                                    }
-                                                }
                                             }
                                             for c in &mut self.credentials {
-                                                if is_encrypted(&c.password) {
-                                                    if let Ok(dec) = decrypt_str(&key, &c.password) {
+                                                if is_encrypted(&c.password)
+                                                    && let Ok(dec) = decrypt_str(&key, &c.password) {
                                                         c.password = dec;
                                                     }
-                                                }
                                             }
                                             self.master_password.clear();
                                             self.vault_status = Some(("✅ Vault successfully unlocked! Credentials decrypted in memory.".into(), false));
@@ -6485,7 +6407,6 @@ impl eframe::App for RustyBoxApp {
                                         }
                                     }
                                 }
-                            }
                         });
                     } else {
                         // Case C: Vault is configured and currently UNLOCKED
@@ -6558,7 +6479,7 @@ impl eframe::App for RustyBoxApp {
                     if is_vault_configured && !is_vault_unlocked {
                         egui::Frame::none()
                             .fill(Color32::from_rgb(38, 28, 12))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(245, 158, 11)))
                             .rounding(4.0)
                             .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                             .show(ui, |ui| {
@@ -6622,7 +6543,7 @@ impl eframe::App for RustyBoxApp {
 
                         egui::Frame::none()
                             .fill(Color32::from_rgb(13, 17, 23))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                             .rounding(4.0)
                             .inner_margin(egui::Margin::same(8.0))
                             .show(ui, |ui| {
@@ -6777,7 +6698,7 @@ impl eframe::App for RustyBoxApp {
                         let table_w = (ui.available_width() - 16.0).max(500.0);
                         egui::Frame::none()
                             .fill(Color32::from_rgb(13, 17, 23))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                             .rounding(4.0)
                             .inner_margin(egui::Margin::same(8.0))
                             .show(ui, |ui| {
@@ -6864,12 +6785,11 @@ impl eframe::App for RustyBoxApp {
                                 });
                             });
 
-                        if let Some(del_idx) = to_delete_cred_idx {
-                            if del_idx < self.credentials.len() {
+                        if let Some(del_idx) = to_delete_cred_idx
+                            && del_idx < self.credentials.len() {
                                 self.credentials.remove(del_idx);
                                 let _ = self.storage.save_credentials(&self.credentials);
                             }
-                        }
                     }
 
                     ui.separator();
@@ -6951,8 +6871,8 @@ impl eframe::App for RustyBoxApp {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("✔ Save Credential").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            if !self.new_cred_user.trim().is_empty() {
+                        if (ui.button("✔ Save Credential").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            && !self.new_cred_user.trim().is_empty() {
                                 let name = if self.new_cred_name.trim().is_empty() {
                                     self.new_cred_user.trim().to_string()
                                 } else {
@@ -6966,7 +6886,6 @@ impl eframe::App for RustyBoxApp {
                                 let _ = self.storage.save_credentials(&self.credentials);
                                 self.show_new_cred_modal = false;
                             }
-                        }
                         if ui.button("✖ Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             self.show_new_cred_modal = false;
                         }
@@ -7006,19 +6925,16 @@ impl eframe::App for RustyBoxApp {
                             ui.separator();
                             ui.label(RichText::new("Backup, Export, or Import RustyBox Sessions & Configuration").strong());
                             ui.horizontal(|ui| {
-                                if ui.button("📤 Export Config (RustyBox.json)...").clicked() {
-                                    if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+                                if ui.button("📤 Export Config (RustyBox.json)...").clicked()
+                                    && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
                                         let cfg = self.build_full_export_config();
                                         let _ = self.storage.export_to_file(&path, &cfg);
                                     }
-                                }
-                                if ui.button("📥 Import Config (RustyBox.json)...").clicked() {
-                                    if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
-                                        if let Ok(imported) = self.storage.import_from_file(&path) {
+                                if ui.button("📥 Import Config (RustyBox.json)...").clicked()
+                                    && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()
+                                        && let Ok(imported) = self.storage.import_from_file(&path) {
                                             self.apply_imported_config(ui.ctx(), imported);
                                         }
-                                    }
-                                }
                             });
                         }
                         1 => {
@@ -7068,11 +6984,10 @@ impl eframe::App for RustyBoxApp {
                                 ui.label("Terminal Color Scheme:");
                                 for t in crate::terminal::vt_screen::TerminalTheme::all() {
                                     if ui.selectable_value(&mut self.theme, *t, t.name()).clicked() {
-                                        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx) {
-                                            if let Some(ref mut s) = tab.session_def {
+                                        if let Some(tab) = self.open_tabs.get_mut(self.active_tab_idx)
+                                            && let Some(ref mut s) = tab.session_def {
                                                 s.terminal_color_scheme = t.name().to_string();
                                             }
-                                        }
                                         let _ = self.persist_preferences();
                                         ui.ctx().request_repaint();
                                     }
@@ -7471,11 +7386,10 @@ impl eframe::App for RustyBoxApp {
                 });
             if do_rename {
                 let clean_name = new_tab_name.trim().to_string();
-                if !clean_name.is_empty() {
-                    if let Some(tab) = self.open_tabs.get_mut(tab_idx) {
+                if !clean_name.is_empty()
+                    && let Some(tab) = self.open_tabs.get_mut(tab_idx) {
                         tab.title = clean_name;
                     }
-                }
             }
             if close_modal {
                 self.rename_tab_target = None;
@@ -7488,14 +7402,14 @@ impl eframe::App for RustyBoxApp {
         self.render_import_dialog(ctx);
 
         // Status Toast Notification
-        if let Some((msg, created_at)) = &self.status_toast {
-            if created_at.elapsed().as_secs() < 3 {
+        if let Some((msg, created_at)) = &self.status_toast
+            && created_at.elapsed().as_secs() < 3 {
                 egui::Area::new(egui::Id::new("status_toast"))
                     .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -40.0))
                     .show(ctx, |ui| {
                         egui::Frame::none()
                             .fill(Color32::from_rgb(31, 111, 235))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)))
                             .rounding(4.0)
                             .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                             .show(ui, |ui| {
@@ -7503,7 +7417,6 @@ impl eframe::App for RustyBoxApp {
                             });
                     });
             }
-        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

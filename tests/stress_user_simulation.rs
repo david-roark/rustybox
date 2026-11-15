@@ -224,7 +224,7 @@ fn test_stress_mobaxterm_import_parser_100_cases() {
             2 => format!("HostWithoutPort{} = admin@10.0.0.{}", i, i),
             3 => format!("[Bookmarks]\r\nSubRep=Folder{}\r\nServer{} = #109#0%host{}%22%user%%", i, i, i),
             4 => format!("Malformed line with no separators {} !@#$%^&*()", i),
-            _ => format!("Empty fields #109#0%%%%%%%"),
+            _ => "Empty fields #109#0%%%%%%%".to_string(),
         };
 
         // Parser should never panic on arbitrary inputs

@@ -95,7 +95,6 @@ impl<'a> TerminalWidget<'a> {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_right_click_paste(mut self, enabled: bool) -> Self {
         self.right_click_paste = enabled;
         self
@@ -109,7 +108,7 @@ impl<'a> TerminalWidget<'a> {
     pub fn ui(
         self,
         ui: &mut Ui,
-        broadcast_sender: Option<&crossbeam_channel::Sender<Vec<u8>>>,
+        broadcast_sender: Option<&std::sync::mpsc::Sender<Vec<u8>>>,
     ) -> (Response, TerminalAction) {
         let available_size = ui.available_size();
         let (rect, response) = ui.allocate_exact_size(
@@ -248,8 +247,8 @@ impl<'a> TerminalWidget<'a> {
             }
         }
 
-        if response.dragged() {
-            if let Some(pos) = hover_pos.or_else(|| response.interact_pointer_pos()) {
+        if response.dragged()
+            && let Some(pos) = hover_pos.or_else(|| response.interact_pointer_pos()) {
                 if dragging_scrollbar && !alternate_screen && scrollback_len > 0 {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
                     let new_sb = ((1.0 - ratio) * (scrollback_len as f32)).round() as usize;
@@ -284,7 +283,6 @@ impl<'a> TerminalWidget<'a> {
                     }
                 }
             }
-        }
 
         if just_stopped_drag {
             if dragging_scrollbar {
@@ -305,8 +303,8 @@ impl<'a> TerminalWidget<'a> {
                 }
             } else {
                 drag_origin = None;
-                if let Some((start, end)) = selection {
-                    if start != end {
+                if let Some((start, end)) = selection
+                    && start != end {
                         let mut parser = self.session.parser.lock();
                         let text =
                             extract_selection_text_with_scrollback(parser.screen_mut(), start, end);
@@ -319,13 +317,12 @@ impl<'a> TerminalWidget<'a> {
                             }
                         }
                     }
-                }
             }
         }
 
         if response.triple_clicked() && !response.dragged() && !just_stopped_drag {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
+            if let Some(pos) = response.interact_pointer_pos()
+                && !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
                     let (abs_r, _) = pos_to_abs_cell(pos, scrollback_offset);
                     let mut parser = self.session.parser.lock();
                     let (_, screen_cols_nz) = parser.screen().size();
@@ -345,10 +342,9 @@ impl<'a> TerminalWidget<'a> {
                     selection = Some((start, end));
                     drag_origin = None;
                 }
-            }
         } else if response.double_clicked() && !response.dragged() && !just_stopped_drag {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
+            if let Some(pos) = response.interact_pointer_pos()
+                && !tui_captures_mouse && rect.contains(pos) && !scrollbar_rect.contains(pos) {
                     let (abs_r, c) = pos_to_abs_cell(pos, scrollback_offset);
                     let mut parser = self.session.parser.lock();
                     let (w_start, w_end) = find_word_bounds_in_row(parser.screen_mut(), abs_r, c);
@@ -367,9 +363,8 @@ impl<'a> TerminalWidget<'a> {
                     selection = Some((start, end));
                     drag_origin = None;
                 }
-            }
-        } else if response.clicked() && !response.dragged() && !just_stopped_drag {
-            if let Some(pos) = response.interact_pointer_pos() {
+        } else if response.clicked() && !response.dragged() && !just_stopped_drag
+            && let Some(pos) = response.interact_pointer_pos() {
                 if !alternate_screen && scrollback_len > 0 && scrollbar_rect.contains(pos) {
                     let ratio = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
                     let new_sb = ((1.0 - ratio) * (scrollback_len as f32)).round() as usize;
@@ -403,7 +398,6 @@ impl<'a> TerminalWidget<'a> {
                     drag_origin = None;
                 }
             }
-        }
 
         ui.data_mut(|d| {
             if let Some(sel) = selection {
@@ -427,11 +421,10 @@ impl<'a> TerminalWidget<'a> {
             ui.data_mut(|d| d.insert_temp(init_focus_id, true));
             if self.is_active_pane {
                 ui.memory_mut(|m| {
-                    if let Some(fid) = m.focused() {
-                        if fid != response.id && fid != term_id {
+                    if let Some(fid) = m.focused()
+                        && fid != response.id && fid != term_id {
                             m.surrender_focus(fid);
                         }
-                    }
                     m.request_focus(response.id);
                 });
             }
@@ -442,11 +435,10 @@ impl<'a> TerminalWidget<'a> {
         let pointer_pressed = ui.input(|i| i.pointer.any_pressed() || i.pointer.any_down());
         if response.clicked() || (pointer_in_terminal && pointer_pressed) {
             ui.memory_mut(|m| {
-                if let Some(fid) = m.focused() {
-                    if fid != response.id && fid != term_id {
+                if let Some(fid) = m.focused()
+                    && fid != response.id && fid != term_id {
                         m.surrender_focus(fid);
                     }
-                }
                 m.request_focus(response.id);
             });
         }
@@ -488,17 +480,15 @@ impl<'a> TerminalWidget<'a> {
         let direct_middle_click_paste = middle_clicked && pointer_in_terminal;
         if direct_right_click_paste || direct_middle_click_paste {
             let text_opt = get_clipboard_text(ui, direct_middle_click_paste);
-            if let Some(text) = text_opt {
-                if !text.is_empty() {
+            if let Some(text) = text_opt
+                && !text.is_empty() {
                     if text.contains('\n') {
                         action = TerminalAction::MultiLinePaste(text);
-                    } else if let Ok(bytes) = self.session.paste_text(&text) {
-                        if let Some(sender) = broadcast_sender {
+                    } else if let Ok(bytes) = self.session.paste_text(&text)
+                        && let Some(sender) = broadcast_sender {
                             let _ = sender.send(bytes);
                         }
-                    }
                 }
-            }
         }
 
         // Mouse Wheel: Ctrl + Wheel = Zoom, Wheel in TUI mouse mode = SGR 64/65, Wheel alone = Scrollback
@@ -559,8 +549,8 @@ impl<'a> TerminalWidget<'a> {
                 ui.set_min_width(210.0);
 
                 let has_selection = selection.map(|(s, e)| s != e).unwrap_or(false);
-                if has_selection {
-                    if ui.button("📄 Copy Selection").clicked() {
+                if has_selection
+                    && ui.button("📄 Copy Selection").clicked() {
                         if let Some((s, e)) = selection {
                             let mut parser = self.session.parser.lock();
                             let text =
@@ -574,22 +564,19 @@ impl<'a> TerminalWidget<'a> {
                         clear_selection_in_ui(ui);
                         ui.close_menu();
                     }
-                }
 
                 if ui.button("📋 Paste Clipboard").clicked() {
                     let text_opt = get_clipboard_text(ui, false);
 
-                    if let Some(text) = text_opt {
-                        if !text.is_empty() {
+                    if let Some(text) = text_opt
+                        && !text.is_empty() {
                             if text.contains('\n') {
                                 action = TerminalAction::MultiLinePaste(text);
-                            } else if let Ok(bytes) = self.session.paste_text(&text) {
-                                if let Some(sender) = broadcast_sender {
+                            } else if let Ok(bytes) = self.session.paste_text(&text)
+                                && let Some(sender) = broadcast_sender {
                                     let _ = sender.send(bytes);
                                 }
-                            }
                         }
-                    }
                     selection = None;
                     clear_selection_in_ui(ui);
                     ui.close_menu();
@@ -743,11 +730,10 @@ impl<'a> TerminalWidget<'a> {
                         let url_match = row_urls
                             .iter()
                             .find(|(u_start, u_end, _)| (c as usize) >= *u_start && (c as usize) < *u_end);
-                        if let Some((_, _, url_str)) = url_match {
-                            if hovered_screen_cell == Some((r as usize, c as usize)) {
+                        if let Some((_, _, url_str)) = url_match
+                            && hovered_screen_cell == Some((r as usize, c as usize)) {
                                 hovered_url = Some(url_str.clone());
                             }
-                        }
 
                         let cell_fg_raw = vt_to_egui_color(cell.fgcolor(), true, self.theme);
                         let cell_bg_raw = vt_to_egui_color(cell.bgcolor(), false, self.theme);
@@ -1286,8 +1272,8 @@ impl<'a> TerminalWidget<'a> {
                             clear_selection_in_ui(ui);
                         }
                     }
-                    Event::Paste(text) => {
-                        if !paste_handled {
+                    Event::Paste(text)
+                        if !paste_handled => {
                             paste_handled = true;
                             if text.contains('\n') {
                                 paste_text_to_check = Some(text.clone());
@@ -1298,7 +1284,6 @@ impl<'a> TerminalWidget<'a> {
                                     .extend_from_slice(&format_paste_bytes(text, bracketed));
                             }
                         }
-                    }
                     _ => {}
                 }
             }
@@ -1557,7 +1542,7 @@ pub fn format_paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 }
 
 /// Precomputes MobaXterm-style keyword & IPv4 highlight colors once per row using UTF-8 character indices
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn compute_row_syntax_highlights(row: &str, max_cols: usize) -> Vec<Option<Color32>> {
     compute_row_syntax_highlights_with_rules(row, max_cols, None, true)
 }
@@ -1732,7 +1717,7 @@ fn is_cell_selected(r: usize, c: usize, sel: Option<((usize, usize), (usize, usi
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn extract_selection_text(
     screen: &vt100::Screen,
     start: (usize, usize),
@@ -1937,12 +1922,11 @@ pub fn copy_text_to_primary_selection(text: &str) {
         if let Some(cb) = guard.as_mut() {
             use arboard::{LinuxClipboardKind, SetExtLinux};
             let res = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
-            if res.is_err() {
-                if let Ok(mut new_cb) = arboard::Clipboard::new() {
+            if res.is_err()
+                && let Ok(mut new_cb) = arboard::Clipboard::new() {
                     let _ = new_cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
                     *guard = Some(new_cb);
                 }
-            }
         }
     }
     #[cfg(not(target_os = "linux"))]

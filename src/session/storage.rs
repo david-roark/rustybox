@@ -220,7 +220,6 @@ impl Default for RustyBoxConfig {
 #[derive(Clone, Debug)]
 pub struct BackupFileInfo {
     pub unix_ts: u64,
-    pub file_name: String,
     pub path: PathBuf,
 }
 
@@ -228,9 +227,14 @@ pub struct BackupFileInfo {
 pub struct StorageManager {
     data_dir: PathBuf,
     file_path: PathBuf,
-    is_portable: bool,
     vault_key: Option<[u8; 32]>,
     is_vault_configured: bool,
+}
+
+impl Default for StorageManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StorageManager {
@@ -276,7 +280,6 @@ impl StorageManager {
         Self {
             data_dir,
             file_path,
-            is_portable: true,
             vault_key: None,
             is_vault_configured,
         }
@@ -302,17 +305,6 @@ impl StorageManager {
         self.vault_key
     }
 
-    /// True if the config holds any plaintext (not yet encrypted) password.
-    pub fn has_plaintext_passwords(config: &RustyBoxConfig) -> bool {
-        config.sessions.iter().any(|s| s.password.as_deref().map_or(false, |p| !p.is_empty() && !is_encrypted(p)))
-            || config.credentials.iter().any(|c| !c.password.is_empty() && !is_encrypted(&c.password))
-    }
-
-    /// True when plaintext passwords exist in memory but cannot be written (no vault key).
-    pub fn has_unsaved_plaintext(&self, config: &RustyBoxConfig) -> bool {
-        self.vault_key.is_none() && Self::has_plaintext_passwords(config)
-    }
-
     /// Builds the on-disk representation: passwords are encrypted with the vault key if configured.
     /// Already-encrypted values pass through unchanged (a locked vault keeps its data).
     pub fn prepare_for_disk(&self, config: &RustyBoxConfig) -> Result<RustyBoxConfig, String> {
@@ -322,13 +314,11 @@ impl StorageManager {
                 return Ok(Some(String::new()));
             }
             if is_encrypted(p) {
-                if out.vault.is_none() {
-                    if let Some(k) = &self.vault_key {
-                        if let Ok(dec) = decrypt_str(k, p) {
+                if out.vault.is_none()
+                    && let Some(k) = &self.vault_key
+                        && let Ok(dec) = decrypt_str(k, p) {
                             return Ok(Some(dec));
                         }
-                    }
-                }
                 return Ok(Some(p.to_string()));
             }
             match &self.vault_key {
@@ -345,10 +335,6 @@ impl StorageManager {
             c.password = conv(&c.password)?.unwrap_or_default();
         }
         Ok(out)
-    }
-
-    pub fn is_portable(&self) -> bool {
-        self.is_portable
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -473,17 +459,14 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(&self.data_dir) {
             for entry in entries.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
-                if let Some(suffix) = file_name.strip_prefix("RustyBox.json.") {
-                    if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
-                        if let Ok(unix_ts) = suffix.parse::<u64>() {
+                if let Some(suffix) = file_name.strip_prefix("RustyBox.json.")
+                    && !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                        && let Ok(unix_ts) = suffix.parse::<u64>() {
                             backups.push(BackupFileInfo {
                                 unix_ts,
-                                file_name,
                                 path: entry.path(),
                             });
                         }
-                    }
-                }
             }
         }
         backups.sort_by(|a, b| b.unix_ts.cmp(&a.unix_ts));
@@ -536,22 +519,20 @@ impl StorageManager {
     /// 3. If `data/RustyBox.json` does not exist -> treat as brand-new configuration and create `data/RustyBox.json`.
     pub fn load_config(&self) -> RustyBoxConfig {
         if self.file_path.exists() {
-            if let Ok(content) = fs::read_to_string(&self.file_path) {
-                if let Some(cfg) = Self::parse_config_str(&content) {
+            if let Ok(content) = fs::read_to_string(&self.file_path)
+                && let Some(cfg) = Self::parse_config_str(&content) {
                     return cfg;
                 }
-            }
 
             // Corrupted or malformed RustyBox.json: attempt automatic recovery from newest valid backup
             for bak in self.list_backups() {
-                if let Ok(bak_content) = fs::read_to_string(&bak.path) {
-                    if let Some(recovered_cfg) = Self::parse_config_str(&bak_content) {
+                if let Ok(bak_content) = fs::read_to_string(&bak.path)
+                    && let Some(recovered_cfg) = Self::parse_config_str(&bak_content) {
                         if let Ok(clean_json) = serde_json::to_string_pretty(&recovered_cfg) {
                             let _ = self.write_atomic_raw(&clean_json);
                         }
                         return recovered_cfg;
                     }
-                }
             }
         }
 
@@ -572,8 +553,8 @@ impl StorageManager {
         let disk_cfg = self.prepare_for_disk(config)?;
         let new_data = serde_json::to_string_pretty(&disk_cfg).map_err(|e| e.to_string())?;
 
-        if self.file_path.exists() {
-            if let Ok(old_content) = fs::read_to_string(&self.file_path) {
+        if self.file_path.exists()
+            && let Ok(old_content) = fs::read_to_string(&self.file_path) {
                 if old_content == new_data {
                     return Ok(());
                 }
@@ -598,22 +579,12 @@ impl StorageManager {
                     self.prune_backups(MAX_BACKUP_FILES);
                 }
             }
-        }
 
         self.write_atomic_raw(&new_data)
     }
 
     pub fn save_config(&self, config: &RustyBoxConfig) -> Result<(), String> {
         self.save_config_with_options(config, true)
-    }
-
-    pub fn restore_from_backup(&self, backup_path: &Path) -> Result<RustyBoxConfig, String> {
-        let content = fs::read_to_string(backup_path).map_err(|e| e.to_string())?;
-        let cfg = Self::parse_config_str(&content)
-            .ok_or_else(|| "Selected backup file has invalid JSON format".to_string())?;
-        let clean_json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-        self.write_atomic_raw(&clean_json)?;
-        Ok(cfg)
     }
 
     pub fn export_to_file(&self, path: &Path, config: &RustyBoxConfig) -> Result<(), String> {
@@ -633,7 +604,6 @@ impl StorageManager {
         Self {
             data_dir,
             file_path,
-            is_portable: true,
             vault_key: None,
             is_vault_configured: false,
         }
@@ -864,8 +834,8 @@ mod tests {
         assert_eq!(loaded.font_size, 16.0);
         assert_eq!(loaded.terminal_font_family, "ubuntu_mono");
         assert_eq!(loaded.theme_name, "Dracula");
-        assert_eq!(loaded.paste_protection_enabled, false);
-        assert_eq!(loaded.copy_on_select, false);
+        assert!(!loaded.paste_protection_enabled);
+        assert!(!loaded.copy_on_select);
         assert_eq!(loaded.quick_macros, vec![("my_top".into(), "htop -d 5\n".into())]);
         assert_eq!(loaded.password_save_mode, 2);
         assert!(loaded.save_key_passphrases);

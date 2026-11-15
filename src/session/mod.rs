@@ -379,6 +379,7 @@ impl Session {
     }
 
     /// Returns all saved sessions matching `query`.
+    #[cfg(test)]
     pub fn saved_sessions(sessions: &[Session], query: &str) -> Vec<Session> {
         sessions
             .iter()
