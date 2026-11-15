@@ -469,7 +469,7 @@ impl StorageManager {
                         }
             }
         }
-        backups.sort_by(|a, b| b.unix_ts.cmp(&a.unix_ts));
+        backups.sort_by_key(|b| std::cmp::Reverse(b.unix_ts));
         backups
     }
 

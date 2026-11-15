@@ -121,9 +121,9 @@ fn test_stress_session_crud_100_cycles() {
     }
 
     // 100 cycles of updates and deletions
-    for i in 0..100 {
-        sessions[i].name = format!("Updated Name {}", i);
-        sessions[i].folder = format!("NewFolder/{}", i % 3);
+    for (i, session) in sessions.iter_mut().enumerate().take(100) {
+        session.name = format!("Updated Name {}", i);
+        session.folder = format!("NewFolder/{}", i % 3);
     }
     let res = storage.save_sessions(&sessions);
     assert!(res.is_ok());

@@ -252,17 +252,19 @@ pub fn is_fatal_ssh_error(err: &str) -> bool {
         || lower.contains("transport read")
 }
 
+type ActiveSftpSession = (
+    ssh2::Session,
+    ssh2::Sftp,
+    SftpTargetConfig,
+    HashMap<u32, String>,
+    HashMap<u32, String>,
+    RemoteOsKind,
+);
+
 fn connect_and_emit(
     cfg: &SftpTargetConfig,
     event_tx: &Sender<SftpEvent>,
-    current_sess: &mut Option<(
-        ssh2::Session,
-        ssh2::Sftp,
-        SftpTargetConfig,
-        HashMap<u32, String>,
-        HashMap<u32, String>,
-        RemoteOsKind,
-    )>,
+    current_sess: &mut Option<ActiveSftpSession>,
     last_net_sample: &mut Option<(u64, u64, Instant)>,
 ) {
     *current_sess = None;
@@ -345,14 +347,7 @@ fn run_sftp_worker(
     event_tx: Sender<SftpEvent>,
     cancel_flag: Arc<AtomicBool>,
 ) {
-    let mut current_sess: Option<(
-        ssh2::Session,
-        ssh2::Sftp,
-        SftpTargetConfig,
-        HashMap<u32, String>,
-        HashMap<u32, String>,
-        RemoteOsKind,
-    )> = None;
+    let mut current_sess: Option<ActiveSftpSession> = None;
     let mut last_net_sample: Option<(u64, u64, Instant)> = None;
 
     while let Ok(cmd) = cmd_rx.recv() {

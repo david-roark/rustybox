@@ -78,7 +78,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
         let mut clicked_tool: Option<usize> = None;
 
-        for i in 0..num_btns {
+        for (i, &tooltip) in tooltips.iter().enumerate().take(num_btns) {
             let x0 = strip_rect.left() + i as f32 * (btn_w + gap);
             let r = Rect::from_min_size(pos2(x0, strip_rect.top()), vec2(btn_w, btn_h));
             let resp = ui.interact(r, ui.id().with(("sftp_tool_btn", i)), Sense::click());
@@ -227,7 +227,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 }
             }
 
-            if resp.on_hover_text(tooltips[i]).clicked() {
+            if resp.on_hover_text(tooltip).clicked() {
                 clicked_tool = Some(i);
             }
         }

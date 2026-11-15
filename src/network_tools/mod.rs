@@ -159,15 +159,14 @@ impl NetworkTools {
 
                 let target = format!("{}:{}", host, port);
                 let start = Instant::now();
-                let is_open = match tokio::time::timeout(
-                    Duration::from_millis(400),
-                    TcpStream::connect(&target),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => true,
-                    _ => false,
-                };
+                let is_open = matches!(
+                    tokio::time::timeout(
+                        Duration::from_millis(400),
+                        TcpStream::connect(&target),
+                    )
+                    .await,
+                    Ok(Ok(_))
+                );
                 let latency = if is_open {
                     Some(start.elapsed().as_millis() as u64)
                 } else {

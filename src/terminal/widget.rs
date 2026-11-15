@@ -71,7 +71,7 @@ impl<'a> TerminalWidget<'a> {
     }
 
     pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size = size.max(9.0).min(32.0);
+        self.font_size = size.clamp(9.0, 32.0);
         self
     }
 
@@ -2009,32 +2009,20 @@ pub fn find_word_bounds_in_row(
     let target_is_word = is_word_char(chars[c]);
     let target_is_space = chars[c].is_whitespace();
 
+    let same_class = |ch: char| {
+        (target_is_word && is_word_char(ch))
+            || (target_is_space && ch.is_whitespace())
+            || (!target_is_word && !target_is_space && !is_word_char(ch) && !ch.is_whitespace())
+    };
+
     let mut start_c = c;
-    while start_c > 0 {
-        let prev = chars[start_c - 1];
-        if target_is_word && is_word_char(prev) {
-            start_c -= 1;
-        } else if target_is_space && prev.is_whitespace() {
-            start_c -= 1;
-        } else if !target_is_word && !target_is_space && !is_word_char(prev) && !prev.is_whitespace() {
-            start_c -= 1;
-        } else {
-            break;
-        }
+    while start_c > 0 && same_class(chars[start_c - 1]) {
+        start_c -= 1;
     }
 
     let mut end_c = c;
-    while end_c + 1 < chars.len() {
-        let next = chars[end_c + 1];
-        if target_is_word && is_word_char(next) {
-            end_c += 1;
-        } else if target_is_space && next.is_whitespace() {
-            end_c += 1;
-        } else if !target_is_word && !target_is_space && !is_word_char(next) && !next.is_whitespace() {
-            end_c += 1;
-        } else {
-            break;
-        }
+    while end_c + 1 < chars.len() && same_class(chars[end_c + 1]) {
+        end_c += 1;
     }
 
     (start_c, end_c)
@@ -2099,8 +2087,8 @@ mod tests {
             .find(|(_, (byte_idx, _))| row[*byte_idx..].starts_with("ERROR"))
             .map(|(char_idx, _)| char_idx)
             .unwrap();
-        for i in err_char_pos..err_char_pos + 5 {
-            assert_eq!(highlights[i], Some(Color32::from_rgb(255, 90, 90)));
+        for h in &highlights[err_char_pos..err_char_pos + 5] {
+            assert_eq!(*h, Some(Color32::from_rgb(255, 90, 90)));
         }
 
         let ip_char_pos = row
@@ -2109,8 +2097,8 @@ mod tests {
             .find(|(_, (byte_idx, _))| row[*byte_idx..].starts_with("192.168.1.10"))
             .map(|(char_idx, _)| char_idx)
             .unwrap();
-        for i in ip_char_pos..ip_char_pos + 12 {
-            assert_eq!(highlights[i], Some(Color32::from_rgb(80, 210, 245)));
+        for h in &highlights[ip_char_pos..ip_char_pos + 12] {
+            assert_eq!(*h, Some(Color32::from_rgb(80, 210, 245)));
         }
     }
 
@@ -2213,27 +2201,27 @@ mod tests {
         let highlights = compute_row_syntax_highlights(row, row.chars().count());
 
         // "terror" (0..6), "tokens" (7..13), "999.999.999.999" (14..29), "1.2.3" (30..35) should all be None
-        for idx in 0..35 {
+        for (idx, &h) in highlights.iter().enumerate().take(35) {
             assert_eq!(
-                highlights[idx], None,
+                h, None,
                 "Unexpected highlight at char index {}",
                 idx
             );
         }
 
         // "WARN" at 36..40 -> yellow
-        for idx in 36..40 {
-            assert_eq!(highlights[idx], Some(Color32::from_rgb(255, 210, 60)));
+        for &h in &highlights[36..40] {
+            assert_eq!(h, Some(Color32::from_rgb(255, 210, 60)));
         }
 
         // "failed" at 46..52 -> red
-        for idx in 46..52 {
-            assert_eq!(highlights[idx], Some(Color32::from_rgb(255, 90, 90)));
+        for &h in &highlights[46..52] {
+            assert_eq!(h, Some(Color32::from_rgb(255, 90, 90)));
         }
 
         // "10.20.30.40" at 56..67 -> cyan
-        for idx in 56..67 {
-            assert_eq!(highlights[idx], Some(Color32::from_rgb(80, 210, 245)));
+        for &h in &highlights[56..67] {
+            assert_eq!(h, Some(Color32::from_rgb(80, 210, 245)));
         }
     }
 
@@ -2258,16 +2246,16 @@ mod tests {
         // 1. With rules enabled
         let highlights = compute_row_syntax_highlights_with_rules(line, cols, Some(&custom_rules), true);
         // "TIMEOUT" at index 11..18 -> magenta
-        for i in 11..18 {
-            assert_eq!(highlights[i], Some(Color32::from_rgb(216, 112, 240)));
+        for &h in &highlights[11..18] {
+            assert_eq!(h, Some(Color32::from_rgb(216, 112, 240)));
         }
         // "CRITICAL" at index 20..28 -> red
-        for i in 20..28 {
-            assert_eq!(highlights[i], Some(Color32::from_rgb(255, 0, 0)));
+        for &h in &highlights[20..28] {
+            assert_eq!(h, Some(Color32::from_rgb(255, 0, 0)));
         }
         // "ignored" is disabled -> None
-        for i in 36..43 {
-            assert_eq!(highlights[i], None);
+        for &h in &highlights[36..43] {
+            assert_eq!(h, None);
         }
 
         // 2. With global toggle disabled
@@ -2345,8 +2333,10 @@ mod tests {
             d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 8usize)));
         });
 
-        let mut raw_input = egui::RawInput::default();
-        raw_input.modifiers = egui::Modifiers::CTRL;
+        let mut raw_input = egui::RawInput {
+            modifiers: egui::Modifiers::CTRL,
+            ..Default::default()
+        };
         raw_input.events.push(Event::Key {
             key: Key::C,
             physical_key: None,
@@ -2385,8 +2375,10 @@ mod tests {
             }
         }
 
-        let mut raw_input_2 = egui::RawInput::default();
-        raw_input_2.modifiers = egui::Modifiers::CTRL;
+        let mut raw_input_2 = egui::RawInput {
+            modifiers: egui::Modifiers::CTRL,
+            ..Default::default()
+        };
         raw_input_2.events.push(Event::Key {
             key: Key::C,
             physical_key: None,
@@ -2433,8 +2425,10 @@ mod tests {
 
         let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
 
-        let mut input0 = egui::RawInput::default();
-        input0.screen_rect = screen_rect;
+        let mut input0 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input0.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
         let _ = ctx.run(input0, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2442,8 +2436,10 @@ mod tests {
             });
         });
 
-        let mut input1 = egui::RawInput::default();
-        input1.screen_rect = screen_rect;
+        let mut input1 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input1.events.push(Event::PointerButton {
             pos: pos2(10.0, 10.0),
             button: egui::PointerButton::Primary,
@@ -2456,8 +2452,10 @@ mod tests {
             });
         });
 
-        let mut input2 = egui::RawInput::default();
-        input2.screen_rect = screen_rect;
+        let mut input2 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input2.events.push(Event::PointerMoved(pos2(80.0, 10.0)));
         let _ = ctx.run(input2, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2465,8 +2463,10 @@ mod tests {
             });
         });
 
-        let mut input3 = egui::RawInput::default();
-        input3.screen_rect = screen_rect;
+        let mut input3 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input3.events.push(Event::PointerButton {
             pos: pos2(80.0, 10.0),
             button: egui::PointerButton::Primary,
@@ -2498,8 +2498,10 @@ mod tests {
 
         let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
 
-        let mut input0 = egui::RawInput::default();
-        input0.screen_rect = screen_rect;
+        let mut input0 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input0.events.push(Event::PointerMoved(pos2(80.0, 10.0)));
         let _ = ctx.run(input0, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2508,8 +2510,10 @@ mod tests {
         });
 
         // Press at column 8
-        let mut input1 = egui::RawInput::default();
-        input1.screen_rect = screen_rect;
+        let mut input1 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input1.events.push(Event::PointerButton {
             pos: pos2(80.0, 10.0),
             button: egui::PointerButton::Primary,
@@ -2523,8 +2527,10 @@ mod tests {
         });
 
         // Drag backwards to column 0
-        let mut input2 = egui::RawInput::default();
-        input2.screen_rect = screen_rect;
+        let mut input2 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input2.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
         let _ = ctx.run(input2, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2533,8 +2539,10 @@ mod tests {
         });
 
         // Release at column 0
-        let mut input3 = egui::RawInput::default();
-        input3.screen_rect = screen_rect;
+        let mut input3 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input3.events.push(Event::PointerButton {
             pos: pos2(10.0, 10.0),
             button: egui::PointerButton::Primary,
@@ -2571,8 +2579,10 @@ mod tests {
         });
 
         // Initial frame to verify selection is loaded
-        let mut input0 = egui::RawInput::default();
-        input0.screen_rect = screen_rect;
+        let input0 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         let _ = ctx.run(input0, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let _ = TerminalWidget::new(tab_id, &mut sess).ui(ui, None);
@@ -2581,8 +2591,10 @@ mod tests {
         assert!(ctx.data(|d| d.get_temp::<((usize, usize), (usize, usize))>(sel_id)).is_some());
 
         // Perform a single click (press & release at same location)
-        let mut input1 = egui::RawInput::default();
-        input1.screen_rect = screen_rect;
+        let mut input1 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input1.events.push(Event::PointerButton {
             pos: pos2(50.0, 50.0),
             button: egui::PointerButton::Primary,
@@ -2595,8 +2607,10 @@ mod tests {
             });
         });
 
-        let mut input2 = egui::RawInput::default();
-        input2.screen_rect = screen_rect;
+        let mut input2 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input2.events.push(Event::PointerButton {
             pos: pos2(50.0, 50.0),
             button: egui::PointerButton::Primary,
@@ -2628,9 +2642,11 @@ mod tests {
         ctx.data_mut(|d| {
             d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
         });
-        let mut in_ctrl_shift_c = egui::RawInput::default();
-        in_ctrl_shift_c.screen_rect = screen_rect;
-        in_ctrl_shift_c.modifiers = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        let mut in_ctrl_shift_c = egui::RawInput {
+            screen_rect,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            ..Default::default()
+        };
         in_ctrl_shift_c.events.push(Event::Key {
             key: Key::C,
             physical_key: None,
@@ -2652,9 +2668,11 @@ mod tests {
         ctx.data_mut(|d| {
             d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
         });
-        let mut in_ctrl_insert = egui::RawInput::default();
-        in_ctrl_insert.screen_rect = screen_rect;
-        in_ctrl_insert.modifiers = egui::Modifiers::CTRL;
+        let mut in_ctrl_insert = egui::RawInput {
+            screen_rect,
+            modifiers: egui::Modifiers::CTRL,
+            ..Default::default()
+        };
         in_ctrl_insert.events.push(Event::Key {
             key: Key::Insert,
             physical_key: None,
@@ -2676,8 +2694,10 @@ mod tests {
         ctx.data_mut(|d| {
             d.insert_temp(sel_id, ((0usize, 0usize), (0usize, 5usize)));
         });
-        let mut in_event_copy = egui::RawInput::default();
-        in_event_copy.screen_rect = screen_rect;
+        let mut in_event_copy = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         in_event_copy.events.push(Event::Copy);
         copied.clear();
         let _ = ctx.run(in_event_copy, |ctx| {
@@ -2700,8 +2720,10 @@ mod tests {
         let drag_sel_id = egui::Id::new("term_selection").with(drag_tab_id);
         let screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
 
-        let mut input0 = egui::RawInput::default();
-        input0.screen_rect = screen_rect;
+        let mut input0 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input0.events.push(Event::PointerMoved(pos2(10.0, 10.0)));
         let _ = ctx.run(input0, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2710,8 +2732,10 @@ mod tests {
         });
 
         // Press at row 0
-        let mut input1 = egui::RawInput::default();
-        input1.screen_rect = screen_rect;
+        let mut input1 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input1.events.push(Event::PointerButton {
             pos: pos2(10.0, 10.0),
             button: egui::PointerButton::Primary,
@@ -2725,8 +2749,10 @@ mod tests {
         });
 
         // Drag down to row 2 (y = 50.0)
-        let mut input2 = egui::RawInput::default();
-        input2.screen_rect = screen_rect;
+        let mut input2 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input2.events.push(Event::PointerMoved(pos2(80.0, 50.0)));
         let _ = ctx.run(input2, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2735,8 +2761,10 @@ mod tests {
         });
 
         // Release
-        let mut input3 = egui::RawInput::default();
-        input3.screen_rect = screen_rect;
+        let mut input3 = egui::RawInput {
+            screen_rect,
+            ..Default::default()
+        };
         input3.events.push(Event::PointerButton {
             pos: pos2(80.0, 50.0),
             button: egui::PointerButton::Primary,

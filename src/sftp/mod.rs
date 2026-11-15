@@ -2701,15 +2701,17 @@ mod tests {
         assert!(explorer.get_active_telemetry().is_none());
 
         // Worker emits real Telemetry event
-        let mut metrics = crate::telemetry::RemoteSystemMetrics::default();
-        metrics.cores = Some(8);
-        metrics.cpu_pct = Some(4);
-        metrics.ram_total_gb = Some(24.0);
-        metrics.ram_used_gb = Some(14.6);
-        metrics.ram_pct = Some(61);
-        metrics.disk_pct = Some(86);
-        metrics.uptime = Some("Up: 19h 11m".into());
-        metrics.net_rate = Some("▲254.0K  ▼79.0K".into());
+        let metrics = crate::telemetry::RemoteSystemMetrics {
+            cores: Some(8),
+            cpu_pct: Some(4),
+            ram_total_gb: Some(24.0),
+            ram_used_gb: Some(14.6),
+            ram_pct: Some(61),
+            disk_pct: Some(86),
+            uptime: Some("Up: 19h 11m".into()),
+            net_rate: Some("▲254.0K  ▼79.0K".into()),
+            ..Default::default()
+        };
 
         event_tx.send(SftpEvent::Telemetry(metrics.clone())).unwrap();
 

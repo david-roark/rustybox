@@ -121,6 +121,7 @@ fn starts_with_ci(chars: &[char], prefix: &str) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn highlight_line(
     line: &str,
     supports_embedding: bool,
@@ -531,6 +532,7 @@ fn apply_search_highlights(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_editor_layouter(
     ctx: &egui::Context,
     text: &str,

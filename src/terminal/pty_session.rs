@@ -213,6 +213,7 @@ impl PtySession {
         Ok(sess)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_ssh_with_config(
         rows: u16,
         cols: u16,
@@ -293,6 +294,7 @@ impl PtySession {
         Ok(sess)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_from_pair_and_cmd(
         pair: PtyPair,
         cmd: CommandBuilder,

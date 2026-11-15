@@ -628,15 +628,17 @@ eth0: 1204800   150    0    0    0     0          0         0   909600    150   
         assert!(!telem.is_remote);
         assert!(telem.is_connected);
 
-        let mut metrics = RemoteSystemMetrics::default();
-        metrics.cores = Some(16);
-        metrics.cpu_pct = Some(12);
-        metrics.ram_used_gb = Some(8.5);
-        metrics.ram_total_gb = Some(32.0);
-        metrics.ram_pct = Some(27);
-        metrics.uptime = Some("Up: 5d 2h".into());
-        metrics.disk_pct = Some(42);
-        metrics.net_rate = Some("▲1.2M  ▼450K".into());
+        let metrics = RemoteSystemMetrics {
+            cores: Some(16),
+            cpu_pct: Some(12),
+            ram_used_gb: Some(8.5),
+            ram_total_gb: Some(32.0),
+            ram_pct: Some(27),
+            uptime: Some("Up: 5d 2h".into()),
+            disk_pct: Some(42),
+            net_rate: Some("▲1.2M  ▼450K".into()),
+            ..Default::default()
+        };
 
         let mut remote_telem = TabTelemetry {
             host: "srv-prod".into(),
