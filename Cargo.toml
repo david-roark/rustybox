@@ -27,3 +27,7 @@ arboard = { version = "3.4", features = ["wayland-data-control"] }
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 socket2 = "0.5"
 libc = "0.2.191"
+
+[profile.release]
+strip = true
+lto = "thin"

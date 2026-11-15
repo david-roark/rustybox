@@ -6,6 +6,9 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   macos-build-and-verify:
     runs-on: macos-15
@@ -15,9 +18,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust targets (Apple Silicon & Intel x64)
-        run: |
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Install Rust toolchain & targets (Apple Silicon & Intel x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
 
       - name: Run full unit & integration test suite on native macOS
         run: |
@@ -68,6 +77,5 @@ jobs:
             RustyBox-macos-arm64
             RustyBox-macos-x64
             RustyBox-macos-universal
-            macos_gui_screenshot.png
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
