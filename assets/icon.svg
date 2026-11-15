@@ -1,18 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Nền Midnight Violet -->
-  <rect x="2" y="2" width="60" height="60" rx="15" fill="#13111C" />
-  
-  <!-- Tầng 1: Gateway / Active Node -->
-  <rect x="13" y="12" width="38" height="10" rx="3" fill="#C6F639" />
-  <circle cx="19" cy="17" r="2" fill="#13111C" />
-  <rect x="35" y="15.5" width="11" height="3" rx="1.5" fill="#13111C" />
-
-  <!-- Tầng 2: Telemetry / Nhịp sóng giám sát -->
-  <rect x="13" y="26" width="38" height="12" rx="3.5" fill="#1E1B2E" stroke="#A78BFA" stroke-width="2" />
-  <path d="M17.5 32 H24 L27 28.5 L31 35.5 L34 32 H46.5" fill="none" stroke="#C6F639" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-
-  <!-- Tầng 3: Control / Terminal Execution -->
-  <rect x="13" y="42" width="38" height="10" rx="3" fill="#1E1B2E" stroke="#5B537A" stroke-width="2" />
-  <path d="M18.5 44.8 L21.5 47 L18.5 49.2" fill="none" stroke="#F4F4F5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <line x1="24" y1="49.2" x2="29.5" y2="49.2" stroke="#F4F4F5" stroke-width="2" stroke-linecap="round" />
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect x="0" y="0" width="32" height="32" rx="7" fill="#13111C"/>
+  <rect x="3.5" y="3.5" width="25" height="10.5" rx="3" fill="#C6F639"/>
+  <path d="M7.5 6.5 L10.5 8.75 L7.5 11" fill="none" stroke="#13111C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="3.5" y="16.5" width="25" height="12" rx="3" fill="#231F36"/>
+  <path d="M6.5 22.5 H11.5 L14.5 18.5 L18 26.5 L21 22.5 H25.5" fill="none" stroke="#A78BFA" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="13" y1="11" x2="20.351" y2="11" stroke="#13111C" stroke-width="2.4" stroke-linecap="round" style=""/>
 </svg>
