@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use regex::Regex;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Snippet {
@@ -179,14 +178,26 @@ pub fn default_snippets() -> Vec<Snippet> {
 
 /// Extracts all `{{placeholder}}` variables from command string
 pub fn extract_placeholders(cmd: &str) -> Vec<String> {
-    let re = Regex::new(r"\{\{([a-zA-Z0-9_\-\.]+)\}\}").unwrap();
     let mut vars = Vec::new();
-    for cap in re.captures_iter(cmd) {
-        if let Some(m) = cap.get(1) {
-            let var = m.as_str().to_string();
+    let mut rest = cmd;
+    while let Some(start) = rest.find("{{") {
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find("}}") else {
+            break;
+        };
+        let candidate = &after_open[..end];
+        let is_valid = !candidate.is_empty()
+            && candidate
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+        if is_valid {
+            let var = candidate.to_string();
             if !vars.contains(&var) {
                 vars.push(var);
             }
+            rest = &after_open[end + 2..];
+        } else {
+            rest = after_open;
         }
     }
     vars

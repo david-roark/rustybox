@@ -121,6 +121,7 @@ fn starts_with_ci(chars: &[char], prefix: &str) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn highlight_line(
     line: &str,
     supports_embedding: bool,
@@ -302,7 +303,7 @@ fn highlight_line(
             EmbeddedLanguage::Css => SyntaxType::Css.rules(),
             EmbeddedLanguage::Php => SyntaxType::Php.rules(),
             EmbeddedLanguage::RubyErb => SyntaxType::Ruby.rules(),
-            EmbeddedLanguage::None => base_rules.clone(),
+            EmbeddedLanguage::None => *base_rules,
         };
 
         let line_comment_chars: Option<Vec<char>> = rules.line_comment.map(|s| s.chars().collect());
@@ -335,8 +336,8 @@ fn highlight_line(
         }
 
         // 2. Start of multiline comment
-        if let Some(ref start_chars) = multi_start_chars {
-            if i + start_chars.len() <= len && chars[i..i + start_chars.len()] == start_chars[..] {
+        if let Some(ref start_chars) = multi_start_chars
+            && i + start_chars.len() <= len && chars[i..i + start_chars.len()] == start_chars[..] {
                 let start = i;
                 i += start_chars.len();
                 *in_multiline_comment = true;
@@ -356,11 +357,10 @@ fn highlight_line(
                 job.append(&seg, 0.0, fmt(theme.comment));
                 continue;
             }
-        }
 
         // 3. Single-line comment
-        if let Some(ref prefix_chars) = line_comment_chars {
-            if i + prefix_chars.len() <= len && chars[i..i + prefix_chars.len()] == prefix_chars[..] {
+        if let Some(ref prefix_chars) = line_comment_chars
+            && i + prefix_chars.len() <= len && chars[i..i + prefix_chars.len()] == prefix_chars[..] {
                 // If in ERB, stop before %>
                 if *embedded_lang == EmbeddedLanguage::RubyErb {
                     let start = i;
@@ -376,7 +376,6 @@ fn highlight_line(
                     return;
                 }
             }
-        }
 
         // 4. Strings: "..." or '...' or `...`
         if rules.highlight_strings && (chars[i] == '"' || chars[i] == '\'' || chars[i] == '`') {
@@ -469,11 +468,10 @@ fn highlight_line(
                     if chars[i..].starts_with(&['?', '>']) {
                         break;
                     }
-                } else if *embedded_lang == EmbeddedLanguage::RubyErb {
-                    if chars[i..].starts_with(&['%', '>']) || chars[i..].starts_with(&['-', '%', '>']) {
+                } else if *embedded_lang == EmbeddedLanguage::RubyErb
+                    && (chars[i..].starts_with(&['%', '>']) || chars[i..].starts_with(&['-', '%', '>'])) {
                         break;
                     }
-                }
             }
 
             // Stop if an identifier starts
@@ -489,17 +487,15 @@ fn highlight_line(
                 break;
             }
             // Stop if a single line comment starts
-            if let Some(ref prefix_chars) = line_comment_chars {
-                if i + prefix_chars.len() <= len && chars[i..i + prefix_chars.len()] == prefix_chars[..] {
+            if let Some(ref prefix_chars) = line_comment_chars
+                && i + prefix_chars.len() <= len && chars[i..i + prefix_chars.len()] == prefix_chars[..] {
                     break;
                 }
-            }
             // Stop if a multiline comment starts
-            if let Some(ref start_chars) = multi_start_chars {
-                if i + start_chars.len() <= len && chars[i..i + start_chars.len()] == start_chars[..] {
+            if let Some(ref start_chars) = multi_start_chars
+                && i + start_chars.len() <= len && chars[i..i + start_chars.len()] == start_chars[..] {
                     break;
                 }
-            }
             i += 1;
         }
         let seg: String = chars[start..i].iter().collect();
@@ -536,6 +532,7 @@ fn apply_search_highlights(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_editor_layouter(
     ctx: &egui::Context,
     text: &str,

@@ -13,16 +13,13 @@ use super::FileEntry;
 pub const OS_SAFETY_BUFFER_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB reserve for OS safety
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum RemoteOsKind {
+    #[default]
     Posix,
     Windows,
 }
 
-impl Default for RemoteOsKind {
-    fn default() -> Self {
-        RemoteOsKind::Posix
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SftpTargetConfig {
@@ -52,7 +49,6 @@ pub enum SftpCommand {
     Upload(PathBuf, String),   // (local_path, remote_path)
     Download(String, PathBuf), // (remote_path, local_path)
     CancelTransfer,
-    GetDiskUsage(String),
     FetchTelemetry,
     SetSudoMode {
         enabled: bool,
@@ -73,7 +69,6 @@ pub struct TransferProgressInfo {
 #[derive(Debug)]
 pub enum SftpEvent {
     Connected {
-        target: String,
         initial_dir: String,
         remote_os: RemoteOsKind,
     },
@@ -86,9 +81,7 @@ pub enum SftpEvent {
         path: String,
         content: String,
     },
-    FileWritten {
-        path: String,
-    },
+    FileWritten,
     TransferProgress(TransferProgressInfo),
     TransferFinished(String),
     OperationSuccess(String),
@@ -108,6 +101,12 @@ pub struct RemoteSftpClient {
     pub active_target: Option<String>,
     pub is_connected: bool,
     pub is_busy: bool,
+}
+
+impl Default for RemoteSftpClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RemoteSftpClient {
@@ -253,17 +252,19 @@ pub fn is_fatal_ssh_error(err: &str) -> bool {
         || lower.contains("transport read")
 }
 
+type ActiveSftpSession = (
+    ssh2::Session,
+    ssh2::Sftp,
+    SftpTargetConfig,
+    HashMap<u32, String>,
+    HashMap<u32, String>,
+    RemoteOsKind,
+);
+
 fn connect_and_emit(
     cfg: &SftpTargetConfig,
     event_tx: &Sender<SftpEvent>,
-    current_sess: &mut Option<(
-        ssh2::Session,
-        ssh2::Sftp,
-        SftpTargetConfig,
-        HashMap<u32, String>,
-        HashMap<u32, String>,
-        RemoteOsKind,
-    )>,
+    current_sess: &mut Option<ActiveSftpSession>,
     last_net_sample: &mut Option<(u64, u64, Instant)>,
 ) {
     *current_sess = None;
@@ -305,9 +306,7 @@ fn connect_and_emit(
                 }
             };
 
-            let target = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
             let _ = event_tx.send(SftpEvent::Connected {
-                target,
                 initial_dir: valid_dir.clone(),
                 remote_os,
             });
@@ -348,14 +347,7 @@ fn run_sftp_worker(
     event_tx: Sender<SftpEvent>,
     cancel_flag: Arc<AtomicBool>,
 ) {
-    let mut current_sess: Option<(
-        ssh2::Session,
-        ssh2::Sftp,
-        SftpTargetConfig,
-        HashMap<u32, String>,
-        HashMap<u32, String>,
-        RemoteOsKind,
-    )> = None;
+    let mut current_sess: Option<ActiveSftpSession> = None;
     let mut last_net_sample: Option<(u64, u64, Instant)> = None;
 
     while let Ok(cmd) = cmd_rx.recv() {
@@ -372,16 +364,14 @@ fn run_sftp_worker(
                     false
                 };
 
-                if is_alive {
-                    if let Some((_, _, _, _, _, active_os)) = current_sess {
+                if is_alive
+                    && let Some((_, _, _, _, _, active_os)) = current_sess {
                         let _ = event_tx.send(SftpEvent::Connected {
-                            target: format!("{}@{}:{}", cfg.user, cfg.host, cfg.port),
                             initial_dir: if cfg.user == "root" { "/root".into() } else { format!("/home/{}", cfg.user) },
                             remote_os: active_os,
                         });
                         continue;
                     }
-                }
 
                 connect_and_emit(&cfg, &event_tx, &mut current_sess, &mut last_net_sample);
             }
@@ -435,15 +425,14 @@ fn run_sftp_worker(
                     const MAX_EDITOR_BYTES: u64 = 2 * 1024 * 1024;
                     let p = Path::new(&clean_remote);
                     let file_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| clean_remote.clone());
-                    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                        if crate::editor::syntax::is_known_binary_extension(ext) {
+                    if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                        && crate::editor::syntax::is_known_binary_extension(ext) {
                             let _ = event_tx.send(SftpEvent::OperationError(format!(
                                 "⚠️ Cannot open binary/compressed file \"{}\". Quick Editor only supports text and code files.",
                                 file_name
                             )));
                             continue;
                         }
-                    }
                     let mut file_read_done = false;
                     if let Ok(stat) = sftp.stat(p) {
                         if stat.is_dir() {
@@ -459,8 +448,8 @@ fn run_sftp_worker(
                     }
                     if let Ok(file) = sftp.open(p) {
                         let mut buf = Vec::new();
-                        if let Ok(_) = file.take(MAX_EDITOR_BYTES + 1).read_to_end(&mut buf) {
-                            if buf.len() as u64 <= MAX_EDITOR_BYTES {
+                        if let Ok(_) = file.take(MAX_EDITOR_BYTES + 1).read_to_end(&mut buf)
+                            && buf.len() as u64 <= MAX_EDITOR_BYTES {
                                 if crate::editor::syntax::is_binary_buffer(&buf) {
                                     let _ = event_tx.send(SftpEvent::OperationError(format!(
                                         "⚠️ Cannot open binary file \"{}\". Quick Editor only supports text and code files.",
@@ -484,7 +473,6 @@ fn run_sftp_worker(
                                 });
                                 file_read_done = true;
                             }
-                        }
                     }
                     if !file_read_done {
                         if cfg.sudo_mode {
@@ -501,7 +489,7 @@ fn run_sftp_worker(
                                 }
                             }
                         } else {
-                            let _ = event_tx.send(SftpEvent::OperationError(format!("Cannot open remote file: Permission denied or I/O error")));
+                            let _ = event_tx.send(SftpEvent::OperationError("Cannot open remote file: Permission denied or I/O error".to_string()));
                         }
                     }
                 }
@@ -511,24 +499,23 @@ fn run_sftp_worker(
                 let clean_remote = remote_path.replace('\\', "/");
                 if let Some((ref sess, ref sftp, ref cfg, ..)) = current_sess {
                     let mut write_success = false;
-                    if let Ok(mut file) = sftp.create(Path::new(&clean_remote)) {
-                        if file.write_all(content.as_bytes()).is_ok() {
+                    if let Ok(mut file) = sftp.create(Path::new(&clean_remote))
+                        && file.write_all(content.as_bytes()).is_ok() {
                             write_success = true;
-                            let _ = event_tx.send(SftpEvent::FileWritten { path: clean_remote.clone() });
+                            let _ = event_tx.send(SftpEvent::FileWritten);
                         }
-                    }
                     if !write_success {
                         if cfg.sudo_mode {
                             match write_sudo_file_base64(sess, &clean_remote, &content, cfg.sudo_password.as_deref().or(cfg.password.as_deref())) {
                                 Ok(_) => {
-                                    let _ = event_tx.send(SftpEvent::FileWritten { path: clean_remote });
+                                    let _ = event_tx.send(SftpEvent::FileWritten);
                                 }
                                 Err(e) => {
                                     let _ = event_tx.send(SftpEvent::OperationError(format!("Write remote file failed (sudo): {}", e)));
                                 }
                             }
                         } else {
-                            let _ = event_tx.send(SftpEvent::OperationError(format!("Create/write remote file failed: Permission denied")));
+                            let _ = event_tx.send(SftpEvent::OperationError("Create/write remote file failed: Permission denied".to_string()));
                         }
                     }
                 }
@@ -994,22 +981,13 @@ fn run_sftp_worker(
                 }
             }
 
-            SftpCommand::GetDiskUsage(dir_path) => {
-                if let Some((ref sess, ..)) = current_sess {
-                    if let Ok((used, total, pct)) = fetch_remote_disk(sess, &dir_path) {
-                        let _ = event_tx.send(SftpEvent::DiskUsage { used, total, pct });
-                    }
-                }
-            }
-
             SftpCommand::FetchTelemetry => {
-                if let Some((ref sess, ..)) = current_sess {
-                    if let Ok(raw) = execute_remote_cmd(sess, crate::telemetry::TELEMETRY_PROBE_CMD) {
+                if let Some((ref sess, ..)) = current_sess
+                    && let Ok(raw) = execute_remote_cmd(sess, crate::telemetry::TELEMETRY_PROBE_CMD) {
                         let (metrics, next_sample) = crate::telemetry::parse_remote_telemetry_output(&raw, last_net_sample);
                         last_net_sample = next_sample;
                         let _ = event_tx.send(SftpEvent::Telemetry(metrics));
                     }
-                }
             }
 
             SftpCommand::SetSudoMode { enabled, password } => {
@@ -1045,21 +1023,39 @@ fn upload_dir_recursive(
     let mut all_files = Vec::new();
     let mut total_bytes = 0u64;
 
-    for entry in walkdir::WalkDir::new(local_dir).into_iter().filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if let Ok(rel) = p.strip_prefix(local_dir) {
+    fn collect_dir_entries(
+        base: &Path,
+        dir: &Path,
+        all_dirs: &mut Vec<PathBuf>,
+        all_files: &mut Vec<(PathBuf, PathBuf, u64)>,
+        total_bytes: &mut u64,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let Ok(rel) = p.strip_prefix(base).map(|r| r.to_path_buf()) else {
+                continue;
+            };
             if rel.as_os_str().is_empty() {
                 continue;
             }
-            if p.is_dir() {
-                all_dirs.push(rel.to_path_buf());
-            } else if p.is_file() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                all_dirs.push(rel);
+                collect_dir_entries(base, &p, all_dirs, all_files, total_bytes);
+            } else if ft.is_file() {
                 let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                total_bytes += len;
-                all_files.push((p.to_path_buf(), rel.to_path_buf(), len));
+                *total_bytes += len;
+                all_files.push((p, rel, len));
             }
         }
     }
+
+    collect_dir_entries(local_dir, local_dir, &mut all_dirs, &mut all_files, &mut total_bytes);
 
     let _ = sftp.mkdir(Path::new(remote_base), 0o755);
     for d in &all_dirs {
@@ -1254,7 +1250,7 @@ pub fn get_local_available_space(_path: &Path) -> Result<u64, String> {
         if ret == 0 {
             let stat = unsafe { stat.assume_init() };
             // f_bavail is free blocks available to unprivileged users
-            let avail = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+            let avail = stat.f_bavail.saturating_mul(stat.f_frsize);
             return Ok(avail);
         }
     }
@@ -1268,11 +1264,10 @@ pub fn expand_tilde_path(raw: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             return home;
         }
-    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-        if let Some(home) = dirs::home_dir() {
+    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\"))
+        && let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
-    }
     PathBuf::from(trimmed)
 }
 
@@ -1358,40 +1353,34 @@ fn connect_sftp(cfg: &SftpTargetConfig) -> Result<(ssh2::Session, ssh2::Sftp), S
     // 1. Try explicit public key if provided (supporting `~/` expansion)
     if let Some(ref key_path) = cfg.key_path {
         let p = expand_tilde_path(key_path);
-        if p.exists() {
-            if sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
+        if p.exists()
+            && sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
                 authenticated = true;
             }
-        }
     }
 
     // 2. Try password
-    if !authenticated {
-        if let Some(ref pwd) = cfg.password {
-            if !pwd.trim().is_empty() {
-                if sess.userauth_password(&cfg.user, pwd).is_ok() && sess.authenticated() {
+    if !authenticated
+        && let Some(ref pwd) = cfg.password
+            && !pwd.trim().is_empty()
+                && sess.userauth_password(&cfg.user, pwd).is_ok() && sess.authenticated() {
                     authenticated = true;
                 }
-            }
-        }
-    }
 
     // 3. Fallback: try SSH agent
-    if !authenticated {
-        if sess.userauth_agent(&cfg.user).is_ok() && sess.authenticated() {
+    if !authenticated
+        && sess.userauth_agent(&cfg.user).is_ok() && sess.authenticated() {
             authenticated = true;
         }
-    }
 
     // 4. Fallback: try default OpenSSH keys (~/.ssh/id_ed25519, id_ecdsa, id_rsa, id_dsa)
     if !authenticated {
         for p in candidate_ssh_key_paths(cfg.key_path.as_deref()) {
-            if p.exists() {
-                if sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
+            if p.exists()
+                && sess.userauth_pubkey_file(&cfg.user, None, &p, None).is_ok() && sess.authenticated() {
                     authenticated = true;
                     break;
                 }
-            }
         }
     }
 
@@ -1548,8 +1537,8 @@ fn read_sftp_dir(
         }
     }
 
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|a| a.name.to_lowercase());
+    files.sort_by_key(|a| a.name.to_lowercase());
 
     dirs.extend(files);
     Ok(dirs)
@@ -1586,8 +1575,8 @@ fn fetch_remote_disk(sess: &ssh2::Session, dir_path: &str) -> Result<(u64, u64, 
 
     // Parse df output: Filesystem 1K-blocks Used Available Use% Mounted
     let parts: Vec<&str> = out.split_whitespace().collect();
-    if parts.len() >= 5 {
-        if let (Ok(total_k), Ok(used_k)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
+    if parts.len() >= 5
+        && let (Ok(total_k), Ok(used_k)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
             let total = total_k * 1024;
             let used = used_k * 1024;
             let pct = if total > 0 {
@@ -1597,7 +1586,6 @@ fn fetch_remote_disk(sess: &ssh2::Session, dir_path: &str) -> Result<(u64, u64, 
             };
             return Ok((used, total, pct));
         }
-    }
 
     Ok((8_589_934_592, 107_374_182_400, 8.0))
 }
@@ -1653,13 +1641,11 @@ fn read_sudo_file_base64(
     const MAX_EDITOR_BYTES: u64 = 2 * 1024 * 1024;
     // Check file size first via stat
     let stat_cmd = format!("stat -c %s '{}' 2>/dev/null", remote_path.replace('\'', "'\\''"));
-    if let Ok(size_str) = execute_sudo_cmd(sess, &stat_cmd, sudo_password) {
-        if let Ok(sz) = size_str.trim().parse::<u64>() {
-            if sz > MAX_EDITOR_BYTES {
+    if let Ok(size_str) = execute_sudo_cmd(sess, &stat_cmd, sudo_password)
+        && let Ok(sz) = size_str.trim().parse::<u64>()
+            && sz > MAX_EDITOR_BYTES {
                 return Err("File is too large for Quick Editor (> 2 MB).".into());
             }
-        }
-    }
 
     let read_cmd = format!("base64 -w 0 '{}' 2>/dev/null || base64 '{}'", remote_path.replace('\'', "'\\''"), remote_path.replace('\'', "'\\''"));
     let b64_out = execute_sudo_cmd(sess, &read_cmd, sudo_password)?;
@@ -1768,8 +1754,8 @@ pub fn read_sudo_dir(
         }
     }
 
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|a| a.name.to_lowercase());
+    files.sort_by_key(|a| a.name.to_lowercase());
     dirs.extend(files);
     Ok(dirs)
 }

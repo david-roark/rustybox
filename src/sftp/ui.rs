@@ -78,18 +78,17 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
         let mut clicked_tool: Option<usize> = None;
 
-        for i in 0..num_btns {
+        for (i, &tooltip) in tooltips.iter().enumerate().take(num_btns) {
             let x0 = strip_rect.left() + i as f32 * (btn_w + gap);
             let r = Rect::from_min_size(pos2(x0, strip_rect.top()), vec2(btn_w, btn_h));
             let resp = ui.interact(r, ui.id().with(("sftp_tool_btn", i)), Sense::click());
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            if i == 1 && resp.secondary_clicked() {
-                if let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
+            if i == 1 && resp.secondary_clicked()
+                && let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
                     explorer.upload_folder(folder);
                 }
-            }
 
             let is_active_toggle = i == 8 && explorer.show_hidden;
             let bg = if is_active_toggle {
@@ -100,11 +99,11 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 Color32::from_rgb(33, 38, 45)
             };
             let border = if is_active_toggle {
-                Stroke::new(1.2, Color32::from_rgb(56, 189, 248))
+                Stroke::new(1.2_f32, Color32::from_rgb(56, 189, 248))
             } else if resp.hovered() {
-                Stroke::new(1.0, Color32::from_rgb(88, 166, 255))
+                Stroke::new(1.0_f32, Color32::from_rgb(88, 166, 255))
             } else {
-                Stroke::new(1.0, Color32::from_rgb(48, 54, 61))
+                Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61))
             };
 
             let p = ui.painter();
@@ -115,50 +114,50 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 0 => {
                     // Up folder (Golden folder + green up arrow)
                     draw_mini_folder(p, c, Color32::from_rgb(245, 158, 11));
-                    let s = Stroke::new(1.6, Color32::from_rgb(52, 211, 153));
+                    let s = Stroke::new(1.6_f32, Color32::from_rgb(52, 211, 153));
                     p.line_segment([pos2(c.x, c.y + 3.0), pos2(c.x, c.y - 2.5)], s);
                     p.line_segment([pos2(c.x - 2.5, c.y), pos2(c.x, c.y - 2.5)], s);
                     p.line_segment([pos2(c.x + 2.5, c.y), pos2(c.x, c.y - 2.5)], s);
                 }
                 1 => {
                     // Upload (Green upward arrow)
-                    let s = Stroke::new(1.8, Color32::from_rgb(63, 185, 80));
+                    let s = Stroke::new(1.8_f32, Color32::from_rgb(63, 185, 80));
                     p.line_segment([pos2(c.x, c.y + 3.5), pos2(c.x, c.y - 4.0)], s);
                     p.line_segment([pos2(c.x - 3.5, c.y - 0.5), pos2(c.x, c.y - 4.0)], s);
                     p.line_segment([pos2(c.x + 3.5, c.y - 0.5), pos2(c.x, c.y - 4.0)], s);
                     p.line_segment(
                         [pos2(c.x - 4.5, c.y + 5.0), pos2(c.x + 4.5, c.y + 5.0)],
-                        Stroke::new(1.4, Color32::from_rgb(139, 148, 158)),
+                        Stroke::new(1.4_f32, Color32::from_rgb(139, 148, 158)),
                     );
                 }
                 2 => {
                     // Download (Blue downward arrow)
-                    let s = Stroke::new(1.8, Color32::from_rgb(56, 189, 248));
+                    let s = Stroke::new(1.8_f32, Color32::from_rgb(56, 189, 248));
                     p.line_segment([pos2(c.x, c.y - 4.0), pos2(c.x, c.y + 3.5)], s);
                     p.line_segment([pos2(c.x - 3.5, c.y), pos2(c.x, c.y + 3.5)], s);
                     p.line_segment([pos2(c.x + 3.5, c.y), pos2(c.x, c.y + 3.5)], s);
                     p.line_segment(
                         [pos2(c.x - 4.5, c.y + 5.0), pos2(c.x + 4.5, c.y + 5.0)],
-                        Stroke::new(1.4, Color32::from_rgb(139, 148, 158)),
+                        Stroke::new(1.4_f32, Color32::from_rgb(139, 148, 158)),
                     );
                 }
                 3 => {
                     // Refresh (Cyan circular arc + arrowheads)
                     let col = Color32::from_rgb(88, 166, 255);
-                    p.circle_stroke(c, 4.5, Stroke::new(1.5, col));
+                    p.circle_stroke(c, 4.5, Stroke::new(1.5_f32, col));
                     p.line_segment(
                         [pos2(c.x + 2.5, c.y - 4.5), pos2(c.x + 5.2, c.y - 4.5)],
-                        Stroke::new(1.5, col),
+                        Stroke::new(1.5_f32, col),
                     );
                     p.line_segment(
                         [pos2(c.x + 4.5, c.y - 4.5), pos2(c.x + 4.5, c.y - 1.8)],
-                        Stroke::new(1.5, col),
+                        Stroke::new(1.5_f32, col),
                     );
                 }
                 4 => {
                     // New Folder (Folder + green plus)
                     draw_mini_folder(p, pos2(c.x - 1.0, c.y), Color32::from_rgb(251, 191, 36));
-                    let ps = Stroke::new(1.6, Color32::from_rgb(63, 185, 80));
+                    let ps = Stroke::new(1.6_f32, Color32::from_rgb(63, 185, 80));
                     p.line_segment([pos2(c.x + 2.0, c.y + 1.5), pos2(c.x + 6.0, c.y + 1.5)], ps);
                     p.line_segment([pos2(c.x + 4.0, c.y - 0.5), pos2(c.x + 4.0, c.y + 3.5)], ps);
                 }
@@ -171,13 +170,13 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         Color32::from_rgb(209, 217, 224),
                         Stroke::NONE,
                     );
-                    let ps = Stroke::new(1.6, Color32::from_rgb(31, 111, 235));
+                    let ps = Stroke::new(1.6_f32, Color32::from_rgb(31, 111, 235));
                     p.line_segment([pos2(c.x - 2.8, c.y), pos2(c.x + 1.8, c.y)], ps);
                     p.line_segment([pos2(c.x - 0.5, c.y - 2.3), pos2(c.x - 0.5, c.y + 2.3)], ps);
                 }
                 6 => {
                     // Delete (Red X)
-                    let s = Stroke::new(2.0, Color32::from_rgb(248, 81, 73));
+                    let s = Stroke::new(2.0_f32, Color32::from_rgb(248, 81, 73));
                     p.line_segment([pos2(c.x - 3.8, c.y - 3.8), pos2(c.x + 3.8, c.y + 3.8)], s);
                     p.line_segment([pos2(c.x + 3.8, c.y - 3.8), pos2(c.x - 3.8, c.y + 3.8)], s);
                 }
@@ -188,9 +187,9 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         doc,
                         Rounding::same(1.2),
                         Color32::from_rgb(33, 38, 45),
-                        Stroke::new(1.2, Color32::from_rgb(165, 180, 252)),
+                        Stroke::new(1.2_f32, Color32::from_rgb(165, 180, 252)),
                     );
-                    let ls = Stroke::new(1.2, Color32::from_rgb(165, 180, 252));
+                    let ls = Stroke::new(1.2_f32, Color32::from_rgb(165, 180, 252));
                     p.line_segment([pos2(c.x - 2.5, c.y - 2.5), pos2(c.x + 2.5, c.y - 2.5)], ls);
                     p.line_segment([pos2(c.x - 2.5, c.y), pos2(c.x + 2.5, c.y)], ls);
                     p.line_segment([pos2(c.x - 2.5, c.y + 2.5), pos2(c.x + 1.0, c.y + 2.5)], ls);
@@ -223,12 +222,12 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     p.circle_stroke(
                         pos2(c.x, c.y - 2.0),
                         2.6,
-                        Stroke::new(1.4, Color32::from_rgb(251, 191, 36)),
+                        Stroke::new(1.4_f32, Color32::from_rgb(251, 191, 36)),
                     );
                 }
             }
 
-            if resp.on_hover_text(tooltips[i]).clicked() {
+            if resp.on_hover_text(tooltip).clicked() {
                 clicked_tool = Some(i);
             }
         }
@@ -245,8 +244,8 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 }
                 2 => {
                     let selected_paths = explorer.get_selected_paths();
-                    if !selected_paths.is_empty() {
-                        if let Some(dest_dir) = rfd::FileDialog::new().set_title("Select Destination Folder").pick_folder() {
+                    if !selected_paths.is_empty()
+                        && let Some(dest_dir) = rfd::FileDialog::new().set_title("Select Destination Folder").pick_folder() {
                             for path in selected_paths {
                                 let file_name = path
                                     .file_name()
@@ -255,7 +254,6 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                 explorer.download_file(&path, dest_dir.join(file_name));
                             }
                         }
-                    }
                 }
                 3 => explorer.refresh(),
                 4 => {
@@ -277,11 +275,10 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     }
                 }
                 7 => {
-                    if explorer.can_edit_selected() {
-                        if let Some(selected) = explorer.selected_file.clone() {
+                    if explorer.can_edit_selected()
+                        && let Some(selected) = explorer.selected_file.clone() {
                             explorer.open_editor(selected);
                         }
-                    }
                 }
                 8 => {
                     explorer.toggle_show_hidden();
@@ -326,7 +323,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
             } else {
                 Color32::from_rgb(33, 38, 45)
             };
-            p.rect(star_rect, Rounding::same(4.0), bg, Stroke::new(1.0, Color32::from_rgb(48, 54, 61)));
+            p.rect(star_rect, Rounding::same(4.0), bg, Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)));
             let star_color = if is_current_bookmarked {
                 Color32::from_rgb(250, 204, 21) // Gold
             } else {
@@ -384,10 +381,10 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 } else {
                     Color32::from_rgb(33, 38, 45)
                 },
-                Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)),
             );
             let dc = drop_rect.center();
-            let cs = Stroke::new(1.6, Color32::from_rgb(201, 209, 217));
+            let cs = Stroke::new(1.6_f32, Color32::from_rgb(201, 209, 217));
             p.line_segment([pos2(dc.x - 3.5, dc.y - 1.5), pos2(dc.x, dc.y + 2.0)], cs);
             p.line_segment([pos2(dc.x, dc.y + 2.0), pos2(dc.x + 3.5, dc.y - 1.5)], cs);
         }
@@ -466,11 +463,10 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         }
                     }
                 } else {
-                    if let Some(home) = dirs::home_dir() {
-                        if ui.button(format!("Home ({})", home.display())).clicked() {
+                    if let Some(home) = dirs::home_dir()
+                        && ui.button(format!("Home ({})", home.display())).clicked() {
                             jump_to = Some(home);
                         }
-                    }
                     #[cfg(windows)]
                     {
                         if ui.button("C:\\").clicked() {
@@ -523,23 +519,23 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 scr,
                 Rounding::same(2.0),
                 Color32::from_rgb(18, 22, 28),
-                Stroke::new(1.0, Color32::from_rgb(75, 85, 99)),
+                Stroke::new(1.0_f32, Color32::from_rgb(75, 85, 99)),
             );
             // Monitor stand
             p.line_segment(
                 [pos2(scr.center().x, scr.bottom()), pos2(scr.center().x, scr.bottom() + 2.0)],
-                Stroke::new(1.2, Color32::from_rgb(107, 114, 128)),
+                Stroke::new(1.2_f32, Color32::from_rgb(107, 114, 128)),
             );
             p.line_segment(
                 [pos2(scr.center().x - 3.5, scr.bottom() + 2.0), pos2(scr.center().x + 3.5, scr.bottom() + 2.0)],
-                Stroke::new(1.2, Color32::from_rgb(107, 114, 128)),
+                Stroke::new(1.2_f32, Color32::from_rgb(107, 114, 128)),
             );
             // Green pulse line
             let cy = scr.center().y;
             let lx = scr.left() + 2.0;
             let rx = scr.right() - 2.0;
             let mx = scr.center().x;
-            let s_pulse = Stroke::new(1.1, Color32::from_rgb(52, 211, 153));
+            let s_pulse = Stroke::new(1.1_f32, Color32::from_rgb(52, 211, 153));
             p.line_segment([pos2(lx, cy), pos2(mx - 3.0, cy)], s_pulse);
             p.line_segment([pos2(mx - 3.0, cy), pos2(mx - 1.5, cy - 2.5)], s_pulse);
             p.line_segment([pos2(mx - 1.5, cy - 2.5), pos2(mx + 0.5, cy + 2.5)], s_pulse);
@@ -579,7 +575,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 disk_r,
                 Rounding::same(3.0),
                 Color32::from_rgb(13, 17, 23),
-                Stroke::new(1.0, Color32::from_rgb(40, 46, 56)),
+                Stroke::new(1.0_f32, Color32::from_rgb(40, 46, 56)),
             );
             let fill_w = ((used_pct / 100.0).clamp(0.0, 1.0) * (disk_r.width() - 2.0)).max(2.0);
             p.rect_filled(
@@ -604,7 +600,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
         if let Some(ref prog) = explorer.transfer_progress.clone() {
             egui::Frame::none()
                 .fill(Color32::from_rgb(22, 27, 34))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(56, 189, 248)))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)))
                 .rounding(Rounding::same(5.0))
                 .inner_margin(Margin::symmetric(6.0, 5.0))
                 .show(ui, |ui| {
@@ -651,8 +647,8 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
         }
 
         let mut error_reconnect = false;
-        if !explorer.is_loading {
-            if let Some(ref err) = explorer.error_message {
+        if !explorer.is_loading
+            && let Some(ref err) = explorer.error_message {
                 let is_disconnect = explorer.is_confirmed_disconnected();
                 // Only show top error line if entries is not empty or error is not a disconnect
                 if !explorer.entries.is_empty() || !is_disconnect {
@@ -660,15 +656,13 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         let display_err = if is_disconnect { "⚠️ SFTP disconnected" } else { err.as_str() };
                         ui.colored_label(Color32::from_rgb(248, 81, 73), RichText::new(display_err).size(11.0))
                             .on_hover_text(err);
-                        if is_disconnect {
-                            if ui.add_sized([80.0, 19.0], egui::Button::new(RichText::new("🔄 Reconnect").size(10.5).color(Color32::from_rgb(88, 166, 255)))).clicked() {
+                        if is_disconnect
+                            && ui.add_sized([80.0, 19.0], egui::Button::new(RichText::new("🔄 Reconnect").size(10.5).color(Color32::from_rgb(88, 166, 255)))).clicked() {
                                 error_reconnect = true;
                             }
-                        }
                     });
                 }
             }
-        }
         if error_reconnect {
             explorer.refresh();
         }
@@ -681,7 +675,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
         let table_frame_resp = egui::Frame::none()
             .fill(Color32::from_rgb(13, 17, 23))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(40, 46, 56)))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(40, 46, 56)))
             .rounding(Rounding::same(6.0))
             .inner_margin(Margin::same(1.0))
             .show(ui, |ui| {
@@ -757,7 +751,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         );
                         p.line_segment(
                             [pos2(hdr_rect.left(), hdr_rect.bottom()), pos2(hdr_rect.right(), hdr_rect.bottom())],
-                            Stroke::new(1.0, Color32::from_rgb(48, 54, 61)),
+                            Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)),
                         );
 
                         // Header Column Rectangles
@@ -793,7 +787,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             };
                             p.line_segment(
                                 [pos2(div_x, hdr_rect.top() + 3.0), pos2(div_x, hdr_rect.bottom() - 3.0)],
-                                Stroke::new(1.0, stroke_col),
+                                Stroke::new(1.0_f32, stroke_col),
                             );
                         }
 
@@ -947,7 +941,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
                                     let p = ui.painter();
                                     p.rect_filled(badge_rect, Rounding::same(13.0), Color32::from_rgb(22, 27, 34));
-                                    p.rect_stroke(badge_rect, Rounding::same(13.0), Stroke::new(1.0, Color32::from_rgb(56, 68, 77)));
+                                    p.rect_stroke(badge_rect, Rounding::same(13.0), Stroke::new(1.0_f32, Color32::from_rgb(56, 68, 77)));
 
                                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(badge_rect), |ui| {
                                         ui.horizontal_centered(|ui| {
@@ -976,7 +970,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                             row_rect,
                                             Rounding::same(3.0),
                                             Color32::from_rgba_unmultiplied(31, 111, 235, 55),
-                                            Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                            Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
                                         );
                                     } else if resp.hovered() {
                                         p.rect_filled(
@@ -1342,9 +1336,9 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
 
                 // Rubber-band (Marquee) drag multi-selection & Click selection state updates
                 if let Some(start_pos) = explorer.drag_select_start {
-                    if primary_down {
-                        if let Some(curr_pos) = pointer_pos {
-                            if start_pos.distance(curr_pos) > 4.0 {
+                    if primary_down
+                        && let Some(curr_pos) = pointer_pos
+                            && start_pos.distance(curr_pos) > 4.0 {
                                 let sel_rect = Rect::from_two_pos(start_pos, curr_pos);
                                 let fg = ui.ctx().layer_painter(egui::LayerId::new(
                                     egui::Order::Foreground,
@@ -1354,7 +1348,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                     sel_rect,
                                     Rounding::same(2.0),
                                     Color32::from_rgba_unmultiplied(56, 189, 248, 35),
-                                    Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                                    Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
                                 );
 
                                 let min_y = sel_rect.top();
@@ -1377,8 +1371,6 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                                     }
                                 }
                             }
-                        }
-                    }
                     if primary_released || !primary_down {
                         explorer.drag_select_start = None;
                     }
@@ -1456,8 +1448,8 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                         explorer.download_file(&target, dest);
                     }
                 }
-                if !context_download_many.is_empty() {
-                    if let Some(dest_dir) = rfd::FileDialog::new().set_title("Select Destination Folder").pick_folder() {
+                if !context_download_many.is_empty()
+                    && let Some(dest_dir) = rfd::FileDialog::new().set_title("Select Destination Folder").pick_folder() {
                         for path in context_download_many {
                             let name = path
                                 .file_name()
@@ -1466,7 +1458,6 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             explorer.download_file(&path, dest_dir.join(name));
                         }
                     }
-                }
                 if context_new_folder {
                     explorer.show_new_folder = true;
                     explorer.new_folder_name = "new_folder".to_string();
@@ -1478,18 +1469,16 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 if context_refresh {
                     explorer.refresh();
                 }
-                if context_upload {
-                    if let Some(files) = rfd::FileDialog::new().set_title("Select Files to Upload").pick_files() {
+                if context_upload
+                    && let Some(files) = rfd::FileDialog::new().set_title("Select Files to Upload").pick_files() {
                         for f in files {
                             explorer.upload_file(f);
                         }
                     }
-                }
-                if context_upload_folder {
-                    if let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
+                if context_upload_folder
+                    && let Some(folder) = rfd::FileDialog::new().set_title("Select Folder to Upload").pick_folder() {
                         explorer.upload_folder(folder);
                     }
-                }
                 if let Some(text) = context_copy_text {
                     crate::terminal::widget::copy_text_to_clipboard(ui, &text);
                     explorer.status_message = Some("Copied to clipboard".into());
@@ -1508,11 +1497,10 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 if let Some((target, mode)) = context_open_external {
                     explorer.open_external(&target, mode);
                 }
-                if let Some(target) = context_compare {
-                    if let Some(other) = rfd::FileDialog::new().set_title("Select file to compare with").pick_file() {
+                if let Some(target) = context_compare
+                    && let Some(other) = rfd::FileDialog::new().set_title("Select file to compare with").pick_file() {
                         explorer.open_compare(&target, other);
                     }
-                }
             });
 
         // 4. NATIVE OS DRAG-AND-DROP OVERLAY & HANDLER (Files & Folders from Windows Explorer / OS)
@@ -1527,7 +1515,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                 table_rect,
                 Rounding::same(6.0),
                 Color32::from_rgba_unmultiplied(15, 23, 42, 220),
-                Stroke::new(2.0, Color32::from_rgb(56, 189, 248)),
+                Stroke::new(2.0_f32, Color32::from_rgb(56, 189, 248)),
             );
 
             let center = table_rect.center();
@@ -1744,16 +1732,14 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                             ui.label(RichText::new("Permissions:").strong().color(Color32::from_rgb(139, 148, 158)));
                             ui.label(RichText::new(&entry.permissions).monospace());
                         });
-                        if let Some(mod_time) = entry.modified {
-                            if let Ok(dur) = mod_time.duration_since(std::time::UNIX_EPOCH) {
-                                if let Some(dt) = chrono::DateTime::from_timestamp(dur.as_secs() as i64, 0) {
+                        if let Some(mod_time) = entry.modified
+                            && let Ok(dur) = mod_time.duration_since(std::time::UNIX_EPOCH)
+                                && let Some(dt) = chrono::DateTime::from_timestamp(dur.as_secs() as i64, 0) {
                                     ui.horizontal(|ui| {
                                         ui.label(RichText::new("Modified:").strong().color(Color32::from_rgb(139, 148, 158)));
                                         ui.label(dt.format("%Y-%m-%d %H:%M:%S UTC").to_string());
                                     });
                                 }
-                            }
-                        }
                     });
                     ui.add_space(8.0);
                     if ui.button("✖ Close").clicked() {
@@ -1854,7 +1840,7 @@ pub fn render_sftp_sidebar(ui: &mut Ui, explorer: &mut FileExplorer) {
                     ui.add_space(6.0);
                     egui::Frame::none()
                         .fill(Color32::from_rgb(13, 17, 23))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                         .rounding(Rounding::same(4.0))
                         .inner_margin(Margin::symmetric(8.0, 6.0))
                         .show(ui, |ui| {
@@ -2158,9 +2144,9 @@ fn draw_mini_file(p: &egui::Painter, center: egui::Pos2, color: Color32) {
         doc,
         Rounding::same(1.4),
         Color32::from_rgb(33, 38, 45),
-        Stroke::new(1.1, color),
+        Stroke::new(1.1_f32, color),
     );
-    let ls = Stroke::new(1.0, color);
+    let ls = Stroke::new(1.0_f32, color);
     p.line_segment(
         [pos2(center.x - 2.4, center.y - 2.0), pos2(center.x + 2.4, center.y - 2.0)],
         ls,

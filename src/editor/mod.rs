@@ -207,15 +207,13 @@ impl Editor {
                 ui.horizontal(|ui| {
                     if (ui.button("💾 Save (Ctrl+S)").clicked() || trigger_save)
                         && self.file_path.is_some()
-                    {
-                        if let Some(ref path) = self.file_path {
+                        && let Some(ref path) = self.file_path {
                             action = EditorAction::Save {
                                 path: path.clone(),
                                 content: self.content.clone(),
                                 remote_label: self.remote_label.clone(),
                             };
                         }
-                    }
 
                     if ui.button("🔍 Find (Ctrl+F)").clicked() {
                         self.show_search = !self.show_search;

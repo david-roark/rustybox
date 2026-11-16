@@ -1,16 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-mod editor;
-mod network_tools;
-mod session;
-mod sftp;
-mod terminal;
-mod tunneling;
-mod snippets;
-mod telemetry;
-
-use app::RustyBoxApp;
+use rust_remote_toolbox::app::RustyBoxApp;
 use eframe::egui::ViewportBuilder;
 
 #[cfg(target_os = "linux")]

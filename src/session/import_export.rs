@@ -18,11 +18,10 @@ pub fn default_ssh_config_path() -> Option<PathBuf> {
 /// Expands leading `~/` or `~\` to the user's home directory.
 fn expand_tilde_path(raw: &str) -> String {
     let clean = raw.trim().trim_matches('"').trim_matches('\'');
-    if let Some(rest) = clean.strip_prefix("~/").or_else(|| clean.strip_prefix("~\\")) {
-        if let Some(home) = dirs::home_dir() {
+    if let Some(rest) = clean.strip_prefix("~/").or_else(|| clean.strip_prefix("~\\"))
+        && let Some(home) = dirs::home_dir() {
             return home.join(rest).to_string_lossy().to_string();
         }
-    }
     clean.to_string()
 }
 
@@ -34,11 +33,10 @@ pub fn looks_like_openssh_config(content: &str) -> bool {
             continue;
         }
         let mut parts = trimmed.splitn(2, |c: char| c.is_whitespace() || c == '=');
-        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
-            if key.eq_ignore_ascii_case("Host") && !val.trim().is_empty() && !val.contains('@') {
+        if let (Some(key), Some(val)) = (parts.next(), parts.next())
+            && key.eq_ignore_ascii_case("Host") && !val.trim().is_empty() && !val.contains('@') {
                 return true;
             }
-        }
     }
     false
 }
@@ -123,11 +121,10 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
                 target.user = Some(val.trim_matches('"').to_string());
             }
         } else if key.eq_ignore_ascii_case("Port") {
-            if target.port.is_none() {
-                if let Ok(p) = val.parse::<u16>() {
+            if target.port.is_none()
+                && let Ok(p) = val.parse::<u16>() {
                     target.port = Some(p);
                 }
-            }
         } else if key.eq_ignore_ascii_case("IdentityFile") {
             if target.identity_file.is_none() {
                 target.identity_file = Some(expand_tilde_path(val));
@@ -140,11 +137,10 @@ pub fn parse_openssh_config(content: &str, default_folder: &str) -> Vec<Session>
             if target.forward_x11.is_none() {
                 target.forward_x11 = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
             }
-        } else if key.eq_ignore_ascii_case("Compression") {
-            if target.compression.is_none() {
+        } else if key.eq_ignore_ascii_case("Compression")
+            && target.compression.is_none() {
                 target.compression = Some(val.eq_ignore_ascii_case("yes") || val.eq_ignore_ascii_case("true"));
             }
-        }
     }
 
     if let Some(last) = current.take() {
@@ -269,8 +265,7 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
         if line.starts_with('[') && line.ends_with(']') {
             continue;
         }
-        if line.starts_with("SubRep=") {
-            let folder_part = &line["SubRep=".len()..];
+        if let Some(folder_part) = line.strip_prefix("SubRep=") {
             if !folder_part.trim().is_empty() {
                 current_folder = folder_part.trim().to_string();
             }
@@ -300,7 +295,7 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
                 let tokens: Vec<&str> = if session_body.matches('#').count() >= 4 {
                     session_body.split('#').collect()
                 } else {
-                    session_body.split(|c| c == '#' || c == '%').collect()
+                    session_body.split(['#', '%']).collect()
                 };
                 // Typically: type_id (e.g. 109=SSH, 91=RDP), opt/sub_type, host, port, user...
                 if tokens.len() >= 5 {
@@ -374,8 +369,7 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
                     let prefix = &user_part[..colon_pos];
                     username = &user_part[colon_pos + 1..];
 
-                    if prefix.starts_with("ssh") {
-                        let num_part = &prefix[3..];
+                    if let Some(num_part) = prefix.strip_prefix("ssh") {
                         if let Ok(p) = num_part.parse::<u16>() {
                             port = p;
                         }
@@ -413,7 +407,7 @@ pub fn parse_sessions_from_text(content: &str, default_folder: &str) -> Vec<Sess
                             created_at: chrono::Local::now().to_rfc3339(),
                             password: if password.is_empty() { None } else { Some(password.to_string()) },
                             save_password: !password.is_empty(),
-                            ..Session::new_local(&host, &current_folder)
+                            ..Session::new_local(host, &current_folder)
                         }
                     } else {
                         let mut sess = Session::new_ssh(

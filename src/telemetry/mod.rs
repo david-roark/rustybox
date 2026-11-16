@@ -165,8 +165,8 @@ pub fn format_uptime_string(raw: &str) -> String {
     for part in without_up.split(',') {
         let p = part.trim();
         let tokens: Vec<&str> = p.split_whitespace().collect();
-        if tokens.len() >= 2 {
-            if let Ok(n) = tokens[0].parse::<u32>() {
+        if tokens.len() >= 2
+            && let Ok(n) = tokens[0].parse::<u32>() {
                 let unit = tokens[1].to_lowercase();
                 if unit.starts_with("day") {
                     days = n;
@@ -179,7 +179,6 @@ pub fn format_uptime_string(raw: &str) -> String {
                     has_parts = true;
                 }
             }
-        }
     }
 
     if has_parts {
@@ -258,32 +257,28 @@ pub fn parse_remote_telemetry_output(
 
         // 2. RAM Total and Available from /proc/meminfo
         if trimmed.starts_with("MemTotal:") {
-            if let Some(v) = trimmed.split_whitespace().nth(1) {
-                if let Ok(k) = v.parse::<u64>() {
+            if let Some(v) = trimmed.split_whitespace().nth(1)
+                && let Ok(k) = v.parse::<u64>() {
                     mem_total_k = Some(k);
                 }
-            }
             continue;
         }
         if trimmed.starts_with("MemAvailable:") {
-            if let Some(v) = trimmed.split_whitespace().nth(1) {
-                if let Ok(k) = v.parse::<u64>() {
+            if let Some(v) = trimmed.split_whitespace().nth(1)
+                && let Ok(k) = v.parse::<u64>() {
                     mem_avail_k = Some(k);
                 }
-            }
             continue;
         }
 
         // 3. Disk from df -k /
         if trimmed.contains('/') && trimmed.contains('%') {
             for token in trimmed.split_whitespace() {
-                if token.ends_with('%') {
-                    let num = &token[..token.len() - 1];
-                    if let Ok(pct) = num.parse::<u32>() {
+                if let Some(num) = token.strip_suffix('%')
+                    && let Ok(pct) = num.parse::<u32>() {
                         metrics.disk_pct = Some(pct.min(100));
                         break;
                     }
-                }
             }
             continue;
         }
@@ -297,20 +292,19 @@ pub fn parse_remote_telemetry_output(
                 && !iface.starts_with("veth")
             {
                 let fields: Vec<&str> = data.split_whitespace().collect();
-                if fields.len() >= 9 {
-                    if let (Ok(rx), Ok(tx)) = (fields[0].parse::<u64>(), fields[8].parse::<u64>()) {
+                if fields.len() >= 9
+                    && let (Ok(rx), Ok(tx)) = (fields[0].parse::<u64>(), fields[8].parse::<u64>()) {
                         total_rx += rx;
                         total_tx += tx;
                         found_net = true;
                     }
-                }
             }
         }
     }
 
     // Compute RAM metrics
-    if let Some(total_k) = mem_total_k {
-        if total_k > 0 {
+    if let Some(total_k) = mem_total_k
+        && total_k > 0 {
             let total_gb = total_k as f32 / 1024.0 / 1024.0;
             let avail_k = mem_avail_k.unwrap_or(0);
             let used_gb = (total_k.saturating_sub(avail_k)) as f32 / 1024.0 / 1024.0;
@@ -320,7 +314,6 @@ pub fn parse_remote_telemetry_output(
             metrics.ram_used_gb = Some((used_gb * 10.0).round() / 10.0);
             metrics.ram_pct = Some(pct.min(100));
         }
-    }
 
     // Compute Network speed delta
     let next_net = if found_net {
@@ -382,12 +375,11 @@ pub fn read_local_net_bytes() -> Option<(u64, u64)> {
                 continue;
             }
             let fields: Vec<&str> = data.split_whitespace().collect();
-            if fields.len() >= 9 {
-                if let (Ok(rx), Ok(tx)) = (fields[0].parse::<u64>(), fields[8].parse::<u64>()) {
+            if fields.len() >= 9
+                && let (Ok(rx), Ok(tx)) = (fields[0].parse::<u64>(), fields[8].parse::<u64>()) {
                     total_rx += rx;
                     total_tx += tx;
                 }
-            }
         }
     }
     Some((total_rx, total_tx))
@@ -514,16 +506,15 @@ pub fn collect_local_telemetry(
             }
         }
 
-        if let Ok(load) = std::fs::read_to_string("/proc/loadavg") {
-            if let Some(val) = load.split_whitespace().next().and_then(|v| v.parse::<f32>().ok()) {
+        if let Ok(load) = std::fs::read_to_string("/proc/loadavg")
+            && let Some(val) = load.split_whitespace().next().and_then(|v| v.parse::<f32>().ok()) {
                 let cores_cnt = cores_opt.unwrap_or(1) as f32;
                 let pct = ((val / cores_cnt) * 100.0).round() as u32;
                 local.cpu_pct = Some(pct.clamp(1, 99));
             }
-        }
 
-        if let Ok(up) = std::fs::read_to_string("/proc/uptime") {
-            if let Some(secs) = up.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+        if let Ok(up) = std::fs::read_to_string("/proc/uptime")
+            && let Some(secs) = up.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
                 let total_s = secs as u64;
                 local.uptime_secs = Some(total_s);
                 let days = total_s / 86400;
@@ -537,7 +528,6 @@ pub fn collect_local_telemetry(
                     local.uptime = Some(format!("Up: {} min{}", mins, if mins > 1 { "s" } else { "" }));
                 }
             }
-        }
         local.disk_pct = read_local_disk_pct();
 
         // Real Network Throughput calculation from /proc/net/dev
@@ -638,15 +628,17 @@ eth0: 1204800   150    0    0    0     0          0         0   909600    150   
         assert!(!telem.is_remote);
         assert!(telem.is_connected);
 
-        let mut metrics = RemoteSystemMetrics::default();
-        metrics.cores = Some(16);
-        metrics.cpu_pct = Some(12);
-        metrics.ram_used_gb = Some(8.5);
-        metrics.ram_total_gb = Some(32.0);
-        metrics.ram_pct = Some(27);
-        metrics.uptime = Some("Up: 5d 2h".into());
-        metrics.disk_pct = Some(42);
-        metrics.net_rate = Some("▲1.2M  ▼450K".into());
+        let metrics = RemoteSystemMetrics {
+            cores: Some(16),
+            cpu_pct: Some(12),
+            ram_used_gb: Some(8.5),
+            ram_total_gb: Some(32.0),
+            ram_pct: Some(27),
+            uptime: Some("Up: 5d 2h".into()),
+            disk_pct: Some(42),
+            net_rate: Some("▲1.2M  ▼450K".into()),
+            ..Default::default()
+        };
 
         let mut remote_telem = TabTelemetry {
             host: "srv-prod".into(),

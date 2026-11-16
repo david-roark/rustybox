@@ -121,9 +121,9 @@ fn test_stress_session_crud_100_cycles() {
     }
 
     // 100 cycles of updates and deletions
-    for i in 0..100 {
-        sessions[i].name = format!("Updated Name {}", i);
-        sessions[i].folder = format!("NewFolder/{}", i % 3);
+    for (i, session) in sessions.iter_mut().enumerate().take(100) {
+        session.name = format!("Updated Name {}", i);
+        session.folder = format!("NewFolder/{}", i % 3);
     }
     let res = storage.save_sessions(&sessions);
     assert!(res.is_ok());
@@ -224,7 +224,7 @@ fn test_stress_mobaxterm_import_parser_100_cases() {
             2 => format!("HostWithoutPort{} = admin@10.0.0.{}", i, i),
             3 => format!("[Bookmarks]\r\nSubRep=Folder{}\r\nServer{} = #109#0%host{}%22%user%%", i, i, i),
             4 => format!("Malformed line with no separators {} !@#$%^&*()", i),
-            _ => format!("Empty fields #109#0%%%%%%%"),
+            _ => "Empty fields #109#0%%%%%%%".to_string(),
         };
 
         // Parser should never panic on arbitrary inputs

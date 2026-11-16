@@ -106,6 +106,12 @@ pub struct NewSessionDialog {
     pub validation_error: Option<String>,
 }
 
+impl Default for NewSessionDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NewSessionDialog {
     pub fn new() -> Self {
         Self {
@@ -548,11 +554,11 @@ pub fn rusty_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egu
     } else {
         Color32::from_rgb(72, 79, 88)
     };
-    p.rect(box_rect, Rounding::same(3.0), bg, Stroke::new(1.2, border));
+    p.rect(box_rect, Rounding::same(3.0), bg, Stroke::new(1.2_f32, border));
 
     if *checked {
         let c = box_rect.center();
-        let ck = Stroke::new(1.8, Color32::WHITE);
+        let ck = Stroke::new(1.8_f32, Color32::WHITE);
         p.line_segment([pos2(c.x - 3.5, c.y + 0.2), pos2(c.x - 1.0, c.y + 2.8)], ck);
         p.line_segment([pos2(c.x - 1.0, c.y + 2.8), pos2(c.x + 3.8, c.y - 2.6)], ck);
     }
@@ -590,7 +596,7 @@ pub fn rusty_ok_cancel_buttons(
         )
         .min_size(vec2(btn_w, btn_h))
         .fill(Color32::from_rgb(35, 134, 54))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(63, 185, 80)));
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(63, 185, 80)));
 
         if ui.add(ok_btn).clicked() {
             ok_clicked = true;
@@ -606,36 +612,13 @@ pub fn rusty_ok_cancel_buttons(
         )
         .min_size(vec2(btn_w, btn_h))
         .fill(Color32::from_rgb(55, 65, 81))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(107, 114, 128)));
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(107, 114, 128)));
 
         if ui.add(cancel_btn).clicked() {
             cancel_clicked = true;
         }
     });
     (ok_clicked, cancel_clicked)
-}
-
-/// Centered single primary button for RustyBox dialogs with only one close/OK button
-pub fn rusty_close_button(ui: &mut egui::Ui, label: &str) -> bool {
-    let mut clicked = false;
-    ui.horizontal(|ui| {
-        let btn_w = 104.0;
-        let pad = ((ui.available_width() - btn_w) * 0.5).max(0.0);
-        ui.add_space(pad);
-        let btn = egui::Button::new(
-            RichText::new(label)
-                .size(12.5)
-                .strong()
-                .color(Color32::WHITE),
-        )
-        .min_size(vec2(btn_w, 29.0))
-        .fill(Color32::from_rgb(31, 111, 235))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(56, 189, 248)));
-        if ui.add(btn).clicked() {
-            clicked = true;
-        }
-    });
-    clicked
 }
 
 /// Draws a crisp vector icon for each of the 9 protocols in the top RustyBox protocol selector bar
@@ -645,9 +628,9 @@ fn paint_protocol_icon(p: &egui::Painter, center: egui::Pos2, label: &str, accen
         badge,
         Rounding::same(4.0),
         Color32::from_rgb(13, 17, 23),
-        Stroke::new(1.1, accent),
+        Stroke::new(1.1_f32, accent),
     );
-    let s = Stroke::new(1.5, accent);
+    let s = Stroke::new(1.5_f32, accent);
     let c = center;
 
     match label {
@@ -788,7 +771,7 @@ pub fn render_new_session_dialog(
             // 1. RUSTYBOX TOP PROTOCOL SELECTOR STRIP (9 Protocols with Vector Icons)
             egui::Frame::none()
                 .fill(Color32::from_rgb(15, 20, 30))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)))
                 .rounding(Rounding::same(8.0))
                 .inner_margin(Margin::symmetric(10.0, 8.0))
                 .show(ui, |ui| {
@@ -834,7 +817,7 @@ pub fn render_new_session_dialog(
                                     Color32::from_rgb(20, 26, 38)
                                 },
                                 Stroke::new(
-                                    if is_sel { 1.5 } else { 1.0 },
+                                    if is_sel { 1.5_f32 } else { 1.0_f32 },
                                     if is_sel {
                                         Color32::from_rgb(56, 189, 248)
                                     } else {
@@ -867,7 +850,7 @@ pub fn render_new_session_dialog(
                     // 2. RUSTYBOX BASIC SSH SETTINGS BOX (Spacious, Clear & High Contrast)
                     egui::Frame::none()
                         .fill(Color32::from_rgb(18, 24, 38))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)))
                         .rounding(Rounding::same(8.0))
                         .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
@@ -877,7 +860,7 @@ pub fn render_new_session_dialog(
                                 let (kr, _) = ui.allocate_exact_size(vec2(16.0, 14.0), Sense::hover());
                                 let kp = ui.painter();
                                 let kc = kr.center();
-                                let ks = Stroke::new(1.5, Color32::from_rgb(251, 191, 36));
+                                let ks = Stroke::new(1.5_f32, Color32::from_rgb(251, 191, 36));
                                 kp.circle_stroke(pos2(kc.x - 3.0, kc.y), 2.5, ks);
                                 kp.line_segment([pos2(kc.x - 0.5, kc.y), pos2(kc.x + 5.5, kc.y)], ks);
                                 kp.line_segment([pos2(kc.x + 3.0, kc.y), pos2(kc.x + 3.0, kc.y + 2.2)], ks);
@@ -1029,7 +1012,7 @@ pub fn render_new_session_dialog(
                                     Color32::from_rgb(22, 27, 34)
                                 },
                                 Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     if active {
                                         Color32::from_rgb(56, 189, 248)
                                     } else {
@@ -1039,7 +1022,7 @@ pub fn render_new_session_dialog(
                             );
                             // Mini vector icon on left of tab
                             let ic = pos2(tr.left() + 11.0, tr.center().y);
-                            let is = Stroke::new(1.4, icon_col);
+                            let is = Stroke::new(1.4_f32, icon_col);
                             match idx {
                                 0 => {
                                     tp.circle_stroke(pos2(ic.x - 2.0, ic.y), 2.2, is);
@@ -1080,7 +1063,7 @@ pub fn render_new_session_dialog(
 
                     egui::Frame::none()
                         .fill(Color32::from_rgb(13, 17, 23))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                         .rounding(Rounding::same(6.0))
                         .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
@@ -1158,12 +1141,10 @@ pub fn render_new_session_dialog(
                                                 egui::Button::new("Browse..."),
                                             )
                                             .clicked()
-                                        {
-                                            if let Some(file) = rfd::FileDialog::new().pick_file() {
+                                            && let Some(file) = rfd::FileDialog::new().pick_file() {
                                                 dialog.ssh_key_path =
                                                     file.to_string_lossy().to_string();
                                             }
-                                        }
                                     });
 
                                     ui.add_space(10.0);
@@ -1402,7 +1383,7 @@ pub fn render_new_session_dialog(
                     };
                     egui::Frame::none()
                         .fill(Color32::from_rgb(22, 27, 34))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                         .rounding(Rounding::same(6.0))
                         .inner_margin(Margin::symmetric(12.0, 9.0))
                         .show(ui, |ui| {
@@ -1568,7 +1549,7 @@ pub fn render_new_session_dialog(
                     });
                     egui::Frame::none()
                         .fill(Color32::from_rgb(13, 17, 23))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(48, 54, 61)))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(48, 54, 61)))
                         .rounding(Rounding::same(6.0))
                         .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {

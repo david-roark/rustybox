@@ -16,7 +16,6 @@ pub struct ScanResult {
 #[derive(Clone, Debug)]
 pub struct SubnetHostResult {
     pub ip: String,
-    pub is_alive: bool,
     pub latency_ms: Option<u64>,
     pub open_service: Option<&'static str>,
 }
@@ -68,6 +67,12 @@ pub struct NetworkTools {
     pub tftp_root: PathBuf,
     pub tftp_running: Arc<AtomicBool>,
     pub tftp_logs: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+impl Default for NetworkTools {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NetworkTools {
@@ -154,15 +159,14 @@ impl NetworkTools {
 
                 let target = format!("{}:{}", host, port);
                 let start = Instant::now();
-                let is_open = match tokio::time::timeout(
-                    Duration::from_millis(400),
-                    TcpStream::connect(&target),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => true,
-                    _ => false,
-                };
+                let is_open = matches!(
+                    tokio::time::timeout(
+                        Duration::from_millis(400),
+                        TcpStream::connect(&target),
+                    )
+                    .await,
+                    Ok(Ok(_))
+                );
                 let latency = if is_open {
                     Some(start.elapsed().as_millis() as u64)
                 } else {
@@ -229,7 +233,6 @@ impl NetworkTools {
                     let lat = start.elapsed().as_millis() as u64;
                     results.lock().push(SubnetHostResult {
                         ip,
-                        is_alive: true,
                         latency_ms: Some(lat),
                         open_service: resp_service,
                     });
@@ -388,8 +391,8 @@ impl NetworkTools {
                                     let logs_inner = Arc::clone(&logs);
                                     tokio::spawn(async move {
                                         let mut buf = [0u8; 4096];
-                                        if let Ok(n) = socket.read(&mut buf).await {
-                                            if n > 0 {
+                                        if let Ok(n) = socket.read(&mut buf).await
+                                            && n > 0 {
                                                 let req_str = String::from_utf8_lossy(&buf[..n]);
                                                 let first_line = req_str.lines().next().unwrap_or("");
                                                 let parts: Vec<&str> = first_line.split_whitespace().collect();
@@ -448,7 +451,6 @@ impl NetworkTools {
                                                     let _ = socket.write_all(response.as_bytes()).await;
                                                 }
                                             }
-                                        }
                                     });
                                 }
                             }
@@ -631,13 +633,12 @@ fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let Ok(val) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
                 result.push(val);
                 i += 3;
                 continue;
             }
-        }
         result.push(bytes[i]);
         i += 1;
     }
@@ -662,8 +663,6 @@ fn parse_proc_addr(hex_str: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_path_traversal_detection() {
         let base = std::env::temp_dir();
