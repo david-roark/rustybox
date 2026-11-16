@@ -2979,7 +2979,8 @@ mod tests {
     #[test]
     fn test_copy_on_select_configuration() {
         // Test default copy_on_select is true
-        let mut session = PtySession::spawn_local(24, 80, Some("/bin/sh"), None)
+        let test_shell = if cfg!(windows) { Some("cmd.exe") } else { Some("/bin/sh") };
+        let mut session = PtySession::spawn_local(24, 80, test_shell, None)
             .expect("Failed to spawn local PTY session");
         let widget = TerminalWidget::new("test_tab", &mut session);
         assert!(widget.copy_on_select, "Default copy_on_select must be true");

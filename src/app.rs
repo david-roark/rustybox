@@ -7468,10 +7468,11 @@ mod tests {
 
     #[test]
     fn test_open_tab_remembers_sftp_path() {
+        let test_shell = if cfg!(windows) { Some("cmd.exe") } else { Some("/bin/sh") };
         let mut tab = OpenTab {
             id: "test-tab-1".to_string(),
             title: "SSH: Web Server".to_string(),
-            session: PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap(),
+            session: PtySession::spawn_local(24, 80, test_shell, None).unwrap(),
             session_def: None,
             custom_cmd: None,
             workdir: Some("/home/ubuntu".to_string()),
@@ -7551,7 +7552,8 @@ mod tests {
     #[test]
     fn test_remote_tab_applies_metrics_cleanly() {
         let session_def = Session::new_ssh("My VPS", "Servers", "192.0.2.1", 22, "ubuntu");
-        let pty = PtySession::spawn_local(24, 80, Some("/bin/sh"), None).unwrap();
+        let test_shell = if cfg!(windows) { Some("cmd.exe") } else { Some("/bin/sh") };
+        let pty = PtySession::spawn_local(24, 80, test_shell, None).unwrap();
 
         let mut tab = OpenTab {
             id: "ssh-tab-1".to_string(),
