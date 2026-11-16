@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.4.3] - 2026-11-16
+### Changed
+- Merge PR #10: refresh the RustyBox logo and synchronize PNG, ICO and embedded RGBA assets.
+- Merge PR #11: remove stale backup code and unused dependencies, reuse the library from the binary entry point, narrow Tokio features and clean up compiler/Clippy warnings.
+- Merge PR #12: cache Rust dependencies, run Windows/Linux tests before release builds, make PTY tests platform-aware, enable symbol stripping and ThinLTO, and separate release permissions from build jobs.
+- Keep macOS GUI screenshots in Actions artifacts rather than public release downloads.
+### Known behavior
+- Recursive folder uploads skip symbolic links, including links to files. Regular files and real subdirectories are traversed; symlink targets are not copied. This behavior was reviewed and accepted for this merge.
+
 ## [v1.4.2] - 2026-11-13
 ### Fixed & Improved (Smooth Startup & Accurate SFTP Disconnect Detection)
 - **Sửa triệt để lỗi popup "⚠️ Disconnected · 🔄 Reconnect" tự động hiện khi đang loading**:

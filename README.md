@@ -19,10 +19,10 @@ Người dùng tải về là chạy trực tiếp được ngay (**Zero Install
 
 | Hệ điều hành | Tệp thực thi Portable | Dung lượng | Hướng dẫn sử dụng |
 | :--- | :--- | :--- | :--- |
-| **🪟 Windows 10 / 11 (x64)** | [**`RustyBox-windows-x64.exe`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.2/RustyBox-windows-x64.exe) | ~20 MB | Tải về nhấp đúp chạy ngay |
-| **🐧 Linux (Ubuntu / Debian / Fedora)** | [**`RustyBox-linux-x64`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.2/RustyBox-linux-x64) | ~18 MB | `chmod +x RustyBox-linux-x64 && ./RustyBox-linux-x64` |
-| **🍎 macOS Universal (Apple Silicon & Intel)** | [**`RustyBox-macos-universal`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.2/RustyBox-macos-universal) | ~33 MB | `chmod +x RustyBox-macos-universal && ./RustyBox-macos-universal` |
-| **🍎 macOS Apple Silicon (M1/M2/M3/M4)** | [**`RustyBox-macos-arm64`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.2/RustyBox-macos-arm64) | ~17 MB | `chmod +x RustyBox-macos-arm64 && ./RustyBox-macos-arm64` |
+| **🪟 Windows 10 / 11 (x64)** | [**`RustyBox-windows-x64.exe`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.3/RustyBox-windows-x64.exe) | ~20 MB | Tải về nhấp đúp chạy ngay |
+| **🐧 Linux (Ubuntu / Debian / Fedora)** | [**`RustyBox-linux-x64`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.3/RustyBox-linux-x64) | ~18 MB | `chmod +x RustyBox-linux-x64 && ./RustyBox-linux-x64` |
+| **🍎 macOS Universal (Apple Silicon & Intel)** | [**`RustyBox-macos-universal`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.3/RustyBox-macos-universal) | ~33 MB | `chmod +x RustyBox-macos-universal && ./RustyBox-macos-universal` |
+| **🍎 macOS Apple Silicon (M1/M2/M3/M4)** | [**`RustyBox-macos-arm64`**](https://github.com/longanhvn/rustybox/releases/download/v1.4.3/RustyBox-macos-arm64) | ~17 MB | `chmod +x RustyBox-macos-arm64 && ./RustyBox-macos-arm64` |
 
 *👉 Xem danh sách toàn bộ các bản phát hành tại: [**GitHub Releases**](https://github.com/longanhvn/rustybox/releases)*
 
